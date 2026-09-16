@@ -33,10 +33,11 @@ const CFG = {
   damping: 0.9886,     // velocity retained per step
   brakeSpeed: 3.6,     // extra braking below this speed
   stopSpeed: 0.42,
-  readySpeed: 2.0,     // orb is grabbable below this
+  readySpeed: 2.0,     // below this, aiming may also start away from the orb
   restitution: 0.735,
   tangent: 0.965,
   grabRadius: 132,
+  airGrabRadius: 76,   // forgiving touch target for catching a flying orb
   paintSpeed: 1.6,     // min contact speed to take a wall colour
   iceSpeed: 5.5,       // min contact speed to damage ice
   paintCooldown: 0.12, // seconds between colour transfers
@@ -585,7 +586,7 @@ const LEVELS = [
   {
     /* 1 — teach: launch, wall colour, matching exit. */
     name: 'SPECTRUM',
-    tip: 'Red bars and spikes kill. Take cyan, then weave to the exit.',
+    tip: 'Catch the moving orb. Drag and release to dodge the red spikes.',
     bg: ['#191c44', '#07091b'], accent: [140, 130, 255],
     start: { x: 110, y: 850 }, color: 'violet',
     portal: { x: 430, y: 230, color: 'cyan' },
@@ -1436,8 +1437,7 @@ function restartLevel(silent) {
 
 function canGrab() {
   if (G.shotLimit && G.shots >= G.shotLimit) return false;
-  return G.phase === 'play' && G.transDir === 0 && orb.alive &&
-         Math.hypot(orb.vx, orb.vy) < CFG.readySpeed;
+  return G.phase === 'play' && G.transDir === 0 && orb.alive;
 }
 
 function launch(ang, power) {
@@ -1749,7 +1749,7 @@ function simStep() {
       const tp = orb.trail[orb.trailN % TRAIL_N];
       tp.x = orb.x; tp.y = orb.y; tp.v = sp;
       orb.trailN++;
-      if (canGrab() && !G.aiming) G.idle += STEP; else G.idle = 0;
+      if (canGrab() && !G.aiming && sp < CFG.readySpeed) G.idle += STEP; else G.idle = 0;
     }
   } else if (G.phase === 'fail') {
     // the void drags the orb away while it fades; other kinds just burst
@@ -3184,15 +3184,19 @@ function onDown(e) {
   if (G.phase === 'done') return;
   if (e.target === dom.restart || dom.restart.contains(e.target)) return;
   if (!canGrab()) {
-    // the orb is still in flight — acknowledge the tap instead of eating it
+    // No launches remain, or the level is transitioning.
     if (G.phase === 'play' && orb.alive) G.deny = 1;
     return;
   }
   canvasRect = dom.canvas.getBoundingClientRect();  // one read per drag, not per move
   const p = toGame(e);
+  const airborne = Math.hypot(orb.vx, orb.vy) >= CFG.readySpeed;
+  if (airborne && Math.hypot(p.x - orb.x, p.y - orb.y) > CFG.airGrabRadius) return;
   const near = Math.hypot(p.x - orb.x, p.y - orb.y) < CFG.grabRadius;
-  G.anchorX = near ? orb.x : p.x;
-  G.anchorY = near ? orb.y : p.y;
+  // A catch starts at zero power even when the finger lands off-centre.
+  // Keep velocity while held: cancelling resumes the original flight.
+  G.anchorX = !airborne && near ? orb.x : p.x;
+  G.anchorY = !airborne && near ? orb.y : p.y;
   G.aiming = true;
   lastPvx = NaN;
   pointerId = e.pointerId;
