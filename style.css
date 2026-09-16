@@ -217,6 +217,11 @@ body{
   color:rgba(226,214,255,.92);
 }
 #shots svg{width:1.05em;height:1.05em;fill:none;stroke:var(--violet);stroke-width:2.1;stroke-linecap:round;stroke-linejoin:round;}
+/* On rationed levels the chip counts down remaining energy and warns late. */
+#shots.limited{background:rgba(46,230,255,.13);border-color:rgba(46,230,255,.32);color:rgba(214,246,255,.95);}
+#shots.limited svg{stroke:var(--cyan);}
+#shots.low{background:rgba(255,45,110,.16);border-color:rgba(255,45,110,.45);color:#ffd9e4;}
+#shots.low svg{stroke:var(--danger);}
 #shots.bump{animation:shotBump .34s cubic-bezier(.2,1.6,.4,1);}
 @keyframes shotBump{0%{transform:scale(1)}40%{transform:scale(1.22)}100%{transform:scale(1)}}
 
@@ -334,6 +339,14 @@ body{
 }
 #toast.hidden{opacity:0;}
 #toast.show{animation:toastIn 1.6s cubic-bezier(.2,.9,.25,1) forwards;}
+/* Failure text is a tag, not a screen: in and out well inside one second. */
+#toast.quick{animation:toastQuick .9s cubic-bezier(.2,.9,.25,1) forwards;}
+@keyframes toastQuick{
+  0%{opacity:0;transform:translateX(-50%) translateY(-6px) scale(.9)}
+  12%{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}
+  70%{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}
+  100%{opacity:0;transform:translateX(-50%) translateY(-4px) scale(1)}
+}
 @keyframes toastIn{
   0%{opacity:0;transform:translateX(-50%) translateY(-10px) scale(.94)}
   14%{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}

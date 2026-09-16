@@ -43,6 +43,7 @@ const CFG = {
 };
 
 const FIELD = { x0: 15, y0: 93, x1: 525, y1: 941 };
+const FAIL_HOLD = 0.45;      // seconds from failure to a live orb again
 
 // backing-store budget in device pixels (see fit())
 const PIXEL_BUDGET = 1100000;
@@ -398,6 +399,31 @@ const Sfx = (() => {
       });
       air_noise({ dur: 0.36, peak: 0.16 * v, f0: 2400, f1: 900, q: 1.1, cap: 6000, send: 0.4 });
     },
+    /* void: a soft downward slide, nothing percussive */
+    failVoid() {
+      const v = MIX.fail;
+      tone({ type: 'sine', f0: 240, f1: 52, dur: 0.66, glide: 0.56,
+             peak: 0.26 * v, attack: 0.03, lp: 1100, lp1: 200, send: 0.35 });
+      air_noise({ dur: 0.5, peak: 0.05 * v, f0: 900, f1: 160, q: 0.6, cap: 2400,
+                  attack: 0.1, send: 0.35 });
+    },
+    /* laser: a short energy slice, bright but filtered well below harsh */
+    failLaser() {
+      const v = MIX.fail;
+      air_noise({ dur: 0.16, peak: 0.34 * v, f0: 4200, f1: 900, q: 1.6, cap: 5400 });
+      tone({ type: 'triangle', f0: 720, f1: 180, dur: 0.3, glide: 0.2,
+             peak: 0.22 * v, attack: 0.004, lp: 2600, send: 0.25 });
+      tone({ type: 'sine', f0: 150, f1: 70, dur: 0.28, glide: 0.2, peak: 0.2 * v, attack: 0.006, lp: 800 });
+    },
+    /* out of energy: a power-down, no sting */
+    failPower() {
+      const v = MIX.fail;
+      [392, 294, 196].forEach((f, i) => {
+        tone({ type: 'sine', f0: f, f1: f * 0.82, dur: 0.42 - i * 0.05, glide: 0.3,
+               peak: (0.17 - i * 0.04) * v, attack: 0.02, delay: i * 0.08, lp: 2400, send: 0.3 });
+      });
+      air_noise({ dur: 0.4, peak: 0.04 * v, f0: 700, f1: 200, q: 0.7, cap: 2200, attack: 0.08 });
+    },
     ui() {
       tone({ type: 'sine', f0: 660, f1: 520, dur: 0.075, glide: 0.06,
              peak: 0.34 * MIX.ui, attack: 0.006, lp: 2600, send: 0.16 });
@@ -575,7 +601,7 @@ const LEVELS = [
   {
     /* 2 — teach: not every colour is the right one. */
     name: 'CROSSROADS',
-    tip: 'Only one colour opens the way.',
+    tip: 'Red means gone. Only one colour opens the way.',
     bg: ['#15204a', '#06091c'], accent: [90, 170, 255],
     start: { x: 270, y: 862 }, color: 'violet',
     portal: { x: 270, y: 200, color: 'orange' },
@@ -590,49 +616,53 @@ const LEVELS = [
       { x: 60,  y: 420, w: 20,  h: 130 },
       { x: 480, y: 420, w: 20,  h: 130 },
     ],
+    deadly: [{ x: 96, y: 386, w: 150, h: 18 }],   // guards the magenta detour
   },
   {
     /* 3 — teach: ice takes two solid hits. No colour in play. */
     name: 'GLACIER',
     tip: 'Ice takes two solid hits.',
     bg: ['#102a44', '#050f20'], accent: [70, 190, 255],
-    start: { x: 270, y: 862 }, color: 'violet',
+    start: { x: 270, y: 806 }, color: 'violet',
     portal: { x: 270, y: 195 },
     walls: [
       { x: 115, y: 520, w: 200, h: 22 },
       { x: 425, y: 520, w: 200, h: 22 },
-      { x: 120, y: 740, w: 160, h: 18, a: 20 },           // funnels the shot upward
-      { x: 420, y: 740, w: 160, h: 18, a: -20 },
+      { x: 128, y: 700, w: 170, h: 18, a: 22 },           // lips of the pit
+      { x: 412, y: 700, w: 170, h: 18, a: -22 },
       { x: 110, y: 330, w: 170, h: 18 },
       { x: 430, y: 330, w: 170, h: 18 },
-      { x: 60,  y: 640, w: 20,  h: 130 },
-      { x: 480, y: 640, w: 20,  h: 130 },
+      { x: 60,  y: 600, w: 20,  h: 120 },
+      { x: 480, y: 600, w: 20,  h: 120 },
     ],
+    voids: [{ x: 132, y: 904, w: 150, h: 76 }],          // pit beside the bay
     ice: [{ x: 270, y: 520, w: 110, h: 46 }],
   },
   {
-    /* 4 — combine: break through, then collect the colour behind it. */
-    name: 'DEEP FREEZE',
-    tip: 'Break through, then take the colour.',
-    bg: ['#14294a', '#060d1e'], accent: [90, 200, 235],
-    start: { x: 110, y: 862 }, color: 'violet',
-    portal: { x: 420, y: 225, color: 'lime' },
+    /* 4 — first real route choice: the colour you need is on one side,
+       a live wall stands over the only way up. Pick a lane. */
+    name: 'CROSSFIRE',
+    tip: 'Take the colour, then pick the safe lane.',
+    bg: ['#2a1236', '#0a0618'], accent: [230, 100, 180],
+    start: { x: 270, y: 862 }, color: 'violet',
+    portal: { x: 430, y: 215, color: 'cyan' },
     walls: [
-      { x: 105, y: 560, w: 180, h: 22 },
-      { x: 415, y: 560, w: 220, h: 22 },
-      { x: 508, y: 380, w: 20, h: 260, color: 'lime' },   // the only lime, past the ice
-      { x: 140, y: 330, w: 200, h: 20 },
-      { x: 320, y: 445, w: 150, h: 18, a: -28 },
-      { x: 60,  y: 730, w: 20,  h: 160 },
-      { x: 400, y: 840, w: 190, h: 18, a: 14 },
-      { x: 120, y: 200, w: 160, h: 18 },
+      { x: 100, y: 520, w: 170, h: 22 },
+      { x: 440, y: 520, w: 170, h: 22 },
+      { x: 508, y: 700, w: 20, h: 280, color: 'cyan' },
+      { x: 32,  y: 700, w: 20, h: 280, color: 'magenta' },
+      { x: 140, y: 290, w: 160, h: 18 },
+      { x: 430, y: 400, w: 140, h: 18, a: -22 },
+      { x: 150, y: 830, w: 170, h: 18, a: -18 },
+      { x: 390, y: 830, w: 170, h: 18, a: 18 },
     ],
-    ice: [{ x: 250, y: 560, w: 110, h: 46 }],
+    deadly: [{ x: 152, y: 388, w: 20, h: 152 }],
+    shots: 7,
   },
   {
     /* 5 — teach: a gate only opens for its own colour. */
     name: 'LOCKDOWN',
-    tip: 'Gates open only for their own colour.',
+    tip: 'Limited launches. Take cyan, open the gate.',
     bg: ['#0f2540', '#050e1e'], accent: [60, 210, 255],
     start: { x: 270, y: 864 }, color: 'violet',
     portal: { x: 270, y: 205, color: 'cyan' },
@@ -649,50 +679,62 @@ const LEVELS = [
       { x: 460, y: 620, w: 20,  h: 120 },
     ],
     gates: [{ x: 270, y: 470, w: 110, h: 22, color: 'cyan' }],
+    hazards: [{ x: 108, y: 248, w: 130, h: 14 }],   // punishes drifting left up top
+    shots: 7,                                        // clean route is 4
   },
   {
-    /* 6 — combine: the bumper supplies the speed, you pick the colour. */
+    /* 6 — combine: the bumper supplies the speed, but it throws you at the
+       wrong colour. Touching the right one last is the puzzle. */
     name: 'KINETIC BLOOM',
-    tip: 'Let the bumper do the work.',
+    tip: 'Which colour do you touch last?',
     bg: ['#1f1748', '#08091f'], accent: [170, 120, 255],
     start: { x: 270, y: 872 }, color: 'violet',
-    portal: { x: 430, y: 215, color: 'magenta' },
+    portal: { x: 128, y: 220, color: 'cyan' },
     walls: [
       { x: 110, y: 470, w: 190, h: 22 },
       { x: 430, y: 470, w: 190, h: 22 },
-      { x: 508, y: 420, w: 20, h: 300, color: 'magenta' },
-      { x: 180, y: 300, w: 200, h: 18 },
+      { x: 508, y: 360, w: 20, h: 190, color: 'magenta' },  // decoy, where the bumper throws you
+      { x: 32,  y: 392, w: 20, h: 150, color: 'cyan' },      // what the exit wants
+      { x: 232, y: 300, w: 180, h: 18 },
       { x: 70,  y: 700, w: 20,  h: 170 },
       { x: 470, y: 700, w: 20,  h: 170 },
       { x: 118, y: 874, w: 160, h: 18, a: 16 },
       { x: 422, y: 874, w: 160, h: 18, a: -16 },
-      { x: 120, y: 180, w: 150, h: 18 },
+      { x: 330, y: 180, w: 150, h: 18 },
     ],
     bumpers: [{ x: 270, y: 640, r: 36, power: 15 }],
+    hazards: [
+      { x: 336, y: 360, w: 130, h: 14,
+        motion: { type: 'osc', dx: 68, dy: 0, period: 7.0, phase: 0 } },
+    ],
+    shots: 6,
   },
   {
-    /* 7 — teach: one slow moving part. The gap always exists, it just moves. */
-    name: 'PISTON',
-    tip: 'Slow and steady. Watch the gap.',
-    bg: ['#132b44', '#05101f'], accent: [80, 200, 255],
-    start: { x: 110, y: 866 }, color: 'violet',
-    portal: { x: 430, y: 215, color: 'orange' },
+    /* 7 — combine: break through, then route around a live wall to reach
+       the colour the exit wants. */
+    name: 'FRACTURE',
+    tip: 'Break through, then avoid the live wall.',
+    bg: ['#14294a', '#060d1e'], accent: [90, 200, 235],
+    start: { x: 110, y: 862 }, color: 'violet',
+    portal: { x: 420, y: 225, color: 'lime' },
     walls: [
-      { x: 100, y: 520, w: 170, h: 22 },
-      { x: 440, y: 520, w: 170, h: 22 },
-      { x: 270, y: 520, w: 150, h: 22, motion: { type: 'osc', dx: 95, dy: 0, period: 5.2, phase: 0 } },
-      { x: 508, y: 700, w: 20, h: 260, color: 'orange' },
-      { x: 200, y: 330, w: 200, h: 18, a: 18 },
-      { x: 70,  y: 330, w: 20,  h: 170 },
-      { x: 150, y: 790, w: 180, h: 18, a: -18 },
-      { x: 430, y: 860, w: 160, h: 18 },
-      { x: 252, y: 168, w: 200, h: 18 },
+      { x: 105, y: 560, w: 180, h: 22 },
+      { x: 415, y: 560, w: 220, h: 22 },
+      { x: 508, y: 380, w: 20, h: 260, color: 'lime' },
+      { x: 32,  y: 380, w: 20, h: 240, color: 'magenta' },
+      { x: 150, y: 200, w: 170, h: 18 },
+      { x: 60,  y: 730, w: 20,  h: 160 },
+      { x: 400, y: 840, w: 190, h: 18, a: 14 },
+      { x: 436, y: 470, w: 120, h: 16, a: -25 },
     ],
+    ice: [{ x: 250, y: 560, w: 110, h: 46 }],
+    deadly: [{ x: 148, y: 360, w: 120, h: 18 }],
+    shots: 10,
   },
   {
     /* 8 — teach: a crystal only yields to its own colour. */
     name: 'PRISM CORE',
-    tip: 'Only its own colour breaks it.',
+    tip: 'Its colour breaks it — and carries you through.',
     bg: ['#241540', '#0a0819'], accent: [190, 120, 255],
     start: { x: 270, y: 868 }, color: 'violet',
     portal: { x: 270, y: 200, color: 'lime' },
@@ -708,6 +750,8 @@ const LEVELS = [
       { x: 270, y: 640, w: 22, h: 110 },
     ],
     crystals: [{ x: 270, y: 500, r: 40, color: 'lime' }],
+    hazards: [{ x: 262, y: 332, w: 104, h: 24, safe: 'lime' }],  // lime passes
+    shots: 10,
   },
   {
     /* 9 — order puzzle: the cyan source sits behind the ice, the gate needs cyan. */
@@ -730,12 +774,14 @@ const LEVELS = [
     ice: [{ x: 250, y: 620, w: 110, h: 46 }],
     gates: [{ x: 270, y: 300, w: 110, h: 22, color: 'cyan' }],
     bumpers: [{ x: 320, y: 790, r: 32, power: 14 }],
+    deadly: [{ x: 430, y: 494, w: 150, h: 18 }],   // the right-hand shortcut bites
+    shots: 11,
   },
   {
     /* 10 — the finale. The gate wants cyan; the exit wants orange; the only
        orange is on the far side of the gate. That is the whole puzzle. */
     name: 'SINGULARITY',
-    tip: 'Everything you have learned, at once.',
+    tip: 'Everything you have learned. Mind the beam.',
     bg: ['#2b1034', '#090616'], accent: [255, 110, 190],
     start: { x: 100, y: 872 }, color: 'violet',
     portal: { x: 445, y: 205, color: 'orange' },
@@ -746,15 +792,18 @@ const LEVELS = [
       { x: 425, y: 330, w: 200, h: 22 },
       { x: 32,  y: 790, w: 20, h: 200, color: 'cyan' },   // key for the gate
       { x: 508, y: 200, w: 20, h: 180, color: 'orange' }, // key for the exit, past it
-      { x: 270, y: 480, w: 170, h: 20, motion: { type: 'osc', dx: 110, dy: 0, period: 5.6, phase: 0.2 } },
       { x: 170, y: 215, w: 200, h: 18 },
       { x: 412, y: 292, w: 130, h: 18, a: -20 },
-      { x: 466, y: 470, w: 20,  h: 150 },
       { x: 214, y: 782, w: 170, h: 18, a: -16 },
     ],
     ice: [{ x: 250, y: 640, w: 110, h: 46 }],
     gates: [{ x: 270, y: 330, w: 110, h: 22, color: 'cyan' }],
-    bumpers: [{ x: 330, y: 800, r: 34, power: 14.5 }],
+    bumpers: [{ x: 300, y: 784, r: 34, power: 14.5 }],
+    hazards: [
+      { x: 396, y: 500, w: 130, h: 14,
+        motion: { type: 'osc', dx: 62, dy: 0, period: 8.0, phase: 0.2 } },
+    ],
+    shots: 11,
   },
 ];
 
@@ -778,6 +827,8 @@ const world = {
   ice: [],
   crystals: [],
   hazards: [],
+  livewalls: [],
+  voids: [],
   gates: [],
   portal: null,
   dirty: false,
@@ -795,6 +846,10 @@ const ENTITY_KINDS = {
   gate:    { list: 'solids', also: 'gates',    init: (e) => { e.solid = true; e.reject = 0; e.flash = 0; } },
   bumper:  { list: 'bumpers', init: (e) => { e.hit = 0; } },
   hazard:  { list: 'hazards', init: (e) => { e.k = 1; } },
+  // dangerous energy wall: solid, never repaints, always fatal
+  livewall:{ list: 'solids', also: 'livewalls', init: (e) => { e.solid = true; e.deadly = true; } },
+  // void: not solid at all, simply somewhere the orb must not end up
+  gap:     { list: 'voids', init: (e) => {} },
   portal:  { list: null, init: (e) => { e.open = 0; e.reject = 0; } },
   // room to grow: boost pads, slow fields, teleport pairs, doors and switches
   // all fit this shape — a list to live in, an init, and a draw function.
@@ -835,6 +890,7 @@ function buildWorld(src) {
   world.solids.length = 0; world.statics.length = 0; world.paints.length = 0;
   world.movers.length = 0; world.bumpers.length = 0; world.ice.length = 0;
   world.crystals.length = 0; world.hazards.length = 0; world.gates.length = 0;
+  world.livewalls.length = 0; world.voids.length = 0;
   world.bg = L.bg; world.accent = L.accent;
 
   for (const w of (L.walls || []).concat(clone(BORDER))) addEntity(w, 'wall');
@@ -843,6 +899,8 @@ function buildWorld(src) {
   for (const g of (L.gates || [])) addEntity(g, 'gate');
   for (const b of (L.bumpers || [])) addEntity(b, 'bumper');
   for (const h of (L.hazards || [])) addEntity(h, 'hazard');
+  for (const d of (L.deadly || [])) addEntity(d, 'livewall');
+  for (const v of (L.voids || [])) addEntity(v, 'gap');
 
   world.portal = prepEntity(Object.assign({ r: 34, color: null }, L.portal), 'portal');
   return L;
@@ -1108,6 +1166,7 @@ const G = {
   levelIndex: 0,
   level: null,
   shots: 0,
+  shotLimit: 0,
   totalShots: 0,
   runTime: 0,
   idle: 0,
@@ -1123,7 +1182,7 @@ const G = {
 const orb = {
   x: 0, y: 0, vx: 0, vy: 0, r: CFG.orbR,
   color: 'violet', prevColor: 'violet', colorMix: 1,
-  squash: 0, squashAng: 0, pulse: 0, flash: 0, pop: 0,
+  squash: 0, squashAng: 0, pulse: 0, flash: 0, pop: 0, failKind: 'energy',
   alive: true, scale: 1,
   trail: [], trailN: 0,
 };
@@ -1159,6 +1218,15 @@ const ctx = dom.canvas.getContext('2d');
 
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
+/* Shot limits exist to make the player plan, so the counter has to read as
+   energy remaining rather than a score. Only limited levels show a total. */
+function updateShotHud() {
+  const lim = G.shotLimit;
+  dom.shotCount.textContent = lim ? (lim - G.shots) : G.shots;
+  dom.shots.classList.toggle('limited', !!lim);
+  dom.shots.classList.toggle('low', !!lim && lim - G.shots <= 2);
+}
+
 function showBanner(i) {
   const L = LEVELS[i];
   dom.bannerNum.textContent = pad2(i + 1);
@@ -1167,11 +1235,12 @@ function showBanner(i) {
   void dom.banner.offsetWidth;
   dom.banner.classList.add('show');
 }
-function showToast(msg) {
+function showToast(msg, quick) {
   dom.toast.textContent = msg;
-  dom.toast.classList.remove('hidden', 'show');
+  dom.toast.classList.remove('hidden', 'show', 'quick');
   void dom.toast.offsetWidth;
   dom.toast.classList.add('show');
+  if (quick) dom.toast.classList.add('quick');
 }
 function setHint(text) {
   if (text) { dom.hint.textContent = text; dom.hint.classList.remove('hidden'); }
@@ -1192,6 +1261,7 @@ function resetOrb() {
 function startLevel(i) {
   G.levelIndex = i;
   G.level = buildWorld(LEVELS[i]);
+  G.shotLimit = LEVELS[i].shots || 0;
   G.shots = 0;
   G.t = 0;
   G.phase = 'play'; G.phaseT = 0;
@@ -1203,7 +1273,7 @@ function startLevel(i) {
   dom.levelNum.textContent = pad2(i + 1);
   dom.levelName.textContent = LEVELS[i].name;
   dom.progress.style.width = ((i + 1) / LEVELS.length * 100) + '%';
-  dom.shotCount.textContent = '0';
+  updateShotHud();
   showBanner(i);
   setHint('');
   setTimeout(() => { if (G.levelIndex === i && G.shots === 0 && G.phase === 'play') setHint(LEVELS[i].tip); }, 1150);
@@ -1248,17 +1318,19 @@ function restartLevel(silent) {
   if (!silent) Sfx.ui();
   const i = G.levelIndex;
   G.level = buildWorld(LEVELS[i]);
+  G.shotLimit = LEVELS[i].shots || 0;
   G.shots = 0;
   G.phase = 'play'; G.phaseT = 0; G.aiming = false;
   G.fadeIn = 0.35;
   clearFX();
   resetOrb();
   bakeStatic();
-  dom.shotCount.textContent = '0';
+  updateShotHud();
   Sfx.tensionStop();
 }
 
 function canGrab() {
+  if (G.shotLimit && G.shots >= G.shotLimit) return false;
   return G.phase === 'play' && G.transDir === 0 && orb.alive &&
          Math.hypot(orb.vx, orb.vy) < CFG.readySpeed;
 }
@@ -1270,7 +1342,7 @@ function launch(ang, power) {
   orb.squash = 0.55; orb.squashAng = ang;
   orb.flash = 1;
   G.shots++; G.totalShots++;
-  dom.shotCount.textContent = G.shots;
+  updateShotHud();
   dom.shots.classList.remove('bump'); void dom.shots.offsetWidth; dom.shots.classList.add('bump');
   const c = energy(orb.color);
   FX.spark(orb.x - Math.cos(ang) * 12, orb.y - Math.sin(ang) * 12, ang + Math.PI, 0.5, 4 + power * 4, 8, c.rgb,
@@ -1314,7 +1386,11 @@ function resolveContacts() {
     if (e.dead) continue;
     const imp = HITS.imp[i], hx = HITS.x[i], hy = HITS.y[i];
 
-    if (e.kind === 'wall') {
+    if (e.kind === 'livewall') {
+      orb.x = hx; orb.y = hy;
+      killOrb('energy');
+      return;
+    } else if (e.kind === 'wall') {
       // colour transfer: only on a real contact with a *different* signature,
       // so resting against a wall cannot re-fire the effect every frame
       if (e.color && e.color !== orb.color && imp > CFG.paintSpeed) {
@@ -1378,16 +1454,54 @@ function compactWorld() {
   }
 }
 
-function killOrb() {
+/* Every failure names its cause. The player should never wonder what killed
+   them, so each kind gets its own burst, its own sound and its own word. */
+const FAIL_TEXT = {
+  energy: 'ENERGY LOST',
+  laser:  'CUT DOWN',
+  colour: 'WRONG SIGNATURE',
+  void:   'LOST TO THE VOID',
+  power:  'OUT OF ENERGY',
+};
+
+function killOrb(kind, nx, ny) {
   if (!orb.alive) return;
+  kind = kind || 'energy';
   orb.alive = false;
+  orb.failKind = kind;
   G.phase = 'fail'; G.phaseT = 0;
   const c = energy(orb.color);
-  FX.spark(orb.x, orb.y, 0, Math.PI, 7, 9, DANGER, { life: 0.45, size: 3, drag: 0.94, shape: 1, len: 9 });
-  FX.spark(orb.x, orb.y, 0, Math.PI, 4, 4, c.rgb, { life: 0.4, size: 2.4, drag: 0.93 });
-  FX.shock(orb.x, orb.y, 4, 90, 0.45, DANGER, 4);
-  cam.shake = 14; cam.flash = 0.5; cam.flashCol = DANGER;
-  Sfx.fail();
+
+  if (kind === 'void') {
+    // no bang: the orb is simply drawn away and fades out
+    FX.spark(orb.x, orb.y, 0, Math.PI, 1.6, 6, c.rgb, { life: 0.5, size: 2.2, drag: 0.9 });
+    cam.shake = 3;
+    Sfx.failVoid();
+  } else if (kind === 'laser') {
+    // slash along the beam, then breakup
+    const a = Math.atan2(ny || 0, nx || 1) + Math.PI / 2;
+    FX.spark(orb.x, orb.y, a, 0.18, 9, 6, [255, 240, 245], { life: 0.3, size: 2.6, shape: 1, len: 16 });
+    FX.spark(orb.x, orb.y, a + Math.PI, 0.18, 9, 6, [255, 240, 245], { life: 0.3, size: 2.6, shape: 1, len: 16 });
+    FX.shock(orb.x, orb.y, 3, 70, 0.34, DANGER, 3);
+    cam.shake = 12; cam.flash = 0.42; cam.flashCol = [255, 230, 240];
+    Sfx.failLaser();
+  } else if (kind === 'colour') {
+    FX.shock(orb.x, orb.y, 6, 64, 0.3, c.rgb, 4);
+    FX.spark(orb.x, orb.y, 0, Math.PI, 5, 8, c.rgb, { life: 0.4, size: 2.6, drag: 0.93 });
+    cam.shake = 10; cam.flash = 0.38; cam.flashCol = c.hi;
+    Sfx.fail();
+  } else if (kind === 'power') {
+    FX.implode(orb.x, orb.y, 46, 8, c.rgb, 0.4);
+    cam.shake = 4;
+    Sfx.failPower();
+  } else {
+    FX.spark(orb.x, orb.y, 0, Math.PI, 7, 9, DANGER, { life: 0.45, size: 3, drag: 0.94, shape: 1, len: 9 });
+    FX.spark(orb.x, orb.y, 0, Math.PI, 4, 4, c.rgb, { life: 0.4, size: 2.4, drag: 0.93 });
+    FX.shock(orb.x, orb.y, 4, 84, 0.42, DANGER, 4);
+    cam.shake = 13; cam.flash = 0.46; cam.flashCol = DANGER;
+    Sfx.fail();
+  }
+  showToast(FAIL_TEXT[kind] || FAIL_TEXT.energy, true);
   Sfx.tensionStop();
 }
 
@@ -1417,7 +1531,18 @@ function checkTriggers(px, py) {
     for (let k = 0; k < world.hazards.length; k++) {
       const h = world.hazards[k];
       if (h.k > 0.35 && overlapsBox(sx, sy, orb.r * 0.8, h)) {
-        orb.x = sx; orb.y = sy; killOrb(); return;
+        if (h.safe && h.safe === orb.color) continue;   // tuned to this signature
+        orb.x = sx; orb.y = sy;
+        killOrb(h.safe ? 'colour' : (h.motion ? 'laser' : 'energy'), h.ca, h.sa);
+        return;
+      }
+    }
+    for (let k = 0; k < world.voids.length; k++) {
+      const v = world.voids[k];
+      // the orb's centre must actually cross the lip: dying just outside a
+      // hole you can see is indistinguishable from an invisible wall
+      if (overlapsBox(sx, sy, orb.r * 0.15, v)) {
+        orb.x = sx; orb.y = sy; killOrb('void'); return;
       }
     }
     const pd = Math.hypot(sx - p.x, sy - p.y);
@@ -1506,6 +1631,13 @@ function simStep() {
       compactWorld();
       checkTriggers(px, py);
     }
+    // out of energy — checked only once the final launch has played out, so a
+    // last-second win always counts
+    if (orb.alive && !G.aiming && G.shotLimit && G.shots >= G.shotLimit &&
+        Math.hypot(orb.vx, orb.vy) < CFG.readySpeed) {
+      killOrb('power');
+    }
+
     // trail sampling
     if (orb.alive) {
       const sp = Math.hypot(orb.vx, orb.vy);
@@ -1515,10 +1647,22 @@ function simStep() {
       if (canGrab() && !G.aiming) G.idle += STEP; else G.idle = 0;
     }
   } else if (G.phase === 'fail') {
-    if (G.phaseT > 0.55) {
-      G.phase = 'play'; G.phaseT = 0; G.fadeIn = 0.3;
+    // the void drags the orb away while it fades; other kinds just burst
+    if (orb.failKind === 'void') {
+      orb.x += orb.vx * 0.35; orb.y += orb.vy * 0.35;
+      orb.vx *= 0.94; orb.vy *= 0.94;
+      orb.scale = Math.max(0, orb.scale - STEP * 2.6);
+    } else if (orb.failKind === 'power') {
+      orb.scale = Math.max(0, orb.scale - STEP * 2.2);
+    }
+    if (G.phaseT > FAIL_HOLD) {
+      // a retry is a clean slate: ice, crystals and launch energy all restored
+      G.level = buildWorld(LEVELS[G.levelIndex]);
+      G.shots = 0;
+      updateShotHud();
+      bakeStatic();
+      G.phase = 'play'; G.phaseT = 0; G.fadeIn = 0.22;
       resetOrb();
-      for (const g of world.gates) g.flash = 0;
     }
   } else if (G.phase === 'win') {
     const p2 = world.portal;
@@ -1815,9 +1959,150 @@ function drawBumper(c, b) {
   c.restore();
 }
 
+/* ---------- void ---------------------------------------------------------
+   Somewhere the orb must not end up. Drawn under everything so it reads as a
+   hole in the floor of the chamber rather than an object sitting on it. */
+/* ---------- void ---------------------------------------------------------
+   A hole the orb must not enter. The danger has to be legible against an
+   already dark background, so the pit is framed on every side, hatched with
+   warning stripes and lit at the lip — a near-black rectangle on a near-black
+   chamber floor is an invisible wall, which is exactly what this must not be. */
+function drawVoid(c, v) {
+  const w = v.w, h = v.h;
+  const pu = 0.5 + 0.5 * Math.sin(G.t * 2.4 + v.seed);
+  c.save();
+  c.translate(v.x, v.y); c.rotate(v.a);
+
+  // the pit itself
+  c.fillStyle = grad(v.gfx, 'pit', () => {
+    const g = c.createLinearGradient(0, -h / 2, 0, h / 2);
+    g.addColorStop(0, 'rgba(22,2,10,0.99)');
+    g.addColorStop(0.5, 'rgba(6,0,4,1)');
+    g.addColorStop(1, 'rgba(2,0,2,1)');
+    return g;
+  });
+  c.fillRect(-w / 2, -h / 2, w, h);
+
+  // warning hatch, clipped to the pit — reads as 'do not enter' at a glance
+  c.save();
+  c.beginPath(); c.rect(-w / 2, -h / 2, w, h); c.clip();
+  c.strokeStyle = rgba(DANGER, 0.22);
+  c.lineWidth = 9;
+  c.beginPath();
+  for (let i = -h; i < w + h; i += 30) { c.moveTo(-w / 2 + i, -h / 2); c.lineTo(-w / 2 + i - h, h / 2); }
+  c.stroke();
+  c.restore();
+
+  c.globalCompositeOperation = 'lighter';
+
+  // lip glow along the top edge
+  c.globalAlpha = 0.65 + pu * 0.35;
+  c.fillStyle = grad(v.gfx, 'rim', () => {
+    const g = c.createLinearGradient(0, -h / 2, 0, -h / 2 + 30);
+    g.addColorStop(0, rgba(DANGER, 0.95));
+    g.addColorStop(1, rgba(DANGER, 0));
+    return g;
+  });
+  c.fillRect(-w / 2, -h / 2, w, 30);
+  c.globalAlpha = 1;
+
+  // full frame so every approach angle shows an edge
+  c.strokeStyle = rgba(DANGER, 0.9);
+  c.lineWidth = 2.4;
+  c.strokeRect(-w / 2, -h / 2, w, h);
+
+  // bright lip cap
+  c.strokeStyle = rgba([255, 190, 210], 0.85 + pu * 0.15);
+  c.lineWidth = 2.6;
+  c.beginPath(); c.moveTo(-w / 2, -h / 2); c.lineTo(w / 2, -h / 2); c.stroke();
+
+  // corner ticks
+  c.lineWidth = 2.2;
+  c.strokeStyle = rgba(DANGER, 0.9);
+  const t = 12;
+  c.beginPath();
+  c.moveTo(-w / 2, -h / 2 + t); c.lineTo(-w / 2, -h / 2); c.lineTo(-w / 2 + t, -h / 2);
+  c.moveTo(w / 2 - t, -h / 2); c.lineTo(w / 2, -h / 2); c.lineTo(w / 2, -h / 2 + t);
+  c.stroke();
+
+  // sparse falling motes to sell the depth
+  for (let i = 0; i < 4; i++) {
+    const u = ((G.t * 0.22 + i * 0.25 + v.seed) % 1);
+    c.fillStyle = rgba(DANGER, 0.6 * (1 - u));
+    c.beginPath();
+    c.arc(-w / 2 + ((i * 97 + v.seed * 31) % w), -h / 2 + u * h, 1.8, 0, TAU);
+    c.fill();
+  }
+  c.globalCompositeOperation = 'source-over';
+  c.restore();
+}
+
+function drawLiveWall(c, e) {
+  const w = e.w, h = e.h;
+  const r = Math.min(9, Math.min(w, h) / 2);
+  const long = w >= h;
+  const pu = 0.5 + 0.5 * Math.sin(G.t * 7 + e.seed);
+  c.save();
+  c.translate(e.x, e.y); c.rotate(e.a);
+
+  roundRect(c, -w / 2, -h / 2, w, h, r);
+  c.fillStyle = grad(e.gfx, 'body', () => {
+    const g = long ? c.createLinearGradient(0, -h / 2, 0, h / 2)
+                   : c.createLinearGradient(-w / 2, 0, w / 2, 0);
+    g.addColorStop(0, 'rgba(96,12,44,0.97)');
+    g.addColorStop(0.5, 'rgba(158,20,68,0.97)');
+    g.addColorStop(1, 'rgba(96,12,44,0.97)');
+    return g;
+  });
+  c.fill();
+  c.strokeStyle = rgba([255, 150, 185], 0.95);
+  c.lineWidth = 2.2;
+  c.stroke();
+
+  c.globalCompositeOperation = 'lighter';
+  // outward glow so it is obvious before you are touching it
+  c.globalAlpha = 0.5 + pu * 0.2;
+  c.strokeStyle = rgba(DANGER, 0.5);
+  c.lineWidth = 9;
+  roundRect(c, -w / 2, -h / 2, w, h, r);
+  c.stroke();
+  // hot core
+  c.globalAlpha = 0.75 + pu * 0.25;
+  c.fillStyle = grad(e.gfx, 'core', () => {
+    const g = long ? c.createLinearGradient(0, -h / 2, 0, h / 2)
+                   : c.createLinearGradient(-w / 2, 0, w / 2, 0);
+    g.addColorStop(0, rgba(DANGER, 0));
+    g.addColorStop(0.5, rgba([255, 175, 205], 0.98));
+    g.addColorStop(1, rgba(DANGER, 0));
+    return g;
+  });
+  if (long) c.fillRect(-w / 2 + 2, -h / 2, w - 4, h);
+  else c.fillRect(-w / 2, -h / 2 + 2, w, h - 4);
+
+  // arcing edge — six segments of jitter, redrawn each frame but trivial
+  c.strokeStyle = rgba([255, 200, 220], 0.5 + pu * 0.35);
+  c.lineWidth = 1.1;
+  c.beginPath();
+  const span = long ? w : h;
+  const segs = 6;
+  for (let i = 0; i <= segs; i++) {
+    const p = -span / 2 + (span / segs) * i;
+    const j = Math.sin(G.t * 26 + i * 2.7 + e.seed) * (long ? h : w) * 0.3;
+    if (long) { if (i === 0) c.moveTo(p, j); else c.lineTo(p, j); }
+    else { if (i === 0) c.moveTo(j, p); else c.lineTo(j, p); }
+  }
+  c.stroke();
+  c.globalCompositeOperation = 'source-over';
+  c.restore();
+}
+
 function drawHazard(c, h) {
   const k = h.k;
   const w = h.w, ht = h.h;
+  const tuned = h.safe ? energy(h.safe) : null;
+  const HZ = tuned ? tuned.rgb : DANGER;
+  const HZ_HI = tuned ? tuned.hi : [255, 220, 235];
+  const live = !tuned || h.safe !== orb.color;   // is it dangerous right now?
   c.save();
   c.translate(h.x, h.y); c.rotate(h.a);
   const long = w >= ht;
@@ -1828,9 +2113,9 @@ function drawHazard(c, h) {
   c.globalAlpha = 0.6 + k * 0.4;
   c.fillStyle = grad(h.gfx, 'cap', () => {
     const cg = c.createRadialGradient(0, 0, 0, 0, 0, 13);
-    cg.addColorStop(0, rgba([255, 220, 235], 0.75));
-    cg.addColorStop(0.4, rgba(DANGER, 0.8));
-    cg.addColorStop(1, rgba(DANGER, 0));
+    cg.addColorStop(0, rgba(HZ_HI, 0.75));
+    cg.addColorStop(0.4, rgba(HZ, 0.8));
+    cg.addColorStop(1, rgba(HZ, 0));
     return cg;
   });
   for (const s of [-1, 1]) {
@@ -1848,14 +2133,14 @@ function drawHazard(c, h) {
     const ex = long ? s * w / 2 : 0;
     const ey = long ? 0 : s * ht / 2;
     c.beginPath(); c.arc(ex, ey, 6.5, 0, TAU); c.fill();
-    c.strokeStyle = rgba(DANGER, 0.85); c.lineWidth = 1.6; c.stroke();
+    c.strokeStyle = rgba(HZ, 0.85); c.lineWidth = 1.6; c.stroke();
   }
 
   // idle rail — the danger line stays readable even while the beam is down
   c.save();
   c.setLineDash([5, 7]);
   c.lineDashOffset = -G.t * 26;
-  c.strokeStyle = rgba(DANGER, 0.2 + k * 0.5);
+  c.strokeStyle = rgba(HZ, 0.2 + k * 0.5);
   c.lineWidth = 1.3;
   c.beginPath();
   if (long) { c.moveTo(-w / 2 + 7, 0); c.lineTo(w / 2 - 7, 0); }
@@ -1864,6 +2149,22 @@ function drawHazard(c, h) {
   c.restore();
 
   if (k <= 0.01) { c.restore(); return; }
+  if (!live) c.globalAlpha = 0.35;   // harmless to this signature: stand down
+
+  // A colour-tuned field still has to read as lethal while it is lethal: it
+  // wears danger ticks that vanish the moment the orb carries its colour.
+  if (tuned && live) {
+    c.globalCompositeOperation = 'lighter';
+    c.strokeStyle = rgba(DANGER, 0.55 + 0.3 * Math.sin(G.t * 6 + h.seed));
+    c.lineWidth = 2;
+    c.beginPath();
+    const sp = long ? w : ht;
+    for (let i = -sp / 2 + 8; i < sp / 2 - 4; i += 16) {
+      if (long) { c.moveTo(i, -ht / 2); c.lineTo(i + 6, -ht / 2 - 5); c.moveTo(i, ht / 2); c.lineTo(i + 6, ht / 2 + 5); }
+      else { c.moveTo(-w / 2, i); c.lineTo(-w / 2 - 5, i + 6); c.moveTo(w / 2, i); c.lineTo(w / 2 + 5, i + 6); }
+    }
+    c.stroke();
+  }
 
   c.globalCompositeOperation = 'lighter';
   const th = (long ? ht : w) * (0.35 + k * 0.65);
@@ -1878,9 +2179,9 @@ function drawHazard(c, h) {
     const bg = long
       ? c.createLinearGradient(0, -thMax * 2.2, 0, thMax * 2.2)
       : c.createLinearGradient(-thMax * 2.2, 0, thMax * 2.2, 0);
-    bg.addColorStop(0, rgba(DANGER, 0));
-    bg.addColorStop(0.5, rgba(DANGER, 0.34));
-    bg.addColorStop(1, rgba(DANGER, 0));
+    bg.addColorStop(0, rgba(HZ, 0));
+    bg.addColorStop(0.5, rgba(HZ, 0.34));
+    bg.addColorStop(1, rgba(HZ, 0));
     return bg;
   });
   if (long) c.fillRect(-w / 2, -thMax * 2.2, w, thMax * 4.4);
@@ -1889,17 +2190,17 @@ function drawHazard(c, h) {
   c.restore();
 
   // beam body
-  c.fillStyle = rgba([255, 110, 160], 0.5 * k);
+  c.fillStyle = rgba(HZ, 0.5 * k);
   c.fillRect(-bw / 2, -bh / 2, bw, bh);
   // hot core
   const core = Math.max(1.2, (long ? bh : bw) * 0.32);
-  c.fillStyle = rgba([255, 240, 245], 0.85 * k);
+  c.fillStyle = rgba(HZ_HI, 0.85 * k);
   if (long) c.fillRect(-w / 2, -core / 2, w, core);
   else c.fillRect(-core / 2, -ht / 2, core, ht);
 
   // crackle
   if (k > 0.6) {
-    c.strokeStyle = rgba([255, 200, 220], 0.5);
+    c.strokeStyle = rgba(HZ_HI, 0.5);
     c.lineWidth = 1;
     c.beginPath();
     const seg = 7;
@@ -2355,7 +2656,8 @@ function drawTrail(c, col) {
 }
 
 function drawOrb(c) {
-  if (!orb.alive || orb.scale <= 0.01) return;
+  const fading = !orb.alive && (orb.failKind === 'void' || orb.failKind === 'power');
+  if ((!orb.alive && !fading) || orb.scale <= 0.01) return;
   const col = orbColors();
   const sp = Math.hypot(orb.vx, orb.vy);
   const r = orb.r * orb.scale;
@@ -2696,7 +2998,9 @@ function render() {
   drawAmbient(c);
   drawDust(c);
 
+  for (let i = 0; i < world.voids.length; i++) drawVoid(c, world.voids[i]);
   for (let i = 0; i < world.paints.length; i++) drawPaintWall(c, world.paints[i]);
+  for (let i = 0; i < world.livewalls.length; i++) drawLiveWall(c, world.livewalls[i]);
   for (let i = 0; i < world.ice.length; i++) drawIce(c, world.ice[i]);
   for (let i = 0; i < world.crystals.length; i++) drawCrystal(c, world.crystals[i]);
   for (let i = 0; i < world.gates.length; i++) drawGate(c, world.gates[i]);
