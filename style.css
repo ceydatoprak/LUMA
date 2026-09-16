@@ -49,32 +49,17 @@ body{
   display:grid;
   place-items:center;
   background:
+    radial-gradient(60% 45% at 8% 12%, rgba(91,43,214,.42) 0%, transparent 70%),
+    radial-gradient(55% 40% at 96% 38%, rgba(15,106,209,.34) 0%, transparent 72%),
+    radial-gradient(70% 45% at 60% 104%, rgba(196,31,122,.20) 0%, transparent 70%),
     radial-gradient(120% 80% at 50% -10%, #1b1640 0%, transparent 60%),
-    radial-gradient(90% 60% at 10% 110%, #0d2242 0%, transparent 65%),
     linear-gradient(180deg,var(--bg-1) 0%, var(--bg-0) 100%);
   padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
-.ambient{position:absolute;inset:0;overflow:hidden;pointer-events:none;}
-.blob{
-  position:absolute;
-  border-radius:50%;
-  filter:blur(56px);
-  opacity:.34;
-  will-change:transform;
-}
-/* On a portrait phone the stage covers the whole viewport, so these huge
-   blurred layers would be composited every frame for nothing. */
-@media (max-aspect-ratio:1/1){
-  .ambient{display:none;}
-}
-.b1{width:46vmax;height:46vmax;left:-14vmax;top:-12vmax;background:#5b2bd6;animation:drift1 26s ease-in-out infinite;}
-.b2{width:38vmax;height:38vmax;right:-12vmax;top:18vmax;background:#0f6ad1;animation:drift2 31s ease-in-out infinite;}
-.b3{display:none;}
-
-@keyframes drift1{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(6vmax,4vmax,0) scale(1.12)}}
-@keyframes drift2{0%,100%{transform:translate3d(0,0,0) scale(1.05)}50%{transform:translate3d(-7vmax,6vmax,0) scale(.92)}}
-@keyframes drift3{0%,100%{transform:translate3d(0,0,0) scale(.95)}50%{transform:translate3d(5vmax,-6vmax,0) scale(1.1)}}
+/* The ambient wash (three 46vmax layers under filter:blur, animated forever)
+   is gone: each was a large GPU texture recomposited every frame the game
+   repainted. The same look is painted once into the #app gradients above. */
 
 /* ---------- Desktop-only side mark ---------- */
 
@@ -235,20 +220,39 @@ body{
 #shots.bump{animation:shotBump .34s cubic-bezier(.2,1.6,.4,1);}
 @keyframes shotBump{0%{transform:scale(1)}40%{transform:scale(1.22)}100%{transform:scale(1)}}
 
-#restartBtn{
-  width:clamp(26px,4.6vmin,38px);
-  height:clamp(26px,4.6vmin,38px);
+/* Touch targets: the visible dot stays small and neat, but the hit area is
+   never below ~44px thanks to the padded pseudo-element. */
+.hud-btn{
+  position:relative;
+  width:clamp(30px,5vmin,38px);
+  height:clamp(30px,5vmin,38px);
   display:grid;place-items:center;
   border-radius:50%;
-  border:1px solid rgba(46,230,255,.3);
+  border:1px solid rgba(46,230,255,.32);
   background:rgba(46,230,255,.1);
   color:var(--cyan);
   cursor:pointer;
-  transition:transform .25s cubic-bezier(.2,1.5,.4,1), background .25s, box-shadow .25s;
+  padding:0;
+  flex:none;
+  transition:transform .2s cubic-bezier(.2,1.5,.4,1), background .25s, box-shadow .25s;
 }
-#restartBtn svg{width:62%;height:62%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}
-#restartBtn:hover{background:rgba(46,230,255,.2);box-shadow:0 0 18px rgba(46,230,255,.45);}
+.hud-btn::after{
+  content:"";
+  position:absolute;
+  left:50%;top:50%;
+  width:44px;height:44px;
+  transform:translate(-50%,-50%);
+}
+.hud-btn svg{width:60%;height:60%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}
+.hud-btn:hover{background:rgba(46,230,255,.2);box-shadow:0 0 18px rgba(46,230,255,.4);}
+.hud-btn:active{transform:scale(.9);}
 #restartBtn:active{transform:scale(.88) rotate(-160deg);}
+#soundBtn{border-color:rgba(160,108,255,.34);background:rgba(160,108,255,.12);color:#c9a6ff;}
+#soundBtn:hover{background:rgba(160,108,255,.22);box-shadow:0 0 18px rgba(160,108,255,.4);}
+#soundBtn .ic-off{display:none;}
+#soundBtn.muted{color:rgba(226,232,255,.45);border-color:rgba(226,232,255,.2);background:rgba(226,232,255,.07);}
+#soundBtn.muted .ic-on{display:none;}
+#soundBtn.muted .ic-off{display:block;}
 
 /* ---------- Level banner ---------- */
 
@@ -264,11 +268,13 @@ body{
   pointer-events:none;
 }
 #banner.show{animation:bannerIn 2.35s cubic-bezier(.2,.8,.25,1) forwards;}
+/* opacity + transform only: animating filter:blur() here re-rasterised the
+   banner every frame, on top of a playfield that is already repainting. */
 @keyframes bannerIn{
-  0%{opacity:0;transform:translateY(16px) scale(.94);filter:blur(8px)}
-  16%{opacity:1;transform:none;filter:blur(0)}
-  72%{opacity:1;transform:none;filter:blur(0)}
-  100%{opacity:0;transform:translateY(-14px) scale(1.03);filter:blur(6px)}
+  0%{opacity:0;transform:translateY(18px) scale(.92)}
+  16%{opacity:1;transform:none}
+  72%{opacity:1;transform:none}
+  100%{opacity:0;transform:translateY(-16px) scale(1.04)}
 }
 .banner-num{
   font-size:clamp(34px,10vmin,76px);

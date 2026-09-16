@@ -37,9 +37,16 @@ const CFG = {
   restitution: 0.735,
   tangent: 0.965,
   grabRadius: 132,
+  paintSpeed: 1.6,     // min contact speed to take a wall colour
+  iceSpeed: 5.5,       // min contact speed to damage ice
+  paintCooldown: 0.12, // seconds between colour transfers
 };
 
 const FIELD = { x0: 15, y0: 93, x1: 525, y1: 941 };
+
+// backing-store budget in device pixels (see fit())
+const PIXEL_BUDGET = 1100000;
+const PIXEL_BUDGET_LOW = 700000;
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -363,6 +370,34 @@ const Sfx = (() => {
       air_noise({ dur: 0.1, peak: 0.06 * v, f0: 460, f1: 240, q: 1.4, cap: 2200 });
     },
 
+    /* ice: a dry, glassy tick — distinct from a wall bounce but never sharp */
+    iceCrack() {
+      const v = MIX.bounce * 2.2;
+      air_noise({ dur: 0.1, peak: 0.5 * v, f0: 2600, f1: 1100, q: 2.2, cap: 5200 });
+      tone({ type: 'triangle', f0: 620, f1: 430, dur: 0.1, glide: 0.07,
+             peak: 0.3 * v, attack: 0.004, lp: 3000 });
+    },
+    /* ice breaking: the tick opens into a soft glassy wash */
+    iceBreak() {
+      const v = MIX.shift;
+      air_noise({ dur: 0.42, peak: 0.24 * v, f0: 3200, f1: 700, q: 0.8, cap: 6000, send: 0.4 });
+      tone({ type: 'sine', f0: 880, f1: 494, dur: 0.34, glide: 0.2,
+             peak: 0.26 * v, attack: 0.006, lp: 4200, send: 0.3 });
+      tone({ type: 'triangle', f0: 1320, f1: 740, dur: 0.26, glide: 0.18,
+             peak: 0.12 * v, attack: 0.01, delay: 0.03, lp: 5000, send: 0.4 });
+      tone({ type: 'sine', f0: 160, f1: 96, dur: 0.24, glide: 0.16,
+             peak: 0.2 * v, attack: 0.006, lp: 900 });
+    },
+    /* crystal yielding to its own colour: a bright, short bell burst */
+    crystal() {
+      const v = MIX.shift;
+      [659.3, 987.8, 1318.5].forEach((f, i) => {
+        tone({ type: 'sine', f0: f, f1: f * 1.02, dur: 0.6 - i * 0.1,
+               peak: (0.2 - i * 0.05) * v, attack: 0.006 + i * 0.004,
+               delay: i * 0.022, lp: 5200, send: 0.45 });
+      });
+      air_noise({ dur: 0.36, peak: 0.16 * v, f0: 2400, f1: 900, q: 1.1, cap: 6000, send: 0.4 });
+    },
     ui() {
       tone({ type: 'sine', f0: 660, f1: 520, dur: 0.075, glide: 0.06,
              peak: 0.34 * MIX.ui, attack: 0.006, lp: 2600, send: 0.16 });
@@ -391,7 +426,7 @@ const Sfx = (() => {
    3. PARTICLES & SHOCKWAVES  (fixed pools, zero allocation)
    ============================================================ */
 
-const PMAX = 96;            // hard cap on simultaneous particles
+const PMAX = 64;            // hard cap on simultaneous particles
 const parts = new Array(PMAX);
 for (let i = 0; i < PMAX; i++) {
   parts[i] = { on: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 2,
@@ -406,7 +441,7 @@ function newPart() {
   const p = parts[pCursor]; pCursor = (pCursor + 1) % PMAX; return p;
 }
 
-const RMAX = 12;
+const RMAX = 10;
 const rings = new Array(RMAX);
 for (let i = 0; i < RMAX; i++) rings[i] = { on: false, x: 0, y: 0, r0: 0, r1: 0, life: 0, max: 1, col: NEUTRAL.rgb, w: 3 };
 let rCursor = 0;
@@ -499,165 +534,227 @@ function updateDust() {
 }
 
 /* ============================================================
-   4. LEVEL DATA  (pure data — entities are generic & reusable)
+   4. LEVEL DATA
    ============================================================
-   wall   : {x,y,w,h,a?}            solid, optional rotation (deg)
-   bumper : {x,y,r,power}           radial launcher
-   node   : {x,y,r,power?,color}    launcher that repaints the orb's energy
-   hazard : {x,y,w,h,a?,pulse?}     destroys the orb while active
-   gate   : {x,y,w,h,a?,color}      rewrites the orb's energy colour
-   portal : {x,y,r?,color?}         exit; color null = accepts any
-   motion : {type:'osc',dx,dy,period,phase} | {type:'spin',speed}
-            may be attached to any wall / bumper / hazard
+   Everything is data. Adding an entity type means adding a kind
+   to ENTITY_KINDS and a draw function — never a new level branch.
+
+   wall    : {x,y,w,h,a?,color?}   solid. A colour repaints the orb on contact.
+   ice     : {x,y,w,h,a?}          solid; two solid hits to shatter.
+   crystal : {x,y,r,color}         solid; shatters only for its own colour.
+   gate    : {x,y,w,h,a?,color}    solid unless the orb already carries its colour.
+   bumper  : {x,y,r,power}         radial launcher.
+   hazard  : {x,y,w,h,a?,pulse?}   destroys the orb while lit.
+   portal  : {x,y,r?,color?}       exit; color null accepts any signature.
+   motion  : {type:'osc',dx,dy,period,phase} | {type:'spin',speed}
+             may be attached to any entity.
+
+   Design rule used throughout: neutral geometry is for navigating,
+   coloured surfaces are for changing state. That keeps every puzzle
+   readable — "which colour do I touch last before the exit?"
    ============================================================ */
 
 const LEVELS = [
   {
-    name: 'INFLUX',
-    tip: 'Drag  ·  Aim  ·  Release',
+    /* 1 — teach: launch, wall colour, matching exit. */
+    name: 'SPECTRUM',
+    tip: 'Hit a wall. Take its colour.',
     bg: ['#191c44', '#07091b'], accent: [140, 130, 255],
-    start: { x: 120, y: 850 }, color: 'violet',
-    portal: { x: 430, y: 205 },
+    start: { x: 110, y: 850 }, color: 'violet',
+    portal: { x: 430, y: 230, color: 'cyan' },
     walls: [
-      { x: 320, y: 902, w: 340, h: 20, a: -13 },
-      { x: 140, y: 520, w: 210, h: 22 },
-      { x: 58,  y: 660, w: 20,  h: 200 },
-      { x: 230, y: 330, w: 200, h: 18 },
-      { x: 474, y: 690, w: 20,  h: 180, a: 18 },
-      { x: 470, y: 380, w: 90,  h: 18, a: -34 },
+      { x: 508, y: 585, w: 20, h: 570, color: 'cyan' },   // unmissable cyan face
+      { x: 32,  y: 812, w: 20, h: 170, color: 'magenta' },// small decoy
+      { x: 300, y: 400, w: 180, h: 20 },
+      { x: 150, y: 560, w: 220, h: 20 },
+      { x: 60,  y: 700, w: 20,  h: 150 },
+      { x: 250, y: 900, w: 180, h: 18, a: -14 },
+      { x: 180, y: 250, w: 170, h: 18, a: 16 },
     ],
   },
   {
-    name: 'REBOUND',
-    tip: 'Walls are on your side — bank the shot',
+    /* 2 — teach: not every colour is the right one. */
+    name: 'CROSSROADS',
+    tip: 'Only one colour opens the way.',
     bg: ['#15204a', '#06091c'], accent: [90, 170, 255],
+    start: { x: 270, y: 862 }, color: 'violet',
+    portal: { x: 270, y: 200, color: 'orange' },
+    walls: [
+      { x: 92,  y: 700, w: 180, h: 20, a: -35, color: 'magenta' },  // left route
+      { x: 448, y: 700, w: 180, h: 20, a: 35, color: 'orange' },    // right route
+      { x: 110, y: 470, w: 190, h: 22 },
+      { x: 430, y: 470, w: 190, h: 22 },
+      { x: 270, y: 908, w: 190, h: 18 },                  // the orb rests over this
+      { x: 128, y: 292, w: 170, h: 18, a: 20 },           // funnel into the exit
+      { x: 412, y: 292, w: 170, h: 18, a: -20 },
+      { x: 60,  y: 420, w: 20,  h: 130 },
+      { x: 480, y: 420, w: 20,  h: 130 },
+    ],
+  },
+  {
+    /* 3 — teach: ice takes two solid hits. No colour in play. */
+    name: 'GLACIER',
+    tip: 'Ice takes two solid hits.',
+    bg: ['#102a44', '#050f20'], accent: [70, 190, 255],
+    start: { x: 270, y: 862 }, color: 'violet',
+    portal: { x: 270, y: 195 },
+    walls: [
+      { x: 115, y: 520, w: 200, h: 22 },
+      { x: 425, y: 520, w: 200, h: 22 },
+      { x: 120, y: 740, w: 160, h: 18, a: 20 },           // funnels the shot upward
+      { x: 420, y: 740, w: 160, h: 18, a: -20 },
+      { x: 110, y: 330, w: 170, h: 18 },
+      { x: 430, y: 330, w: 170, h: 18 },
+      { x: 60,  y: 640, w: 20,  h: 130 },
+      { x: 480, y: 640, w: 20,  h: 130 },
+    ],
+    ice: [{ x: 270, y: 520, w: 110, h: 46 }],
+  },
+  {
+    /* 4 — combine: break through, then collect the colour behind it. */
+    name: 'DEEP FREEZE',
+    tip: 'Break through, then take the colour.',
+    bg: ['#14294a', '#060d1e'], accent: [90, 200, 235],
     start: { x: 110, y: 862 }, color: 'violet',
-    portal: { x: 110, y: 235 },
+    portal: { x: 420, y: 225, color: 'lime' },
     walls: [
-      { x: 186, y: 606, w: 344, h: 22 },          // lower divider — gap on the right
-      { x: 455, y: 470, w: 170, h: 18, a: -45 },  // deflector: kicks the climb up-left
-      { x: 400, y: 330, w: 250, h: 20 },          // upper shelf — gap on the left
-      { x: 250, y: 215, w: 120, h: 18 },          // roof of the exit pocket
-      { x: 350, y: 782, w: 240, h: 18, a: -20 },
-      { x: 60,  y: 470, w: 20,  h: 120 },
+      { x: 105, y: 560, w: 180, h: 22 },
+      { x: 415, y: 560, w: 220, h: 22 },
+      { x: 508, y: 380, w: 20, h: 260, color: 'lime' },   // the only lime, past the ice
+      { x: 140, y: 330, w: 200, h: 20 },
+      { x: 320, y: 445, w: 150, h: 18, a: -28 },
+      { x: 60,  y: 730, w: 20,  h: 160 },
+      { x: 400, y: 840, w: 190, h: 18, a: 14 },
+      { x: 120, y: 200, w: 160, h: 18 },
     ],
+    ice: [{ x: 250, y: 560, w: 110, h: 46 }],
   },
   {
-    name: 'KINETIC',
-    tip: 'Bumpers turn contact into velocity',
+    /* 5 — teach: a gate only opens for its own colour. */
+    name: 'LOCKDOWN',
+    tip: 'Gates open only for their own colour.',
+    bg: ['#0f2540', '#050e1e'], accent: [60, 210, 255],
+    start: { x: 270, y: 864 }, color: 'violet',
+    portal: { x: 270, y: 205, color: 'cyan' },
+    walls: [
+      { x: 115, y: 470, w: 200, h: 22 },
+      { x: 425, y: 470, w: 200, h: 22 },
+      { x: 508, y: 680, w: 20, h: 300, color: 'cyan' },
+      { x: 32,  y: 680, w: 20, h: 300, color: 'magenta' },// wrong key
+      { x: 160, y: 800, w: 180, h: 18, a: -16 },
+      { x: 380, y: 800, w: 180, h: 18, a: 16 },
+      { x: 138, y: 310, w: 170, h: 18, a: 22 },
+      { x: 402, y: 310, w: 170, h: 18, a: -22 },
+      { x: 80,  y: 620, w: 20,  h: 120 },
+      { x: 460, y: 620, w: 20,  h: 120 },
+    ],
+    gates: [{ x: 270, y: 470, w: 110, h: 22, color: 'cyan' }],
+  },
+  {
+    /* 6 — combine: the bumper supplies the speed, you pick the colour. */
+    name: 'KINETIC BLOOM',
+    tip: 'Let the bumper do the work.',
     bg: ['#1f1748', '#08091f'], accent: [170, 120, 255],
-    start: { x: 270, y: 868 }, color: 'violet',
-    portal: { x: 430, y: 205 },
-    walls: [
-      { x: 107, y: 470, w: 186, h: 22 },
-      { x: 433, y: 470, w: 186, h: 22 },
-      { x: 200, y: 300, w: 170, h: 18 },
-      { x: 72,  y: 700, w: 20,  h: 180 },
-      { x: 468, y: 700, w: 20,  h: 180 },
-      { x: 270, y: 180, w: 150, h: 18 },
-    ],
-    bumpers: [{ x: 270, y: 645, r: 38, power: 15 }],
-    nodes: [{ x: 76, y: 268, r: 23, color: 'cyan' }],
-  },
-  {
-    name: 'VOLT',
-    tip: 'The beams pulse — time your run',
-    bg: ['#2a1238', '#0c0718'], accent: [255, 90, 150],
-    start: { x: 108, y: 872 }, color: 'violet',
-    portal: { x: 270, y: 192 },
-    walls: [
-      { x: 130, y: 700, w: 232, h: 22 },
-      { x: 410, y: 462, w: 232, h: 22 },
-      { x: 92,  y: 300, w: 20,  h: 200 },
-      { x: 448, y: 300, w: 20,  h: 200 },
-      { x: 270, y: 596, w: 120, h: 16, a: 30 },
-      { x: 392, y: 836, w: 190, h: 16, a: -24 },
-    ],
-    nodes: [{ x: 474, y: 566, r: 23, power: 9, color: 'magenta' }],
-    hazards: [
-      { x: 386, y: 700, w: 280, h: 14, pulse: { period: 2.6, duty: 0.34, phase: 0 } },
-      { x: 154, y: 462, w: 280, h: 14, pulse: { period: 3.3, duty: 0.34, phase: 0.45 } },
-    ],
-  },
-  {
-    name: 'SPECTRA',
-    tip: 'Gates rewrite your energy signature',
-    bg: ['#102544', '#050f20'], accent: [60, 210, 255],
-    start: { x: 112, y: 858 }, color: 'violet',
-    portal: { x: 430, y: 215, color: 'cyan' },
-    walls: [
-      { x: 120, y: 660, w: 212, h: 22 },
-      { x: 420, y: 660, w: 212, h: 22 },
-      { x: 300, y: 420, w: 250, h: 20 },
-      { x: 66,  y: 280, w: 20,  h: 180 },
-      { x: 250, y: 800, w: 200, h: 18, a: 16 },
-      { x: 430, y: 300, w: 120, h: 18 },
-    ],
-    gates: [{ x: 270, y: 660, w: 88, h: 18, color: 'cyan' }],
-  },
-  {
-    name: 'PRISM',
-    tip: 'Only the final gate decides your colour',
-    bg: ['#241540', '#0a0819'], accent: [190, 120, 255],
     start: { x: 270, y: 872 }, color: 'violet',
-    portal: { x: 270, y: 196, color: 'cyan' },
+    portal: { x: 430, y: 215, color: 'magenta' },
     walls: [
-      { x: 80,  y: 660, w: 132, h: 22 },
-      { x: 270, y: 660, w: 120, h: 22 },
-      { x: 460, y: 660, w: 132, h: 22 },
-      { x: 80,  y: 400, w: 132, h: 22 },
-      { x: 270, y: 400, w: 120, h: 22 },
-      { x: 460, y: 400, w: 132, h: 22 },
-      { x: 150, y: 530, w: 110, h: 16, a: -22 },
-      { x: 390, y: 530, w: 110, h: 16, a: 22 },
+      { x: 110, y: 470, w: 190, h: 22 },
+      { x: 430, y: 470, w: 190, h: 22 },
+      { x: 508, y: 420, w: 20, h: 300, color: 'magenta' },
+      { x: 180, y: 300, w: 200, h: 18 },
+      { x: 70,  y: 700, w: 20,  h: 170 },
+      { x: 470, y: 700, w: 20,  h: 170 },
+      { x: 118, y: 874, w: 160, h: 18, a: 16 },
+      { x: 422, y: 874, w: 160, h: 18, a: -16 },
+      { x: 120, y: 180, w: 150, h: 18 },
     ],
-    gates: [
-      { x: 178, y: 660, w: 64, h: 18, color: 'cyan' },
-      { x: 362, y: 660, w: 64, h: 18, color: 'orange' },
-      { x: 178, y: 400, w: 64, h: 18, color: 'orange' },
-      { x: 362, y: 400, w: 64, h: 18, color: 'cyan' },
-    ],
+    bumpers: [{ x: 270, y: 640, r: 36, power: 15 }],
   },
   {
-    name: 'KINEMA',
-    tip: 'Moving parts — wait for the window',
+    /* 7 — teach: one slow moving part. The gap always exists, it just moves. */
+    name: 'PISTON',
+    tip: 'Slow and steady. Watch the gap.',
     bg: ['#132b44', '#05101f'], accent: [80, 200, 255],
-    start: { x: 100, y: 872 }, color: 'violet',
-    portal: { x: 442, y: 200 },
+    start: { x: 110, y: 866 }, color: 'violet',
+    portal: { x: 430, y: 215, color: 'orange' },
     walls: [
-      { x: 82,  y: 540, w: 136, h: 22 },
-      { x: 458, y: 540, w: 136, h: 22 },
-      { x: 270, y: 430, w: 300, h: 18, motion: { type: 'spin', speed: 0.8 } },
-      { x: 270, y: 842, w: 170, h: 18, motion: { type: 'osc', dx: 118, dy: 0, period: 4.4, phase: 0.25 } },
-      { x: 270, y: 196, w: 150, h: 18 },
-      { x: 60,  y: 300, w: 20,  h: 150 },
-    ],
-    nodes: [
-      { x: 270, y: 700, r: 34, power: 15, color: 'magenta',
-        motion: { type: 'osc', dx: 150, dy: 0, period: 3.4, phase: 0 } },
+      { x: 100, y: 520, w: 170, h: 22 },
+      { x: 440, y: 520, w: 170, h: 22 },
+      { x: 270, y: 520, w: 150, h: 22, motion: { type: 'osc', dx: 95, dy: 0, period: 5.2, phase: 0 } },
+      { x: 508, y: 700, w: 20, h: 260, color: 'orange' },
+      { x: 200, y: 330, w: 200, h: 18, a: 18 },
+      { x: 70,  y: 330, w: 20,  h: 170 },
+      { x: 150, y: 790, w: 180, h: 18, a: -18 },
+      { x: 430, y: 860, w: 160, h: 18 },
+      { x: 252, y: 168, w: 200, h: 18 },
     ],
   },
   {
-    name: 'SINGULARITY',
-    tip: 'Everything you have learned, at once',
-    bg: ['#2b1034', '#090616'], accent: [255, 110, 190],
-    start: { x: 82, y: 878 }, color: 'violet',
-    portal: { x: 455, y: 196, color: 'cyan' },
+    /* 8 — teach: a crystal only yields to its own colour. */
+    name: 'PRISM CORE',
+    tip: 'Only its own colour breaks it.',
+    bg: ['#241540', '#0a0819'], accent: [190, 120, 255],
+    start: { x: 270, y: 868 }, color: 'violet',
+    portal: { x: 270, y: 200, color: 'lime' },
     walls: [
-      { x: 150, y: 660, w: 272, h: 22 },
-      { x: 470, y: 660, w: 112, h: 22 },
-      { x: 270, y: 430, w: 300, h: 22 },
-      { x: 430, y: 320, w: 150, h: 16, motion: { type: 'spin', speed: 0.75 } },
-      { x: 330, y: 268, w: 180, h: 18, a: 18 },
-      { x: 52,  y: 320, w: 20,  h: 120 },
-      { x: 205, y: 786, w: 190, h: 18, a: -26 },
+      { x: 108, y: 500, w: 186, h: 22 },
+      { x: 432, y: 500, w: 186, h: 22 },
+      { x: 508, y: 700, w: 20, h: 260, color: 'lime' },
+      { x: 32,  y: 700, w: 20, h: 260, color: 'magenta' },
+      { x: 150, y: 810, w: 190, h: 18, a: -18 },
+      { x: 390, y: 810, w: 190, h: 18, a: 18 },
+      { x: 110, y: 330, w: 170, h: 18 },
+      { x: 430, y: 330, w: 170, h: 18 },
+      { x: 270, y: 640, w: 22, h: 110 },
     ],
-    nodes: [{ x: 320, y: 830, r: 32, power: 14.5, color: 'orange' }],
-    hazards: [
-      { x: 150, y: 560, w: 268, h: 14, pulse: { period: 2.9, duty: 0.4, phase: 0.15 } },
-      { x: 92,  y: 250, w: 14,  h: 150 },
+    crystals: [{ x: 270, y: 500, r: 40, color: 'lime' }],
+  },
+  {
+    /* 9 — order puzzle: the cyan source sits behind the ice, the gate needs cyan. */
+    name: 'CASCADE',
+    tip: 'Order matters.',
+    bg: ['#102542', '#050f1f'], accent: [70, 195, 255],
+    start: { x: 110, y: 872 }, color: 'violet',
+    portal: { x: 430, y: 220, color: 'cyan' },
+    walls: [
+      { x: 105, y: 620, w: 180, h: 22 },
+      { x: 415, y: 620, w: 220, h: 22 },
+      { x: 115, y: 300, w: 200, h: 22 },
+      { x: 425, y: 300, w: 200, h: 22 },
+      { x: 32,  y: 462, w: 20, h: 290, color: 'cyan' },   // only cyan, mid chamber
+      { x: 200, y: 210, w: 200, h: 18 },
+      { x: 430, y: 420, w: 140, h: 18, a: -22 },
+      { x: 158, y: 782, w: 170, h: 18, a: -16 },
+      { x: 480, y: 780, w: 20,  h: 140 },
     ],
-    gates: [{ x: 350, y: 660, w: 128, h: 18, color: 'cyan' }],
+    ice: [{ x: 250, y: 620, w: 110, h: 46 }],
+    gates: [{ x: 270, y: 300, w: 110, h: 22, color: 'cyan' }],
+    bumpers: [{ x: 320, y: 790, r: 32, power: 14 }],
+  },
+  {
+    /* 10 — the finale. The gate wants cyan; the exit wants orange; the only
+       orange is on the far side of the gate. That is the whole puzzle. */
+    name: 'SINGULARITY',
+    tip: 'Everything you have learned, at once.',
+    bg: ['#2b1034', '#090616'], accent: [255, 110, 190],
+    start: { x: 100, y: 872 }, color: 'violet',
+    portal: { x: 445, y: 205, color: 'orange' },
+    walls: [
+      { x: 105, y: 640, w: 180, h: 22 },
+      { x: 415, y: 640, w: 220, h: 22 },
+      { x: 115, y: 330, w: 200, h: 22 },
+      { x: 425, y: 330, w: 200, h: 22 },
+      { x: 32,  y: 790, w: 20, h: 200, color: 'cyan' },   // key for the gate
+      { x: 508, y: 200, w: 20, h: 180, color: 'orange' }, // key for the exit, past it
+      { x: 270, y: 480, w: 170, h: 20, motion: { type: 'osc', dx: 110, dy: 0, period: 5.6, phase: 0.2 } },
+      { x: 170, y: 215, w: 200, h: 18 },
+      { x: 412, y: 292, w: 130, h: 18, a: -20 },
+      { x: 466, y: 470, w: 20,  h: 150 },
+      { x: 214, y: 782, w: 170, h: 18, a: -16 },
+    ],
+    ice: [{ x: 250, y: 640, w: 110, h: 46 }],
+    gates: [{ x: 270, y: 330, w: 110, h: 22, color: 'cyan' }],
+    bumpers: [{ x: 330, y: 800, r: 34, power: 14.5 }],
   },
 ];
 
@@ -673,16 +770,34 @@ const BORDER = [
    ============================================================ */
 
 const world = {
-  solids: [],    // every collidable rect (static + moving)
-  statics: [],   // bakeable subset
-  movers: [],    // entities with motion (drawn live)
+  solids: [],    // every collidable rect: walls, ice, crystals, closed gates
+  statics: [],   // bakeable subset (plain neutral walls only)
+  paints: [],    // coloured walls — drawn live so their glow can breathe
+  movers: [],    // entities with motion
   bumpers: [],
-  nodes: [],
+  ice: [],
+  crystals: [],
   hazards: [],
   gates: [],
   portal: null,
+  dirty: false,
   bg: ['#191c44', '#07091b'],
   accent: [140, 130, 255],
+};
+
+/* One table describes how each entity kind is built and stored. Adding a new
+   type (boost pad, teleport pair, slow field, door…) means one entry here plus
+   a draw function — the level data and the collision loop need no changes. */
+const ENTITY_KINDS = {
+  wall:    { list: 'solids', init: (e) => { e.solid = true; } },
+  ice:     { list: 'solids', also: 'ice',      init: (e) => { e.solid = true; e.hp = 2; e.crack = 0; e.shake = 0; } },
+  crystal: { list: 'solids', also: 'crystals', init: (e) => { e.solid = true; e.round = true; e.reject = 0; e.pulse = 0; } },
+  gate:    { list: 'solids', also: 'gates',    init: (e) => { e.solid = true; e.reject = 0; e.flash = 0; } },
+  bumper:  { list: 'bumpers', init: (e) => { e.hit = 0; } },
+  hazard:  { list: 'hazards', init: (e) => { e.k = 1; } },
+  portal:  { list: null, init: (e) => { e.open = 0; e.reject = 0; } },
+  // room to grow: boost pads, slow fields, teleport pairs, doors and switches
+  // all fit this shape — a list to live in, an init, and a draw function.
 };
 
 function prepEntity(e, kind) {
@@ -691,56 +806,45 @@ function prepEntity(e, kind) {
   e.bx = e.x; e.by = e.y; e.ba = e.a;
   e.px = e.x; e.py = e.y;
   e.vx = 0; e.vy = 0; e.av = 0;
+  e.dead = false;
   e.seed = Math.random() * 100;
   e.gfx = {};                 // per-entity gradient cache (built on first draw)
   // collision constants, resolved once at load: orientation and the radius of
   // the bounding circle used for the broad-phase reject
   e.ca = Math.cos(e.a); e.sa = Math.sin(e.a);
   e.br = e.w !== undefined ? Math.hypot(e.w, e.h) / 2 : (e.r || 0);
-  if (e.motion && e.motion.type === 'spin') e.motion.speed = e.motion.speed;
+  const spec = ENTITY_KINDS[kind];
+  if (spec && spec.init) spec.init(e);
+  return e;
+}
+
+function addEntity(e, kind) {
+  prepEntity(e, kind);
+  const spec = ENTITY_KINDS[kind];
+  if (spec.list) world[spec.list].push(e);
+  if (spec.also) world[spec.also].push(e);
+  if (e.motion) world.movers.push(e);
+  // only plain, still, uncoloured walls can be baked into the background
+  else if (kind === 'wall' && !e.color) world.statics.push(e);
+  else if (kind === 'wall') world.paints.push(e);
   return e;
 }
 
 function buildWorld(src) {
   const L = clone(src);
-  world.solids.length = 0; world.statics.length = 0; world.movers.length = 0;
-  world.bumpers.length = 0; world.nodes.length = 0;
-  world.hazards.length = 0; world.gates.length = 0;
+  world.solids.length = 0; world.statics.length = 0; world.paints.length = 0;
+  world.movers.length = 0; world.bumpers.length = 0; world.ice.length = 0;
+  world.crystals.length = 0; world.hazards.length = 0; world.gates.length = 0;
   world.bg = L.bg; world.accent = L.accent;
 
-  const walls = (L.walls || []).concat(clone(BORDER));
-  for (const w of walls) {
-    prepEntity(w, 'wall');
-    world.solids.push(w);
-    if (w.motion) world.movers.push(w); else world.statics.push(w);
-  }
-  for (const b of (L.bumpers || [])) {
-    prepEntity(b, 'bumper'); b.hit = 0;
-    world.bumpers.push(b);
-    if (b.motion) world.movers.push(b);
-  }
-  // energy nodes are bumpers that also rewrite the orb's colour, so they share
-  // the bumper collision list and only differ in response strength and paint
-  for (const n of (L.nodes || [])) {
-    prepEntity(n, 'node'); n.hit = 0;
-    if (n.power === undefined) n.power = 11.5;
-    world.bumpers.push(n);
-    world.nodes.push(n);
-    if (n.motion) world.movers.push(n);
-  }
-  for (const h of (L.hazards || [])) {
-    prepEntity(h, 'hazard'); h.k = 1;
-    world.hazards.push(h);
-    if (h.motion) world.movers.push(h);
-  }
-  for (const g of (L.gates || [])) {
-    prepEntity(g, 'gate'); g.flash = 0;
-    world.gates.push(g);
-    if (g.motion) world.movers.push(g);
-  }
-  const p = prepEntity(Object.assign({ r: 34, color: null }, L.portal), 'portal');
-  p.open = 0; p.reject = 0;
-  world.portal = p;
+  for (const w of (L.walls || []).concat(clone(BORDER))) addEntity(w, 'wall');
+  for (const i of (L.ice || [])) addEntity(i, 'ice');
+  for (const c of (L.crystals || [])) addEntity(c, 'crystal');
+  for (const g of (L.gates || [])) addEntity(g, 'gate');
+  for (const b of (L.bumpers || [])) addEntity(b, 'bumper');
+  for (const h of (L.hazards || [])) addEntity(h, 'hazard');
+
+  world.portal = prepEntity(Object.assign({ r: 34, color: null }, L.portal), 'portal');
   return L;
 }
 
@@ -811,13 +915,49 @@ function circleVsBox(px, py, r, e) {
   return { nx: nx * cb - ny * sb, ny: nx * sb + ny * cb, pen };
 }
 
+function overlapsRound(px, py, r, e) {
+  const dx = px - e.x, dy = py - e.y, rr = r + e.r;
+  return dx * dx + dy * dy <= rr * rr;
+}
+
 function overlapsBox(px, py, r, e) {
   return circleVsBox(px, py, r, e) !== null;
 }
 
 const RES = { impact: 0, wall: false, bumper: null, nx: 0, ny: 0, hx: 0, hy: 0 };
 
-function resolveBox(s, e) {
+/* Contacts made during one step, so every entity that was actually touched can
+   react (repaint, crack, shatter, reject) instead of only the hardest one.
+   Fixed-size and reused — no allocation in the physics loop. */
+const HITS = {
+  n: 0,
+  e: new Array(8),
+  imp: new Float64Array(8),
+  x: new Float64Array(8),
+  y: new Float64Array(8),
+  add(e, imp, x, y) {
+    for (let i = 0; i < this.n; i++) {
+      if (this.e[i] === e) {                 // keep the hardest contact per entity
+        if (imp > this.imp[i]) { this.imp[i] = imp; this.x[i] = x; this.y[i] = y; }
+        return;
+      }
+    }
+    if (this.n >= 8) return;
+    const i = this.n++;
+    this.e[i] = e; this.imp[i] = imp; this.x[i] = x; this.y[i] = y;
+  },
+};
+
+/* A gate is open only to its own signature; everything else it stops.
+   `pass` is the generic form, used by any future one-way / keyed geometry. */
+function isPassable(e, color) {
+  if (e.dead) return true;
+  if (e.kind === 'gate') return e.color === color;
+  if (e.pass !== undefined) return e.pass === color;
+  return false;
+}
+
+function resolveBox(s, e, record) {
   const hit = circleVsBox(s.x, s.y, s.r, e);
   if (!hit) return;
   s.x += hit.nx * hit.pen;
@@ -835,11 +975,39 @@ function resolveBox(s, e) {
     rvx = tvx * CFG.tangent - nvx * CFG.restitution;
     rvy = tvy * CFG.tangent - nvy * CFG.restitution;
     s.vx = rvx + ovx; s.vy = rvy + ovy;
+    const hx = s.x - hit.nx * s.r, hy = s.y - hit.ny * s.r;
     if (-vn > RES.impact) {
       RES.impact = -vn; RES.nx = hit.nx; RES.ny = hit.ny;
-      RES.hx = s.x - hit.nx * s.r; RES.hy = s.y - hit.ny * s.r;
+      RES.hx = hx; RES.hy = hy;
     }
     RES.wall = true;
+    if (record) HITS.add(e, -vn, hx, hy);
+  }
+}
+
+/* A round solid (crystal): same restitution response as a wall, circle maths.
+   Box entities carry w/h, round ones carry r — the solids loop dispatches on
+   `e.round` so both can share one list. */
+function resolveRound(s, e, record) {
+  const dx = s.x - e.x, dy = s.y - e.y;
+  const rr = s.r + e.r;
+  const d2 = dx * dx + dy * dy;
+  if (d2 > rr * rr) return;
+  const d = Math.sqrt(d2) || 0.0001;
+  const nx = dx / d, ny = dy / d;
+  s.x = e.x + nx * rr; s.y = e.y + ny * rr;
+  const vn = s.vx * nx + s.vy * ny;
+  if (vn < 0) {
+    const nvx = nx * vn, nvy = ny * vn;
+    const tvx = s.vx - nvx, tvy = s.vy - nvy;
+    s.vx = tvx * CFG.tangent - nvx * CFG.restitution;
+    s.vy = tvy * CFG.tangent - nvy * CFG.restitution;
+    const hx = e.x + nx * e.r, hy = e.y + ny * e.r;
+    if (-vn > RES.impact) {
+      RES.impact = -vn; RES.nx = nx; RES.ny = ny; RES.hx = hx; RES.hy = hy;
+    }
+    RES.wall = true;
+    if (record) HITS.add(e, -vn, hx, hy);
   }
 }
 
@@ -861,20 +1029,20 @@ function resolveBumper(s, b) {
   RES.nx = nx; RES.ny = ny;
 }
 
-function stepBody(s, useBumpers) {
+function stepBody(s, useBumpers, record) {
   RES.impact = 0; RES.wall = false; RES.bumper = null;
+  if (record) HITS.n = 0;
   const sp = Math.hypot(s.vx, s.vy);
   const n = Math.min(9, Math.max(1, Math.ceil(sp / (s.r * 0.5))));
+  const solids = world.solids;
   for (let i = 0; i < n; i++) {
     // velocity is re-read every substep: after a bounce the remainder of the
     // step continues along the new direction instead of ploughing on
     s.x += s.vx / n; s.y += s.vy / n;
-    for (let k = 0; k < world.solids.length; k++) {
-      const e = world.solids[k];
-      // extension point: a wall carrying `pass:'cyan'` is solid to every energy
-      // signature except that one. Unused by the current levels, one field away.
-      if (e.pass !== undefined && e.pass === orb.color) continue;
-      resolveBox(s, e);
+    for (let k = 0; k < solids.length; k++) {
+      const e = solids[k];
+      if (e.dead || isPassable(e, orb.color)) continue;
+      if (e.round) resolveRound(s, e, record); else resolveBox(s, e, record);
     }
     if (useBumpers) {
       for (let k = 0; k < world.bumpers.length; k++) resolveBumper(s, world.bumpers[k]);
@@ -962,6 +1130,8 @@ const orb = {
 const TRAIL_N = 18;
 for (let i = 0; i < TRAIL_N; i++) orb.trail.push({ x: 0, y: 0, v: 0 });
 
+let lastPaint = -9;          // clock of the last colour transfer
+
 const cam = { shake: 0, sx: 0, sy: 0, zoom: 1, zoomT: 1, flash: 0, flashCol: [255, 255, 255] };
 
 /* ---- DOM ---- */
@@ -983,6 +1153,7 @@ const dom = {
   endShots: document.getElementById('endShots'),
   endTime: document.getElementById('endTime'),
   fps: document.getElementById('fps'),
+  sound: document.getElementById('soundBtn'),
 };
 const ctx = dom.canvas.getContext('2d');
 
@@ -1008,6 +1179,7 @@ function setHint(text) {
 }
 
 function resetOrb() {
+  lastPaint = -9;
   const s = G.level.start;
   orb.x = s.x; orb.y = s.y; orb.vx = 0; orb.vy = 0;
   orb.color = G.level.color || 'violet';
@@ -1065,6 +1237,7 @@ function finishRun() {
 }
 
 function restartRun() {
+  doneFrames = 0;
   dom.endCard.classList.add('hidden');
   G.totalShots = 0; G.runTime = 0;
   startLevel(0);
@@ -1115,19 +1288,94 @@ function launch(ang, power) {
    follow automatically), scale pop, shockwave, a few matching sparks. */
 function shiftOrbColor(key, x, y) {
   if (!key || orb.color === key) return false;
+  if (G.t - lastPaint < CFG.paintCooldown) return false;   // never re-fire per frame
+  lastPaint = G.t;
   orb.prevColor = orb.color;
   orb.color = key;
   orb.colorMix = 0;
   orb.flash = 1;
   orb.pop = 1;
   const c = energy(key);
-  FX.spark(x, y, 0, Math.PI, 4.0, 6, c.rgb, { life: 0.42, size: 2.6, drag: 0.92 });
-  FX.spark(x, y, 0, Math.PI, 2.0, 3, c.hi, { life: 0.32, size: 2 });
-  FX.shock(x, y, 6, 70, 0.42, c.rgb, 3);
-  cam.flash = Math.max(cam.flash, 0.2); cam.flashCol = c.hi;
-  cam.shake = Math.max(cam.shake, 3);
+  FX.spark(x, y, 0, Math.PI, 3.6, 4, c.rgb, { life: 0.4, size: 2.6, drag: 0.92 });
+  FX.spark(x, y, 0, Math.PI, 1.8, 2, c.hi, { life: 0.3, size: 2 });
+  FX.shock(x, y, 6, 58, 0.38, c.rgb, 3);
+  cam.flash = Math.max(cam.flash, 0.16); cam.flashCol = c.hi;
+  cam.shake = Math.max(cam.shake, 2.5);
   Sfx.shift();
   return true;
+}
+
+/* Everything the orb touched this step gets its reaction here. Keeping it in
+   one place is what lets levels be pure data: a new entity kind adds a branch,
+   never a special case somewhere in the loop. */
+function resolveContacts() {
+  for (let i = 0; i < HITS.n; i++) {
+    const e = HITS.e[i];
+    if (e.dead) continue;
+    const imp = HITS.imp[i], hx = HITS.x[i], hy = HITS.y[i];
+
+    if (e.kind === 'wall') {
+      // colour transfer: only on a real contact with a *different* signature,
+      // so resting against a wall cannot re-fire the effect every frame
+      if (e.color && e.color !== orb.color && imp > CFG.paintSpeed) {
+        shiftOrbColor(e.color, hx, hy);
+        e.flash = 1;
+      }
+    } else if (e.kind === 'ice') {
+      if (imp >= CFG.iceSpeed) {
+        e.hp--;
+        e.shake = 1;
+        if (e.hp <= 0) {
+          e.dead = true;
+          world.dirty = true;
+          FX.spark(e.x, e.y, 0, Math.PI, 4.2, 11, ICE_RGB,
+                   { life: 0.55, size: 3.2, drag: 0.93, shape: 2 });
+          FX.shock(e.x, e.y, 8, 76, 0.45, ICE_HI, 3);
+          cam.shake = Math.max(cam.shake, 7);
+          cam.flash = Math.max(cam.flash, 0.18); cam.flashCol = ICE_HI;
+          Sfx.iceBreak();
+        } else {
+          e.crack = 1;
+          FX.spark(hx, hy, Math.atan2(hy - e.y, hx - e.x), 1.1, 2.6, 5, ICE_HI,
+                   { life: 0.4, size: 2.2, drag: 0.92, shape: 2 });
+          cam.shake = Math.max(cam.shake, 4);
+          Sfx.iceCrack();
+        }
+      }
+    } else if (e.kind === 'crystal') {
+      if (e.color === orb.color && imp > 2.4) {
+        e.dead = true;
+        world.dirty = true;
+        const c = energy(e.color);
+        FX.spark(e.x, e.y, 0, Math.PI, 4.6, 12, c.rgb,
+                 { life: 0.6, size: 3, drag: 0.93, shape: 2 });
+        FX.shock(e.x, e.y, 10, 90, 0.5, c.hi, 3);
+        cam.shake = Math.max(cam.shake, 8);
+        cam.flash = Math.max(cam.flash, 0.22); cam.flashCol = c.hi;
+        Sfx.crystal();
+      } else if (imp > 1.5 && e.reject <= 0) {
+        e.reject = 1;
+        Sfx.reject();
+        showToast('NEEDS ' + (e.color || '').toUpperCase());
+      }
+    } else if (e.kind === 'gate') {
+      if (imp > 1.5 && e.reject <= 0) {
+        e.reject = 1;
+        Sfx.reject();
+      }
+    }
+  }
+}
+
+/* Drop shattered geometry out of the collision list once per step. */
+function compactWorld() {
+  if (!world.dirty) return;
+  world.dirty = false;
+  for (const list of [world.solids, world.ice, world.crystals]) {
+    let w = 0;
+    for (let i = 0; i < list.length; i++) if (!list[i].dead) list[w++] = list[i];
+    list.length = w;
+  }
 }
 
 function killOrb() {
@@ -1135,8 +1383,8 @@ function killOrb() {
   orb.alive = false;
   G.phase = 'fail'; G.phaseT = 0;
   const c = energy(orb.color);
-  FX.spark(orb.x, orb.y, 0, Math.PI, 7, 12, DANGER, { life: 0.5, size: 3, drag: 0.94, shape: 1, len: 9 });
-  FX.spark(orb.x, orb.y, 0, Math.PI, 4, 5, c.rgb, { life: 0.42, size: 2.4, drag: 0.93 });
+  FX.spark(orb.x, orb.y, 0, Math.PI, 7, 9, DANGER, { life: 0.45, size: 3, drag: 0.94, shape: 1, len: 9 });
+  FX.spark(orb.x, orb.y, 0, Math.PI, 4, 4, c.rgb, { life: 0.4, size: 2.4, drag: 0.93 });
   FX.shock(orb.x, orb.y, 4, 90, 0.45, DANGER, 4);
   cam.shake = 14; cam.flash = 0.5; cam.flashCol = DANGER;
   Sfx.fail();
@@ -1147,7 +1395,7 @@ function winLevel() {
   G.phase = 'win'; G.phaseT = 0;
   const p = world.portal;
   const c = energy(p.color || orb.color);
-  FX.implode(p.x, p.y, 92, 14, c.hi, 0.5);
+  FX.implode(p.x, p.y, 92, 10, c.hi, 0.5);
   FX.shock(p.x, p.y, p.r, p.r + 120, 0.7, c.rgb, 4);
   cam.zoomT = 1.045; cam.flash = 0.34; cam.flashCol = c.hi;
   orb.vx *= 0.2; orb.vy *= 0.2;
@@ -1170,12 +1418,6 @@ function checkTriggers(px, py) {
       const h = world.hazards[k];
       if (h.k > 0.35 && overlapsBox(sx, sy, orb.r * 0.8, h)) {
         orb.x = sx; orb.y = sy; killOrb(); return;
-      }
-    }
-    for (let k = 0; k < world.gates.length; k++) {
-      const g = world.gates[k];
-      if (g.color !== orb.color && overlapsBox(sx, sy, orb.r * 0.7, g)) {
-        if (shiftOrbColor(g.color, sx, sy)) g.flash = 1;
       }
     }
     const pd = Math.hypot(sx - p.x, sy - p.y);
@@ -1207,7 +1449,10 @@ function simStep() {
   updateMotion(G.t);
   for (const h of world.hazards) h.k = hazardLevel(h, G.t);
   for (const b of world.bumpers) if (b.hit > 0) b.hit = Math.max(0, b.hit - STEP * 3.2);
-  for (const g of world.gates) if (g.flash > 0) g.flash = Math.max(0, g.flash - STEP * 2.4);
+  for (const i of world.ice) if (i.shake > 0) i.shake = Math.max(0, i.shake - STEP * 4);
+  for (const cr of world.crystals) { if (cr.reject > 0) cr.reject = Math.max(0, cr.reject - STEP * 1.6); cr.pulse += STEP; }
+  for (const w of world.paints) if (w.flash > 0) w.flash = Math.max(0, w.flash - STEP * 2.6);
+  for (const g of world.gates) { if (g.flash > 0) g.flash = Math.max(0, g.flash - STEP * 2.4); if (g.reject > 0) g.reject = Math.max(0, g.reject - STEP * 1.8); }
   const p = world.portal;
   if (p.reject > 0) p.reject = Math.max(0, p.reject - STEP * 1.6);
 
@@ -1221,7 +1466,7 @@ function simStep() {
   cam.sy = rand(-1, 1) * cam.shake;
   cam.zoom += (cam.zoomT - cam.zoom) * 0.09;
   cam.zoomT += (1 - cam.zoomT) * 0.05;
-  cam.flash *= 0.88;
+  cam.flash *= 0.8;
   if (G.fadeIn > 0) G.fadeIn = Math.max(0, G.fadeIn - STEP);
 
   if (G.deny > 0) G.deny = Math.max(0, G.deny - STEP * 2.4);
@@ -1234,34 +1479,31 @@ function simStep() {
   if (G.phase === 'play' && orb.alive) {
     const px = orb.x, py = orb.y;
     if (!G.aiming) {
-      const r = stepBody(orb, true);
+      const r = stepBody(orb, true, true);
       applyDamping(orb);
       if (r.bumper) {
         const b = r.bumper; b.hit = 1;
-        const isNode = b.kind === 'node';
-        const bc = isNode ? energy(b.color) : { rgb: [120, 210, 255], hi: [200, 240, 255] };
-        FX.shock(b.x, b.y, b.r * 0.7, b.r + 70, 0.5, bc.rgb, 4);
-        FX.shock(b.x, b.y, b.r * 0.5, b.r + 38, 0.3, bc.hi, 2);
-        FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 5, isNode ? 6 : 10, bc.hi,
-                 { life: 0.45, size: 2.6, shape: 1, len: 10 });
+        FX.shock(b.x, b.y, b.r * 0.7, b.r + 70, 0.5, BUMPER_RGB, 4);
+        FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 5, 8, [200, 240, 255],
+                 { life: 0.4, size: 2.6, shape: 1, len: 10 });
         orb.squash = 0.7; orb.squashAng = Math.atan2(orb.vy, orb.vx); orb.flash = 0.9;
-        cam.shake = Math.max(cam.shake, isNode ? 6 : 8);
-        cam.flash = Math.max(cam.flash, 0.24);
-        cam.flashCol = bc.hi;
-        // a node repaints the orb; the impact still lands underneath the shimmer
-        Sfx.bumper(isNode);
-        if (isNode) shiftOrbColor(b.color, RES.hx, RES.hy);
+        cam.shake = Math.max(cam.shake, 7);
+        cam.flash = Math.max(cam.flash, 0.2);
+        cam.flashCol = [200, 240, 255];
+        Sfx.bumper();
+        if (b.color) shiftOrbColor(b.color, RES.hx, RES.hy);
       } else if (r.wall && r.impact > 1.2) {
         const s = clamp(r.impact / 14, 0, 1);
         const c = energy(orb.color);
-        FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 1.4 + s * 4, 3 + (s * 5 | 0), c.rgb,
-                 { life: 0.32, size: 1.9, shape: 1, len: 7, drag: 0.9 });
-        if (s > 0.28) FX.shock(RES.hx, RES.hy, 2, 16 + s * 40, 0.3, c.rgb, 2);
+        FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 1.4 + s * 4, 2 + (s * 2 | 0), c.rgb,
+                 { life: 0.3, size: 1.9, shape: 1, len: 7, drag: 0.9 });
         orb.squash = Math.min(0.6, 0.18 + s * 0.5);
         orb.squashAng = Math.atan2(RES.ny, RES.nx) + Math.PI / 2;
-        if (s > 0.4) { cam.shake = Math.max(cam.shake, s * 6); }
+        if (s > 0.45) cam.shake = Math.max(cam.shake, s * 5);
         Sfx.bounce(r.impact);
       }
+      resolveContacts();
+      compactWorld();
       checkTriggers(px, py);
     }
     // trail sampling
@@ -1320,9 +1562,19 @@ let canvasRect = { left: 0, top: 0, width: VW, height: VH };
 
 function fit() {
   const rect = canvasRect = dom.canvas.getBoundingClientRect();
-  // capped at 2x: beyond that the fill-rate cost of the additive glows
-  // outweighs the sharpness gain on phone-sized screens
-  const dpr = clamp(window.devicePixelRatio || 1, 1, 2);
+  if (rect.width < 2 || rect.height < 2) return;
+
+  /* Pixel budget, not a DPR multiplier.
+     Fill-rate is what kills this game on a phone: every frame writes the
+     background plus a stack of additive glows over the whole canvas. A 3x
+     device at 412 CSS px wide would mean a 1236x2196 buffer — 2.7M pixels
+     touched several times per frame, which is exactly how 60fps becomes 15.
+     Budgeting the buffer instead bounds that cost on every device, and at
+     ~1.1M pixels a 9:16 phone still renders at ~1.8x: visually sharp. */
+  const budget = Q.level < 1 ? PIXEL_BUDGET_LOW : PIXEL_BUDGET;
+  const cssPx = rect.width * rect.height;
+  const maxScale = Math.sqrt(budget / cssPx);
+  const dpr = clamp(window.devicePixelRatio || 1, 1, Math.min(2, maxScale));
   const w = Math.max(1, Math.round(rect.width * dpr));
   const h = Math.max(1, Math.round(rect.height * dpr));
   if (dom.canvas.width !== w || dom.canvas.height !== h) {
@@ -1387,7 +1639,7 @@ function bakeStatic() {
   vg.addColorStop(1, 'rgba(0,0,0,0.5)');
   c.fillStyle = vg; c.fillRect(0, 0, VW, VH);
 
-  for (const w2 of world.statics) drawWall(c, w2);
+  for (const w2 of world.statics) drawWall(c, w2, false);
 }
 
 function drawWall(c, e, live) {
@@ -1458,11 +1710,13 @@ function drawWall(c, e, live) {
 }
 
 const BUMPER_RGB = [120, 210, 255];
+const ICE_RGB = [130, 226, 255];
+const ICE_HI = [224, 250, 255];
 
 /* Bumpers and energy nodes share a body; a node carries an energy colour and
    wears a hexagonal frame so the two read as related but distinct. */
 function drawBumper(c, b) {
-  const node = b.kind === 'node';
+  const node = !!b.color;   // a coloured bumper reads as an energy node
   const col = node ? energy(b.color).rgb : BUMPER_RGB;
   const hi = node ? energy(b.color).hi : [230, 250, 255];
   const squeeze = 1 - b.hit * 0.16;
@@ -1661,81 +1915,247 @@ function drawHazard(c, h) {
   c.restore();
 }
 
-function drawGate(c, g) {
-  const col = energy(g.color);
-  const w = g.w, h = g.h;
+/* ---------- coloured wall ----------------------------------------------
+   Reads as the same glass as a neutral wall, but lit from within by its own
+   energy so "which colour is this surface" is answerable at a glance. */
+function drawPaintWall(c, e) {
+  const col = energy(e.color);
+  const w = e.w, h = e.h;
+  const r = Math.min(9, Math.min(w, h) / 2);
   const long = w >= h;
-  const L = long ? w : h;
   c.save();
-  c.translate(g.x, g.y); c.rotate(g.a);
+  c.translate(e.x, e.y); c.rotate(e.a);
 
-  // frame posts — cached ramps, the flash rides on globalAlpha
-  c.globalCompositeOperation = 'lighter';
-  c.globalAlpha = Math.min(1, 0.8 + g.flash * 0.2);
-  c.fillStyle = grad(g.gfx, 'post', () => {
-    const rg = c.createRadialGradient(0, 0, 0, 0, 0, 18);
-    rg.addColorStop(0, rgba(col.hi, 0.7));
-    rg.addColorStop(0.35, rgba(col.rgb, 0.42));
-    rg.addColorStop(1, rgba(col.rgb, 0));
-    return rg;
+  // body
+  roundRect(c, -w / 2, -h / 2, w, h, r);
+  c.fillStyle = grad(e.gfx, 'body', () => {
+    const g = long ? c.createLinearGradient(0, -h / 2, 0, h / 2)
+                   : c.createLinearGradient(-w / 2, 0, w / 2, 0);
+    g.addColorStop(0, rgba(col.rgb, 0.34));
+    g.addColorStop(0.5, rgba(col.rgb, 0.16));
+    g.addColorStop(1, rgba(col.rgb, 0.30));
+    return g;
   });
-  for (const s of [-1, 1]) {
-    const ex = long ? s * w / 2 : 0;
-    const ey = long ? 0 : s * h / 2;
-    c.save();
-    c.translate(ex, ey);
-    c.beginPath(); c.arc(0, 0, 18, 0, TAU); c.fill();
-    c.restore();
-  }
+  c.fill();
+  c.strokeStyle = rgba(col.rgb, 0.85);
+  c.lineWidth = 1.6;
+  c.stroke();
 
-  // membrane
-  const th = long ? h : w;
-  c.globalAlpha = Math.min(1, 0.72 + g.flash * 0.28);
-  c.fillStyle = grad(g.gfx, 'mem', () => {
-    const mg = long
-      ? c.createLinearGradient(0, -th / 2, 0, th / 2)
-      : c.createLinearGradient(-th / 2, 0, th / 2, 0);
-    mg.addColorStop(0, rgba(col.rgb, 0.07));
-    mg.addColorStop(0.5, rgba(col.rgb, 0.42));
-    mg.addColorStop(1, rgba(col.rgb, 0.07));
-    return mg;
+  // energy core running along the surface
+  c.globalCompositeOperation = 'lighter';
+  c.globalAlpha = 0.65 + e.flash * 0.35;
+  c.fillStyle = grad(e.gfx, 'core', () => {
+    const g = long ? c.createLinearGradient(0, -h / 2, 0, h / 2)
+                   : c.createLinearGradient(-w / 2, 0, w / 2, 0);
+    g.addColorStop(0, rgba(col.rgb, 0));
+    g.addColorStop(0.5, rgba(col.hi, 0.75));
+    g.addColorStop(1, rgba(col.rgb, 0));
+    return g;
+  });
+  if (long) c.fillRect(-w / 2 + 2, -h / 2, w - 4, h);
+  else c.fillRect(-w / 2, -h / 2 + 2, w, h - 4);
+
+  // travelling pulse so the surface feels charged, not painted
+  const per = long ? w : h;
+  const u = ((G.t * 0.24 + e.seed) % 1) * (per + 60) - 30;
+  c.globalAlpha = 0.5;
+  c.fillStyle = rgba(col.hi, 0.9);
+  if (long) c.fillRect(-w / 2 + u, -h / 2 + 1, 26, 2);
+  else c.fillRect(-w / 2 + 1, -h / 2 + u, 2, 26);
+  c.globalAlpha = 1;
+  c.globalCompositeOperation = 'source-over';
+  c.restore();
+}
+
+/* ---------- ice ---------------------------------------------------------
+   Translucent glass, frosted rim, cracks after the first solid hit. */
+function drawIce(c, e) {
+  const w = e.w, h = e.h;
+  const shake = e.shake > 0 ? e.shake * 2.4 : 0;
+  c.save();
+  c.translate(e.x + (shake ? rand(-shake, shake) : 0), e.y + (shake ? rand(-shake, shake) : 0));
+  c.rotate(e.a);
+
+  roundRect(c, -w / 2, -h / 2, w, h, 6);
+  c.fillStyle = grad(e.gfx, 'body', () => {
+    const g = c.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2);
+    g.addColorStop(0, 'rgba(150,232,255,0.30)');
+    g.addColorStop(0.45, 'rgba(90,190,240,0.16)');
+    g.addColorStop(1, 'rgba(180,244,255,0.26)');
+    return g;
+  });
+  c.fill();
+
+  // frosted rim
+  c.strokeStyle = 'rgba(200,244,255,0.75)';
+  c.lineWidth = 1.6;
+  c.stroke();
+  c.strokeStyle = 'rgba(120,210,255,0.35)';
+  c.lineWidth = 4;
+  c.stroke();
+
+  // inner glow + facet highlights
+  c.globalCompositeOperation = 'lighter';
+  c.globalAlpha = 0.55 + (e.crack ? 0.2 : 0);
+  c.fillStyle = grad(e.gfx, 'glow', () => {
+    const g = c.createRadialGradient(0, 0, 0, 0, 0, Math.max(w, h) * 0.6);
+    g.addColorStop(0, 'rgba(180,240,255,0.34)');
+    g.addColorStop(1, 'rgba(120,210,255,0)');
+    return g;
   });
   c.fillRect(-w / 2, -h / 2, w, h);
   c.globalAlpha = 1;
 
-  // travelling shimmer
-  c.save();
-  c.beginPath(); c.rect(-w / 2, -h / 2, w, h); c.clip();
-  c.strokeStyle = rgba(col.hi, 0.3);
-  c.lineWidth = 2;
-  const off = (G.t * 42 + g.seed * 20) % 26;
+  c.strokeStyle = 'rgba(235,252,255,0.5)';
+  c.lineWidth = 1;
   c.beginPath();
-  for (let i = -L; i < L; i += 26) {
-    if (long) { c.moveTo(-w / 2 + i + off, h / 2); c.lineTo(-w / 2 + i + off + 10, -h / 2); }
-    else { c.moveTo(w / 2, -h / 2 + i + off); c.lineTo(-w / 2, -h / 2 + i + off + 10); }
+  c.moveTo(-w / 2 + 6, h / 2 - 8); c.lineTo(-w / 2 + w * 0.36, -h / 2 + 5);
+  c.moveTo(-w / 2 + w * 0.62, h / 2 - 5); c.lineTo(w / 2 - 6, -h / 2 + 9);
+  c.stroke();
+
+  // damage state: a fracture the player can read from across the room
+  if (e.hp <= 1) {
+    c.strokeStyle = 'rgba(245,253,255,0.9)';
+    c.lineWidth = 1.5;
+    c.beginPath();
+    const hw = w / 2, hh = h / 2;
+    c.moveTo(-hw * 0.7, -hh); c.lineTo(-hw * 0.2, -hh * 0.1);
+    c.lineTo(-hw * 0.45, hh * 0.35); c.lineTo(-hw * 0.05, hh);
+    c.moveTo(-hw * 0.2, -hh * 0.1); c.lineTo(hw * 0.35, -hh * 0.45);
+    c.moveTo(-hw * 0.2, -hh * 0.1); c.lineTo(hw * 0.55, hh * 0.2);
+    c.lineTo(hw * 0.3, hh);
+    c.stroke();
+  }
+  c.globalCompositeOperation = 'source-over';
+  c.restore();
+}
+
+/* ---------- colour crystal ---------------------------------------------- */
+function drawCrystal(c, e) {
+  const col = energy(e.color);
+  const pu = 0.5 + 0.5 * Math.sin(e.pulse * 2.4 + e.seed);
+  const r = e.r;
+  c.save();
+  c.translate(e.x, e.y);
+  c.rotate(Math.sin(e.pulse * 0.4 + e.seed) * 0.08);
+
+  c.globalCompositeOperation = 'lighter';
+  c.globalAlpha = 0.55 + pu * 0.25 + e.reject * 0.3;
+  c.fillStyle = grad(e.gfx, 'halo', () => {
+    const g = c.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 1.7);
+    g.addColorStop(0, rgba(col.rgb, 0.42));
+    g.addColorStop(1, rgba(col.rgb, 0));
+    return g;
+  });
+  c.beginPath(); c.arc(0, 0, r * 1.7, 0, TAU); c.fill();
+  c.globalAlpha = 1;
+  c.globalCompositeOperation = 'source-over';
+
+  // faceted body
+  const facet = (rr) => {
+    c.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = -Math.PI / 2 + i * TAU / 6;
+      const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+      if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+    }
+    c.closePath();
+  };
+  facet(r);
+  c.fillStyle = grad(e.gfx, 'body', () => {
+    const g = c.createLinearGradient(-r, -r, r, r);
+    g.addColorStop(0, rgba(col.rgb, 0.5));
+    g.addColorStop(0.5, 'rgba(10,14,34,0.85)');
+    g.addColorStop(1, rgba(col.rgb, 0.42));
+    return g;
+  });
+  c.fill();
+  c.strokeStyle = rgba(col.rgb, 0.95);
+  c.lineWidth = 2.2;
+  c.stroke();
+
+  c.globalCompositeOperation = 'lighter';
+  c.globalAlpha = 0.6 + pu * 0.4;
+  facet(r * 0.52);
+  c.fillStyle = rgba(col.hi, 0.5);
+  c.fill();
+  c.globalAlpha = 1;
+
+  // internal facet lines
+  c.strokeStyle = rgba(col.hi, 0.4);
+  c.lineWidth = 1;
+  c.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = -Math.PI / 2 + i * TAU / 6;
+    c.moveTo(0, 0); c.lineTo(Math.cos(a) * r * 0.9, Math.sin(a) * r * 0.9);
   }
   c.stroke();
-  c.restore();
 
-  // bright rails
-  c.fillStyle = rgba(col.hi, 0.75);
-  if (long) {
-    c.fillRect(-w / 2, -h / 2, w, 1.5);
-    c.fillRect(-w / 2, h / 2 - 1.5, w, 1.5);
-  } else {
-    c.fillRect(-w / 2, -h / 2, 1.5, h);
-    c.fillRect(w / 2 - 1.5, -h / 2, 1.5, h);
+  if (e.reject > 0) {
+    c.strokeStyle = rgba([255, 255, 255], e.reject * 0.8);
+    c.lineWidth = 2.5;
+    facet(r * (1 + (1 - e.reject) * 0.4));
+    c.stroke();
+  }
+  c.globalCompositeOperation = 'source-over';
+  c.restore();
+}
+
+/* ---------- colour gate -------------------------------------------------
+   Solid bars with an energy membrane between them. It reads as *closed*;
+   when the orb already carries its colour the membrane thins and opens. */
+function drawGate(c, g) {
+  const col = energy(g.color);
+  const open = g.color === orb.color;
+  const w = g.w, h = g.h;
+  const long = w >= h;
+  const th = long ? h : w;
+  c.save();
+  c.translate(g.x, g.y); c.rotate(g.a);
+
+  // anchors
+  c.fillStyle = 'rgba(14,18,42,0.95)';
+  for (const s of [-1, 1]) {
+    const ex = long ? s * w / 2 : 0;
+    const ey = long ? 0 : s * h / 2;
+    c.save(); c.translate(ex, ey);
+    roundRect(c, -7, -th * 0.75, 14, th * 1.5, 4);
+    c.fill();
+    c.strokeStyle = rgba(col.rgb, 0.9); c.lineWidth = 1.6; c.stroke();
+    c.restore();
   }
 
-  // drifting motes
-  for (let i = 0; i < 4; i++) {
-    const u = ((G.t * 0.28 + i * 0.25 + g.seed) % 1);
-    const p = -L / 2 + u * L;
-    const q = Math.sin(G.t * 2 + i * 2 + g.seed) * (long ? h : w) * 0.22;
-    c.fillStyle = rgba(col.hi, 0.6 * Math.sin(u * Math.PI));
+  c.globalCompositeOperation = 'lighter';
+  if (open) {
+    // dissolved: two thin rails and a faint shimmer
+    c.globalAlpha = 0.5;
+    c.fillStyle = rgba(col.hi, 0.6);
+    if (long) { c.fillRect(-w / 2, -h / 2, w, 1.6); c.fillRect(-w / 2, h / 2 - 1.6, w, 1.6); }
+    else { c.fillRect(-w / 2, -h / 2, 1.6, h); c.fillRect(w / 2 - 1.6, -h / 2, 1.6, h); }
+    c.globalAlpha = 1;
+  } else {
+    c.globalAlpha = Math.min(1, 0.72 + g.reject * 0.28);
+    c.fillStyle = grad(g.gfx, 'mem', () => {
+      const mg = long ? c.createLinearGradient(0, -h / 2, 0, h / 2)
+                      : c.createLinearGradient(-w / 2, 0, w / 2, 0);
+      mg.addColorStop(0, rgba(col.rgb, 0.18));
+      mg.addColorStop(0.5, rgba(col.rgb, 0.55));
+      mg.addColorStop(1, rgba(col.rgb, 0.18));
+      return mg;
+    });
+    c.fillRect(-w / 2, -h / 2, w, h);
+
+    // lattice — the visual cue for "locked"
+    c.strokeStyle = rgba(col.hi, 0.55);
+    c.lineWidth = 1.4;
     c.beginPath();
-    if (long) c.arc(p, q, 1.8, 0, TAU); else c.arc(q, p, 1.8, 0, TAU);
-    c.fill();
+    const span = long ? w : h;
+    for (let i = -span / 2; i < span / 2; i += 14) {
+      if (long) { c.moveTo(i, -h / 2); c.lineTo(i + 9, h / 2); }
+      else { c.moveTo(-w / 2, i); c.lineTo(w / 2, i + 9); }
+    }
+    c.stroke();
+    c.globalAlpha = 1;
   }
   c.globalCompositeOperation = 'source-over';
   c.restore();
@@ -2259,7 +2679,11 @@ function drawTransition(c) {
 function render() {
   const c = ctx;
   c.setTransform(RS, 0, 0, RS, 0, 0);
-  c.clearRect(0, 0, VW, VH);
+  // the baked layer is opaque and covers the canvas, so a separate clear is
+  // one full-screen write per frame we simply do not need — except while the
+  // camera is offset, when the edges would otherwise smear
+  const moved = cam.sx !== 0 || cam.sy !== 0 || cam.zoom !== 1;
+  if (moved) c.clearRect(0, 0, VW, VH);
 
   c.save();
   // camera
@@ -2272,10 +2696,16 @@ function render() {
   drawAmbient(c);
   drawDust(c);
 
-  for (const g of world.gates) drawGate(c, g);
-  for (const h of world.hazards) drawHazard(c, h);
-  for (const b of world.bumpers) drawBumper(c, b);
-  for (const m of world.movers) if (m.kind === 'wall') drawWall(c, m, true);
+  for (let i = 0; i < world.paints.length; i++) drawPaintWall(c, world.paints[i]);
+  for (let i = 0; i < world.ice.length; i++) drawIce(c, world.ice[i]);
+  for (let i = 0; i < world.crystals.length; i++) drawCrystal(c, world.crystals[i]);
+  for (let i = 0; i < world.gates.length; i++) drawGate(c, world.gates[i]);
+  for (let i = 0; i < world.hazards.length; i++) drawHazard(c, world.hazards[i]);
+  for (let i = 0; i < world.bumpers.length; i++) drawBumper(c, world.bumpers[i]);
+  for (let i = 0; i < world.movers.length; i++) {
+    const m = world.movers[i];
+    if (m.kind === 'wall') { if (m.color) drawPaintWall(c, m); else drawWall(c, m, true); }
+  }
   drawPortal(c, world.portal);
 
   drawReadyHint(c);
@@ -2375,13 +2805,39 @@ document.addEventListener('gesturestart', (e) => e.preventDefault());
 window.addEventListener('touchmove', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
 
 dom.restart.addEventListener('click', (e) => { e.stopPropagation(); Sfx.unlock(); restartLevel(); });
+
+function applyMute(v) {
+  muted = v;
+  Sfx.setMuted(v);
+  dom.sound.classList.toggle('muted', v);
+  dom.sound.setAttribute('aria-pressed', String(!v));
+  try { localStorage.setItem('flux.muted', v ? '1' : '0'); } catch (err) {}
+}
+dom.sound.addEventListener('click', (e) => {
+  e.stopPropagation();
+  Sfx.unlock();
+  applyMute(!muted);
+  if (!muted) Sfx.ui();
+});
 dom.endRestart.addEventListener('click', () => { Sfx.unlock(); Sfx.ui(); restartRun(); });
 
 let muted = false;
+
+/* Keyboard shortcuts are a desktop convenience only — every one of them has a
+   visible control. The FPS readout is a developer tool: it needs ?dev=1 (or
+   localStorage flux.dev) and is never shown to a normal player. */
+const DEV = (() => {
+  try {
+    if (/[?&]dev=1/.test(location.search)) { localStorage.setItem('flux.dev', '1'); return true; }
+    if (/[?&]dev=0/.test(location.search)) { localStorage.removeItem('flux.dev'); return false; }
+    return localStorage.getItem('flux.dev') === '1';
+  } catch (err) { return /[?&]dev=1/.test(location.search); }
+})();
+
 window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') restartLevel();
-  if (e.key === 'm' || e.key === 'M') { muted = !muted; Sfx.setMuted(muted); }
-  if (e.key === 'f' || e.key === 'F') {
+  if (e.key === 'm' || e.key === 'M') applyMute(!muted);
+  if (DEV && (e.key === 'f' || e.key === 'F')) {
     fpsOn = !fpsOn;
     dom.fps.classList.toggle('hidden', !fpsOn);
     fpsFrames = 0; fpsSince = performance.now();
@@ -2398,7 +2854,7 @@ if (window.visualViewport) window.visualViewport.addEventListener('resize', fit)
 
 const DT_MAX = 1 / 15;        // never simulate more than 4 steps for one frame
 
-let last = 0, acc = 0, frameCount = 0;
+let last = 0, acc = 0, frameCount = 0, doneFrames = 0;
 let fpsOn = false, fpsFrames = 0, fpsSince = 0;
 function frame(now) {
   requestAnimationFrame(frame);
@@ -2426,7 +2882,7 @@ function frame(now) {
   }
 
   if ((frameCount++ & 31) === 0) fit();   // cheap guard against missed resizes
-  render();
+  if (G.phase !== 'done' || doneFrames < 3) { render(); if (G.phase === 'done') doneFrames++; }
 
   // optional readout — one DOM write every half second, never per frame
   if (fpsOn) {
@@ -2438,6 +2894,9 @@ function frame(now) {
     }
   }
 }
+
+try { if (localStorage.getItem('flux.muted') === '1') applyMute(true); } catch (err) {}
+if (DEV) { fpsOn = true; dom.fps.classList.remove('hidden'); }
 
 startLevel(0);
 fit();
@@ -2453,6 +2912,15 @@ window.FLUX = {
   // bench(n, true) — also stalls on a pixel readback so the timing includes
   //                  GPU fill-rate. Off by default: repeated readbacks can make
   //                  the browser drop this canvas to software rendering.
+  // dev: force a specific backing-store scale to compare fill-rate costs
+  forceScale: (mult) => {
+    const r = dom.canvas.getBoundingClientRect();
+    dom.canvas.width = Math.round(r.width * mult);
+    dom.canvas.height = Math.round(r.height * mult);
+    RS = dom.canvas.width / VW;
+    bakeStatic();
+    return { backing: [dom.canvas.width, dom.canvas.height], mp: +(dom.canvas.width * dom.canvas.height / 1e6).toFixed(2) };
+  },
   bench: (n, sync) => {
     n = n || 120;
     render(); // warm

@@ -14,16 +14,10 @@
 </head>
 <body>
   <div id="app">
-    <div class="ambient" aria-hidden="true">
-      <span class="blob b1"></span>
-      <span class="blob b2"></span>
-      <span class="blob b3"></span>
-    </div>
-
     <div class="deskmark" aria-hidden="true">
       <span class="dm-name">FLUX</span>
       <span class="dm-sub">Physics puzzle · vertical slice</span>
-      <span class="dm-keys">Drag from the orb to launch · R restart · M mute · F fps</span>
+      <span class="dm-keys">Drag back from the orb, then release</span>
     </div>
 
     <div id="stage">
@@ -36,8 +30,8 @@
               <span class="hud-key">LEVEL</span>
               <span id="levelNum">01</span>
               <span class="hud-sep">/</span>
-              <span class="hud-tot">08</span>
-              <span id="levelName">INFLUX</span>
+              <span class="hud-tot">10</span>
+              <span id="levelName">SPECTRUM</span>
             </div>
             <div id="progress"><i id="progressFill"></i></div>
           </div>
@@ -46,7 +40,17 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20 L20 4 M20 4 h-6 M20 4 v6"/></svg>
               <span id="shotCount">0</span>
             </div>
-            <button id="restartBtn" type="button" aria-label="Restart level">
+            <button id="soundBtn" class="hud-btn" type="button" aria-label="Sound on or off" aria-pressed="true">
+              <svg class="ic-on" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9.5h3.2L12 5.4v13.2L7.2 14.5H4z"/>
+                <path d="M15.6 9.2a4 4 0 0 1 0 5.6M18.2 6.6a7.6 7.6 0 0 1 0 10.8"/>
+              </svg>
+              <svg class="ic-off" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9.5h3.2L12 5.4v13.2L7.2 14.5H4z"/>
+                <path d="M16.2 9.8l5 4.4M21.2 9.8l-5 4.4"/>
+              </svg>
+            </button>
+            <button id="restartBtn" class="hud-btn" type="button" aria-label="Restart level">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 5.2V2.2L7.4 6.1 12 10V7.2a4.9 4.9 0 1 1-4.9 4.9" />
               </svg>
@@ -57,7 +61,7 @@
         <div id="banner" aria-hidden="true">
           <div class="banner-num">01</div>
           <div class="banner-line"></div>
-          <div class="banner-name">INFLUX</div>
+          <div class="banner-name">SPECTRUM</div>
         </div>
 
         <div id="hint" class="hidden"></div>
