@@ -586,7 +586,7 @@ const LEVELS = [
   {
     /* 1 — teach: launch, wall colour, matching exit. */
     name: 'SPECTRUM',
-    tip: 'Catch the moving orb. Drag and release to dodge the red spikes.',
+    tip: 'Near a gold spark: hold, aim where you want to go, release.',
     bg: ['#191c44', '#07091b'], accent: [140, 130, 255],
     start: { x: 110, y: 850 }, color: 'violet',
     portal: { x: 430, y: 230, color: 'cyan' },
@@ -868,6 +868,114 @@ const BORDER = [
   { x: 538, y: 517, w: 26,  h: 920 },
 ];
 
+// Bash is a short, target-assisted redirect, not a free mid-air grab.
+const BASH = { target: null, angle: -Math.PI / 2, held: 0, radius: 105,
+  speed: 18, holdLimit: 2, projectiles: [], emitters: [] };
+const BASH_LANES = [
+  [810, 605, 345], [820, 560, 380], [780, 610, 410, 245],
+  [780, 620, 450, 245], [850, 720, 540, 400, 235],
+  [800, 560, 410, 245], [820, 640, 490, 285],
+  [860, 750, 565, 410, 245], [860, 700, 550, 365, 240],
+  [880, 710, 570, 450, 260],
+];
+function resetBash(src) {
+  BASH.target = null; BASH.held = 0; BASH.projectiles.length = 0;
+  const index = Math.max(0, LEVELS.indexOf(src));
+  BASH.emitters = BASH_LANES[index].map((y, i) => ({
+    x: i % 2 ? 66 : 474, y, vx: i % 2 ? 2.6 : -2.6,
+    wait: i * .35, period: 2.4,
+  }));
+}
+function bashTarget() {
+  let best = null, distance = BASH.radius;
+  for (const p of BASH.projectiles) {
+    if (p.cooldown > 0 || p.life <= 0) continue;
+    const d = Math.hypot(p.x - orb.x, p.y - orb.y);
+    if (d < distance) { best = p; distance = d; }
+  }
+  return best;
+}
+function updateBashProjectiles() {
+  for (const e of BASH.emitters) {
+    e.wait -= STEP;
+    if (e.wait <= 0) {
+      e.wait += e.period;
+      if (BASH.projectiles.length < 28) BASH.projectiles.push({
+        x: e.x, y: e.y, vx: e.vx, vy: 0, r: 8, life: 7,
+        cooldown: 0, reflected: false, color: null,
+      });
+    }
+  }
+  for (const p of BASH.projectiles) {
+    p.life -= STEP; p.cooldown = Math.max(0, p.cooldown - STEP);
+    const steps = Math.ceil(Math.hypot(p.vx, p.vy) / 5);
+    for (let i = 0; i < steps && p.life > 0; i++) {
+      p.x += p.vx / steps; p.y += p.vy / steps;
+      if (p.x < FIELD.x0 || p.x > FIELD.x1 || p.y < FIELD.y0 || p.y > FIELD.y1) { p.life = 0; break; }
+      for (const e of world.solids) {
+        if (e.dead || isPassable(e, p.color)) continue;
+        const hit = e.spikes ? touchesSpikes(p, e) : e.round ? overlapsRound(p.x, p.y, p.r, e) : overlapsBox(p.x, p.y, p.r, e);
+        if (!hit) continue;
+        if (p.reflected && (e.kind === 'ice' || (e.kind === 'crystal' && e.color === p.color))) {
+          e.dead = true; world.dirty = true;
+          FX.shock(e.x, e.y, 8, 65, .4, energy(p.color).rgb, 3);
+          Sfx.iceBreak();
+        }
+        p.life = 0; break;
+      }
+    }
+  }
+  let n = 0;
+  for (const p of BASH.projectiles) if (p.life > 0) BASH.projectiles[n++] = p;
+  BASH.projectiles.length = n;
+  compactWorld();
+}
+function releaseBash() {
+  const p = BASH.target;
+  if (!p || G.phase !== 'play' || !orb.alive) { cancelAim(); return; }
+  const dx = Math.cos(BASH.angle), dy = Math.sin(BASH.angle);
+  orb.vx = dx * BASH.speed; orb.vy = dy * BASH.speed;
+  orb.flash = 1; orb.trailN = 0;
+  p.vx = -dx * BASH.speed; p.vy = -dy * BASH.speed;
+  p.reflected = true; p.color = orb.color; p.cooldown = .3; p.life = 4;
+  FX.shock(orb.x, orb.y, 12, 80, .35, [255, 214, 112], 3);
+  cam.shake = Math.max(cam.shake, 3);
+  Sfx.launch(.8);
+  cancelAim();
+}
+function drawBash(c) {
+  const target = BASH.target || (G.phase === 'play' && orb.alive ? bashTarget() : null);
+  c.save();
+  for (const e of BASH.emitters) {
+    c.strokeStyle = '#bd954c'; c.lineWidth = 2;
+    c.beginPath(); c.arc(e.x, e.y, 10, 0, TAU); c.stroke();
+  }
+  for (const p of BASH.projectiles) {
+    c.strokeStyle = p.reflected ? '#2ee6ff' : '#ffd670'; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(p.x - p.vx * 3, p.y - p.vy * 3); c.lineTo(p.x, p.y); c.stroke();
+    c.fillStyle = p.reflected ? '#dcfcff' : '#fff3bd';
+    c.beginPath(); c.arc(p.x, p.y, p.r, 0, TAU); c.fill();
+    if (p === target) {
+      c.lineWidth = 2; c.beginPath(); c.arc(p.x, p.y, 20, 0, TAU); c.stroke();
+      c.setLineDash([3, 5]); c.beginPath(); c.moveTo(orb.x, orb.y); c.lineTo(p.x, p.y); c.stroke(); c.setLineDash([]);
+    }
+  }
+  if (BASH.target) {
+    c.translate(orb.x, orb.y); c.rotate(BASH.angle);
+    c.strokeStyle = '#fff3bd'; c.lineWidth = 4;
+    c.beginPath(); c.moveTo(22, 0); c.lineTo(90, 0); c.lineTo(73, -12); c.moveTo(90, 0); c.lineTo(73, 12); c.stroke();
+    c.strokeStyle = '#2ee6ff'; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(-24, 0); c.lineTo(-60, 0); c.lineTo(-50, -8); c.moveTo(-60, 0); c.lineTo(-50, 8); c.stroke();
+    c.rotate(-BASH.angle);
+    c.strokeStyle = '#ffd670'; c.lineWidth = 3;
+    c.beginPath(); c.arc(0, 0, 29, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - BASH.held / BASH.holdLimit)); c.stroke();
+  } else if (target) {
+    c.fillStyle = '#fff3bd'; c.font = 'bold 13px sans-serif'; c.textAlign = 'center';
+    c.fillText('HOLD · AIM · RELEASE', orb.x, orb.y - 36);
+  }
+  c.restore();
+}
+
 /* ============================================================
    5. WORLD BUILDING
    ============================================================ */
@@ -957,6 +1065,7 @@ function addEntity(e, kind) {
 }
 
 function buildWorld(src) {
+  resetBash(src);
   const L = clone(src);
   world.solids.length = 0; world.statics.length = 0; world.paints.length = 0;
   world.movers.length = 0; world.bumpers.length = 0; world.ice.length = 0;
@@ -1672,11 +1781,17 @@ function checkTriggers(px, py) {
 
 /* ---- one fixed simulation step ---- */
 function simStep() {
+  if (G.aiming && BASH.target) {
+    BASH.held += STEP;
+    if (BASH.held >= BASH.holdLimit) cancelAim();
+    return;
+  }
   G.t += STEP;
   if (G.phase !== 'done') G.runTime += STEP;
   G.phaseT += STEP;
 
   updateMotion(G.t);
+  if (G.phase === 'play') updateBashProjectiles();
   for (const h of world.hazards) h.k = hazardLevel(h, G.t);
   for (const b of world.bumpers) if (b.hit > 0) b.hit = Math.max(0, b.hit - STEP * 3.2);
   for (const i of world.ice) if (i.shake > 0) i.shake = Math.max(0, i.shake - STEP * 4);
@@ -2887,6 +3002,7 @@ function drawOrb(c) {
 let lastPvx = NaN, lastPvy = NaN, lastPvf = -99;
 
 function drawAim(c) {
+  if (BASH.target) return;
   if (!G.aiming || G.power <= 0.02) return;
   const col = orbColors();
   const a = Math.atan2(-G.pullY, -G.pullX);   // launch direction
@@ -3137,6 +3253,7 @@ function render() {
   drawDeny(c);
   drawAim(c);
   drawOrb(c);
+  drawBash(c);
   drawParticles(c);
 
   c.restore();
@@ -3169,6 +3286,12 @@ function toGame(e) {
 let pointerId = null;
 
 function updateDrag(px, py) {
+  if (BASH.target) {
+    const dx = px - G.anchorX, dy = py - G.anchorY;
+    if (Math.hypot(dx, dy) > 8) BASH.angle = Math.atan2(dy, dx);
+    Sfx.tensionUpdate(.8);
+    return;
+  }
   let dx = G.anchorX - px, dy = G.anchorY - py;
   const d = Math.hypot(dx, dy);
   const cl = Math.min(d, CFG.maxDrag);
@@ -3183,7 +3306,9 @@ function onDown(e) {
   Sfx.unlock();
   if (G.phase === 'done') return;
   if (e.target === dom.restart || dom.restart.contains(e.target)) return;
-  if (!canGrab()) {
+  if (G.phase !== 'play' || G.transDir !== 0 || !orb.alive) return;
+  const target = bashTarget();
+  if (!target && !canGrab()) {
     // No launches remain, or the level is transitioning.
     if (G.phase === 'play' && orb.alive) G.deny = 1;
     return;
@@ -3192,11 +3317,17 @@ function onDown(e) {
   const p = toGame(e);
   const airborne = Math.hypot(orb.vx, orb.vy) >= CFG.readySpeed;
   if (airborne && Math.hypot(p.x - orb.x, p.y - orb.y) > CFG.airGrabRadius) return;
+  if (airborne && !target) {
+    showToast('NEED A GOLD SPARK NEARBY', true);
+    return;
+  }
+  BASH.target = target; BASH.held = 0;
+  if (target) BASH.angle = airborne ? Math.atan2(orb.vy, orb.vx) : -Math.PI / 2;
   const near = Math.hypot(p.x - orb.x, p.y - orb.y) < CFG.grabRadius;
   // A catch starts at zero power even when the finger lands off-centre.
   // Keep velocity while held: cancelling resumes the original flight.
-  G.anchorX = !airborne && near ? orb.x : p.x;
-  G.anchorY = !airborne && near ? orb.y : p.y;
+  G.anchorX = !target && !airborne && near ? orb.x : p.x;
+  G.anchorY = !target && !airborne && near ? orb.y : p.y;
   G.aiming = true;
   lastPvx = NaN;
   pointerId = e.pointerId;
@@ -3216,6 +3347,7 @@ function onMove(e) {
 
 function onUp(e) {
   if (!G.aiming || (pointerId !== null && e.pointerId !== pointerId)) return;
+  if (BASH.target) { releaseBash(); e.preventDefault(); return; }
   G.aiming = false;
   pointerId = null;
   Sfx.tensionStop();
@@ -3231,6 +3363,7 @@ dom.canvas.addEventListener('pointerdown', onDown, { passive: false });
 window.addEventListener('pointermove', onMove, { passive: false });
 window.addEventListener('pointerup', onUp, { passive: false });
 function cancelAim() {
+  BASH.target = null; BASH.held = 0;
   G.aiming = false;
   pointerId = null;
   G.power = 0; G.pullX = 0; G.pullY = 0;
