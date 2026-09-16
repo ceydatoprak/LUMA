@@ -51,10 +51,11 @@ const easeInOut = (t) => (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) /
 const DEG = Math.PI / 180;
 
 const ENERGY = {
-  violet: { rgb: [166, 108, 255], hi: [238, 224, 255] },
-  cyan:   { rgb: [ 46, 226, 255], hi: [216, 250, 255] },
-  orange: { rgb: [255, 150,  60], hi: [255, 232, 198] },
-  lime:   { rgb: [178, 255,  88], hi: [238, 255, 210] },
+  violet:  { rgb: [166, 108, 255], hi: [238, 224, 255] },
+  cyan:    { rgb: [ 46, 226, 255], hi: [216, 250, 255] },
+  magenta: { rgb: [255,  74, 186], hi: [255, 214, 240] },
+  orange:  { rgb: [255, 150,  60], hi: [255, 232, 198] },
+  lime:    { rgb: [178, 255,  88], hi: [238, 255, 210] },
 };
 const NEUTRAL = { rgb: [180, 200, 255], hi: [240, 246, 255] };
 const DANGER = [255, 45, 110];
@@ -75,30 +76,96 @@ function roundRect(c, x, y, w, h, r) {
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
+/* ---- adaptive quality -------------------------------------------------
+   Only decorative work scales: physics, collision and input never change,
+   so the game plays identically on a slow phone and a fast desktop. */
+const Q = {
+  level: 1,          // 1 = full, 0 = reduced decoration
+  avg: 16.7,         // rolling frame time (ms)
+  bad: 0, good: 0,
+  particleScale: 1,
+};
+
+/* Gradients are built once and then modulated with globalAlpha. Rebuilding a
+   gradient every frame costs an allocation *and* a colour-ramp rasterisation;
+   the shapes here never change size, only brightness. */
+function grad(store, key, make) {
+  let g = store[key];
+  if (g === undefined) g = store[key] = make();
+  return g;
+}
+
 /* ============================================================
    2. AUDIO — small synth kit, unlocked on first interaction
    ============================================================ */
 
 const Sfx = (() => {
-  let ctx = null, master = null, noiseBuf = null, on = true, ready = false;
-  let tension = null;
+  /* --------------------------------------------------------------------
+     Soft, futuristic palette. Everything is sine / triangle / filtered
+     noise through a shared low-pass and a short ambient send, so nothing
+     can turn into an arcade beep. Nodes are created per voice (they are
+     cheap and self-disposing) but the noise buffer, filters, compressor
+     and delay network are built once.
+     -------------------------------------------------------------------- */
+  const MIX = {                 // one place to balance the whole game
+    master: 0.42,
+    launch: 0.5,
+    bumper: 0.5,
+    node:   0.5,
+    bounce: 0.18,
+    shift:  0.42,
+    portal: 0.5,
+    fail:   0.36,
+    reject: 0.3,
+    ui:     0.22,
+    sweep:  0.3,
+  };
+
+  let ctx = null, master = null, bus = null, air = null, noiseBuf = null;
+  let on = true, ready = false, tension = null;
+  let voices = 0;               // crude polyphony guard
+  let lastBounce = -1;
 
   function build() {
     if (ctx || !on) return ctx;
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) { on = false; return null; }
     try { ctx = new AC(); } catch (e) { on = false; return null; }
-    master = ctx.createGain();
-    master.gain.value = 0.7;
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -16; comp.knee.value = 24; comp.ratio.value = 9;
-    comp.attack.value = 0.004; comp.release.value = 0.2;
-    master.connect(comp); comp.connect(ctx.destination);
 
-    const n = Math.floor(ctx.sampleRate * 0.9);
+    master = ctx.createGain();
+    master.gain.value = MIX.master;
+
+    // gentle ceiling so overlapping events never stack into something harsh
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -22; comp.knee.value = 26; comp.ratio.value = 6;
+    comp.attack.value = 0.006; comp.release.value = 0.25;
+
+    // takes the edge off every voice at once
+    const tone = ctx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.frequency.value = 7200;
+    tone.Q.value = 0.4;
+
+    bus = ctx.createGain();
+    bus.connect(tone); tone.connect(comp); comp.connect(master);
+    master.connect(ctx.destination);
+
+    // a two-tap damped delay: costs almost nothing and gives the kit space
+    air = ctx.createGain();
+    air.gain.value = 0.3;
+    const d1 = ctx.createDelay(0.5), d2 = ctx.createDelay(0.5);
+    d1.delayTime.value = 0.085; d2.delayTime.value = 0.147;
+    const fb = ctx.createGain(); fb.gain.value = 0.26;
+    const damp = ctx.createBiquadFilter();
+    damp.type = 'lowpass'; damp.frequency.value = 2600;
+    air.connect(d1); d1.connect(d2); d2.connect(damp); damp.connect(fb);
+    fb.connect(d1); damp.connect(bus);
+
+    const n = Math.floor(ctx.sampleRate * 0.8);
     noiseBuf = ctx.createBuffer(1, n, ctx.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+
     ready = true;
     return ctx;
   }
@@ -108,135 +175,214 @@ const Sfx = (() => {
     if (ctx && ctx.state !== 'running') ctx.resume();
   }
 
+  function out(node, send) {
+    node.connect(bus);
+    if (send) { const g = ctx.createGain(); g.gain.value = send; node.connect(g); g.connect(air); }
+  }
+
+  function done() { voices--; }
+
+  /* one soft tone: sine/triangle with an eased envelope, optional glide */
   function tone(o) {
-    if (!ready || !on) return;
+    if (!ready || !on || voices > 14) return;
     const t = ctx.currentTime + (o.delay || 0);
-    const dur = o.dur || 0.25;
+    const dur = o.dur || 0.3;
     const osc = ctx.createOscillator();
     osc.type = o.type || 'sine';
     osc.frequency.setValueAtTime(o.f0, t);
-    if (o.f1) osc.frequency.exponentialRampToValueAtTime(Math.max(24, o.f1), t + dur);
+    if (o.f1) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.f1), t + (o.glide || dur));
+    if (o.detune) osc.detune.value = o.detune;
+
     const g = ctx.createGain();
-    const peak = Math.max(0.0005, o.peak || 0.14);
+    const peak = Math.max(0.0004, o.peak || 0.1);
+    const atk = o.attack || 0.014;
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(peak, t + (o.attack || 0.008));
+    g.gain.exponentialRampToValueAtTime(peak, t + atk);
+    g.gain.exponentialRampToValueAtTime(peak * 0.28, t + atk + dur * 0.35);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
     let node = osc;
-    if (o.filter) {
+    if (o.lp) {
       const f = ctx.createBiquadFilter();
-      f.type = o.filter.type || 'lowpass';
-      f.frequency.setValueAtTime(o.filter.f, t);
-      if (o.filter.f1) f.frequency.exponentialRampToValueAtTime(Math.max(40, o.filter.f1), t + dur);
-      f.Q.value = o.filter.q || 1;
+      f.type = 'lowpass';
+      f.frequency.setValueAtTime(o.lp, t);
+      if (o.lp1) f.frequency.exponentialRampToValueAtTime(Math.max(60, o.lp1), t + dur);
+      f.Q.value = o.q || 0.7;
       node.connect(f); node = f;
     }
-    node.connect(g); g.connect(master);
+    node.connect(g);
+    out(g, o.send);
+    voices++;
+    osc.onended = done;
     osc.start(t); osc.stop(t + dur + 0.06);
   }
 
-  function noise(o) {
-    if (!ready || !on) return;
+  /* airy layer: band-passed noise, never bright enough to hiss */
+  function air_noise(o) {
+    if (!ready || !on || voices > 14) return;
     const t = ctx.currentTime + (o.delay || 0);
-    const dur = o.dur || 0.2;
+    const dur = o.dur || 0.25;
     const src = ctx.createBufferSource();
     src.buffer = noiseBuf;
     src.playbackRate.value = o.rate || 1;
+
     const f = ctx.createBiquadFilter();
     f.type = o.type || 'bandpass';
     f.frequency.setValueAtTime(o.f0 || 900, t);
-    if (o.f1) f.frequency.exponentialRampToValueAtTime(Math.max(60, o.f1), t + dur);
-    f.Q.value = o.q || 1.1;
+    if (o.f1) f.frequency.exponentialRampToValueAtTime(Math.max(80, o.f1), t + dur);
+    f.Q.value = o.q || 0.9;
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = o.cap || 5200;
+
     const g = ctx.createGain();
-    const peak = Math.max(0.0005, o.peak || 0.08);
+    const peak = Math.max(0.0004, o.peak || 0.05);
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(peak, t + (o.attack || 0.006));
+    g.gain.exponentialRampToValueAtTime(peak, t + (o.attack || 0.012));
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f); f.connect(g); g.connect(master);
+
+    src.connect(f); f.connect(lp); lp.connect(g);
+    out(g, o.send);
+    voices++;
+    src.onended = done;
     src.start(t); src.stop(t + dur + 0.05);
   }
 
-  /* --- continuous drag tension --- */
+  /* --- continuous drag tension: one voice, held, gently filtered --- */
   function tensionStart() {
     if (!ready || !on || tension) return;
     const osc = ctx.createOscillator(); osc.type = 'sine';
     const osc2 = ctx.createOscillator(); osc2.type = 'triangle';
+    osc2.detune.value = 7;
     const g = ctx.createGain(); g.gain.value = 0.0001;
-    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 900; f.Q.value = 6;
-    osc.frequency.value = 120; osc2.frequency.value = 180;
-    osc.connect(f); osc2.connect(f); f.connect(g); g.connect(master);
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = 700; f.Q.value = 3;
+    osc.frequency.value = 96; osc2.frequency.value = 144;
+    osc.connect(f); osc2.connect(f); f.connect(g); g.connect(bus);
     osc.start(); osc2.start();
     tension = { osc, osc2, g, f };
   }
   function tensionUpdate(p) {
     if (!tension) return;
     const t = ctx.currentTime;
-    tension.osc.frequency.setTargetAtTime(90 + p * 250, t, 0.04);
-    tension.osc2.frequency.setTargetAtTime(136 + p * 380, t, 0.04);
-    tension.f.frequency.setTargetAtTime(500 + p * 2200, t, 0.05);
-    tension.g.gain.setTargetAtTime(0.008 + p * 0.05, t, 0.05);
+    tension.osc.frequency.setTargetAtTime(78 + p * 150, t, 0.06);
+    tension.osc2.frequency.setTargetAtTime(118 + p * 232, t, 0.06);
+    tension.f.frequency.setTargetAtTime(420 + p * 1100, t, 0.07);
+    tension.g.gain.setTargetAtTime(0.004 + p * 0.026, t, 0.06);
   }
   function tensionStop() {
     if (!tension) return;
     const t = ctx.currentTime;
     const { osc, osc2, g } = tension;
-    g.gain.setTargetAtTime(0.0001, t, 0.03);
-    osc.stop(t + 0.2); osc2.stop(t + 0.2);
+    g.gain.setTargetAtTime(0.0001, t, 0.04);
+    osc.stop(t + 0.25); osc2.stop(t + 0.25);
     tension = null;
   }
 
   return {
     unlock, tensionStart, tensionUpdate, tensionStop,
-    setMuted(v) { on = !v; if (master) master.gain.value = v ? 0 : 0.7; },
+    setMuted(v) { on = !v; if (master) master.gain.value = v ? 0 : MIX.master; },
+
+    /* energy released: low pulse + gentle rise + a breath of air */
     launch(p) {
-      tone({ type: 'sawtooth', f0: 210 + p * 260, f1: 70, dur: 0.36, peak: 0.13,
-             filter: { type: 'lowpass', f: 2400 + p * 2600, f1: 380, q: 4 } });
-      tone({ type: 'sine', f0: 620 + p * 420, f1: 180, dur: 0.22, peak: 0.07 });
-      noise({ dur: 0.2, peak: 0.055 + p * 0.05, f0: 1800 + p * 2200, f1: 260, q: 0.9 });
+      const v = MIX.launch;
+      tone({ type: 'sine', f0: 88 + p * 34, f1: 176 + p * 90, dur: 0.3, glide: 0.13,
+             peak: 0.2 * v, attack: 0.008, lp: 1400, lp1: 620, send: 0.12 });
+      tone({ type: 'triangle', f0: 232 + p * 120, f1: 420 + p * 210, dur: 0.24, glide: 0.11,
+             peak: 0.085 * v, attack: 0.012, lp: 2400, send: 0.16 });
+      air_noise({ dur: 0.2, peak: 0.05 * v, f0: 620, f1: 2100 + p * 900, q: 0.7, cap: 4200, send: 0.2 });
     },
+
+    /* muted tonal pop; quiet, rate-limited, and scaled by impact */
     bounce(v) {
-      const s = clamp(v / 14, 0.12, 1);
-      tone({ type: 'sine', f0: 280 + s * 260, f1: 140 + s * 90, dur: 0.085, peak: 0.03 + s * 0.07 });
-      noise({ dur: 0.06, peak: 0.02 + s * 0.05, f0: 1500 + s * 2600, f1: 700, q: 1.6 });
+      const s = clamp((v - 2.2) / 12, 0, 1);
+      if (s <= 0.02) return;
+      const now = ready ? ctx.currentTime : 0;
+      if (now - lastBounce < 0.055) return;     // no machine-gun contacts
+      lastBounce = now;
+      const m = MIX.bounce * (0.35 + s * 0.65);
+      tone({ type: 'sine', f0: 168 + s * 150, f1: 112 + s * 70, dur: 0.075, glide: 0.06,
+             peak: 0.5 * m, attack: 0.004, lp: 1100 + s * 900 });
+      air_noise({ dur: 0.045, peak: 0.34 * m, f0: 900 + s * 1200, f1: 500, q: 1.2, cap: 3600 });
     },
-    bumper() {
-      tone({ type: 'triangle', f0: 420, f1: 980, dur: 0.16, peak: 0.12 });
-      tone({ type: 'triangle', f0: 640, f1: 1460, dur: 0.2, peak: 0.08, delay: 0.035 });
-      noise({ dur: 0.26, peak: 0.07, f0: 600, f1: 3200, q: 0.8 });
+
+    /* soft bassy boop with an upward tail */
+    bumper(soft) {
+      const v = MIX.bumper * (soft ? 0.82 : 1);
+      tone({ type: 'sine', f0: 76, f1: 132, dur: 0.26, glide: 0.1,
+             peak: 0.34 * v, attack: 0.006, lp: 900, send: 0.1 });
+      tone({ type: 'triangle', f0: 262, f1: 524, dur: 0.22, glide: 0.12,
+             peak: 0.11 * v, attack: 0.012, lp: 2600, send: 0.2 });
+      air_noise({ dur: 0.08, peak: 0.06 * v, f0: 1400, f1: 700, q: 1.1, cap: 4000 });
     },
-    gate() {
-      tone({ type: 'sine', f0: 880, dur: 0.34, peak: 0.09 });
-      tone({ type: 'sine', f0: 1320, dur: 0.42, peak: 0.06, delay: 0.04 });
-      tone({ type: 'sine', f0: 1760, dur: 0.5, peak: 0.035, delay: 0.08 });
-      noise({ dur: 0.3, peak: 0.05, f0: 400, f1: 5200, q: 0.7 });
-    },
-    reject() {
-      tone({ type: 'square', f0: 320, f1: 190, dur: 0.14, peak: 0.05,
-             filter: { type: 'lowpass', f: 1400, f1: 500, q: 2 } });
-      noise({ dur: 0.12, peak: 0.03, f0: 900, f1: 300, q: 2 });
-    },
-    portal() {
-      const seq = [523.25, 659.25, 783.99, 1046.5, 1318.5];
-      seq.forEach((f, i) => {
-        tone({ type: 'triangle', f0: f, dur: 0.7 - i * 0.05, peak: 0.085, delay: i * 0.065 });
-        tone({ type: 'sine', f0: f * 2, dur: 0.4, peak: 0.03, delay: i * 0.065 });
+
+    /* colour change: short shimmer, ascending, with a sparkle on top */
+    shift() {
+      const v = MIX.shift;
+      const root = 392;                                  // G4
+      [1, 1.25, 1.5].forEach((m, i) => {                 // major triad, soft
+        tone({ type: 'sine', f0: root * m * 0.86, f1: root * m, dur: 0.5 - i * 0.06,
+               glide: 0.16, peak: (0.16 - i * 0.035) * v, attack: 0.016 + i * 0.008,
+               delay: i * 0.028, lp: 4200, send: 0.34 });
       });
-      noise({ dur: 0.7, peak: 0.05, f0: 300, f1: 6000, q: 0.6 });
+      tone({ type: 'triangle', f0: root * 2, f1: root * 3, dur: 0.3, glide: 0.2,
+             peak: 0.05 * v, attack: 0.02, delay: 0.04, lp: 5200, send: 0.4 });
+      air_noise({ dur: 0.34, peak: 0.055 * v, f0: 1800, f1: 5200, q: 0.8, cap: 6000,
+                  attack: 0.05, send: 0.4 });
     },
+
+    /* exit: a soft chord that opens upward, airy tail, no fanfare */
+    portal() {
+      const v = MIX.portal;
+      [261.6, 392, 523.3, 659.3].forEach((f, i) => {
+        tone({ type: 'sine', f0: f * 0.94, f1: f, dur: 1.0 - i * 0.1, glide: 0.3,
+               peak: (0.17 - i * 0.03) * v, attack: 0.03 + i * 0.01,
+               delay: i * 0.05, lp: 4600, send: 0.45 });
+      });
+      tone({ type: 'triangle', f0: 784, f1: 1046, dur: 0.6, glide: 0.35,
+             peak: 0.045 * v, attack: 0.06, delay: 0.1, lp: 5400, send: 0.5 });
+      air_noise({ dur: 0.7, peak: 0.05 * v, f0: 900, f1: 4200, q: 0.6, cap: 5600,
+                  attack: 0.12, send: 0.5 });
+    },
+
+    /* energy draining away — soft, short, no buzzer */
     fail() {
-      tone({ type: 'sawtooth', f0: 260, f1: 48, dur: 0.5, peak: 0.12,
-             filter: { type: 'lowpass', f: 1600, f1: 160, q: 3 } });
-      noise({ dur: 0.36, peak: 0.1, f0: 2600, f1: 160, q: 0.7 });
+      const v = MIX.fail;
+      tone({ type: 'sine', f0: 210, f1: 62, dur: 0.46, glide: 0.34,
+             peak: 0.3 * v, attack: 0.008, lp: 1500, lp1: 220, send: 0.2 });
+      tone({ type: 'triangle', f0: 314, f1: 96, dur: 0.34, glide: 0.26,
+             peak: 0.1 * v, attack: 0.012, lp: 1200, send: 0.25 });
+      air_noise({ dur: 0.36, peak: 0.07 * v, f0: 1700, f1: 240, q: 0.7, cap: 3400, send: 0.3 });
     },
+
+    /* portal refusing the wrong signature: a dull, polite thud */
+    reject() {
+      const v = MIX.reject;
+      tone({ type: 'sine', f0: 190, f1: 140, dur: 0.16, glide: 0.1,
+             peak: 0.3 * v, attack: 0.006, lp: 700 });
+      air_noise({ dur: 0.1, peak: 0.06 * v, f0: 460, f1: 240, q: 1.4, cap: 2200 });
+    },
+
     ui() {
-      tone({ type: 'sine', f0: 1180, f1: 820, dur: 0.07, peak: 0.05 });
+      tone({ type: 'sine', f0: 660, f1: 520, dur: 0.075, glide: 0.06,
+             peak: 0.34 * MIX.ui, attack: 0.006, lp: 2600, send: 0.16 });
     },
+
+    /* level change whoosh, felt more than heard */
     sweep() {
-      noise({ dur: 0.5, peak: 0.05, f0: 260, f1: 3400, q: 0.7 });
-      tone({ type: 'sine', f0: 140, f1: 420, dur: 0.45, peak: 0.05 });
+      const v = MIX.sweep;
+      air_noise({ dur: 0.5, peak: 0.07 * v, f0: 300, f1: 2600, q: 0.5, cap: 4200,
+                  attack: 0.14, send: 0.35 });
+      tone({ type: 'sine', f0: 110, f1: 240, dur: 0.44, glide: 0.34,
+             peak: 0.16 * v, attack: 0.06, lp: 1200, send: 0.2 });
     },
+
     complete() {
-      [523.25, 783.99, 1046.5, 1567.98].forEach((f, i) =>
-        tone({ type: 'triangle', f0: f, dur: 1.2, peak: 0.08, delay: i * 0.1 }));
+      const v = MIX.portal;
+      [261.6, 329.6, 392, 523.3].forEach((f, i) => {
+        tone({ type: 'sine', f0: f, dur: 1.5, peak: 0.13 * v,
+               attack: 0.12 + i * 0.03, delay: i * 0.08, lp: 4000, send: 0.5 });
+      });
     },
   };
 })();
@@ -245,7 +391,7 @@ const Sfx = (() => {
    3. PARTICLES & SHOCKWAVES  (fixed pools, zero allocation)
    ============================================================ */
 
-const PMAX = 340;
+const PMAX = 96;            // hard cap on simultaneous particles
 const parts = new Array(PMAX);
 for (let i = 0; i < PMAX; i++) {
   parts[i] = { on: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 2,
@@ -260,7 +406,7 @@ function newPart() {
   const p = parts[pCursor]; pCursor = (pCursor + 1) % PMAX; return p;
 }
 
-const RMAX = 20;
+const RMAX = 12;
 const rings = new Array(RMAX);
 for (let i = 0; i < RMAX; i++) rings[i] = { on: false, x: 0, y: 0, r0: 0, r1: 0, life: 0, max: 1, col: NEUTRAL.rgb, w: 3 };
 let rCursor = 0;
@@ -280,6 +426,7 @@ const FX = {
   },
   spark(x, y, ang, spread, speed, count, col, opt) {
     opt = opt || {};
+    count = Math.max(1, Math.round(count * Q.particleScale));
     for (let i = 0; i < count; i++) {
       const p = newPart();
       const a = ang + rand(-spread, spread);
@@ -295,6 +442,7 @@ const FX = {
     }
   },
   implode(x, y, r, count, col, life) {
+    count = Math.max(3, Math.round(count * Q.particleScale));
     for (let i = 0; i < count; i++) {
       const a = rand(0, TAU);
       const p = newPart();
@@ -335,13 +483,16 @@ function clearFX() {
 
 /* ---- ambient dust (background, never collides) ---- */
 const DUST = [];
-for (let i = 0; i < 44; i++) {
+for (let i = 0; i < 28; i++) {
   DUST.push({ x: rand(0, VW), y: rand(0, VH), z: rand(0.25, 1),
               vx: rand(-0.09, 0.09), vy: rand(-0.16, -0.03), s: rand(0.6, 2.0), t: rand(0, TAU) });
 }
+let dustPhase = 0;
 function updateDust() {
+  // decorative: stepped at 30Hz, which is plenty for drifting motes
+  if ((dustPhase ^= 1)) return;
   for (const d of DUST) {
-    d.x += d.vx * d.z; d.y += d.vy * d.z; d.t += 0.02 * d.z;
+    d.x += d.vx * d.z; d.y += d.vy * d.z; d.t += 0.04 * d.z;
     if (d.y < -8) { d.y = VH + 8; d.x = rand(0, VW); }
     if (d.x < -8) d.x = VW + 8; else if (d.x > VW + 8) d.x = -8;
   }
@@ -352,6 +503,7 @@ function updateDust() {
    ============================================================
    wall   : {x,y,w,h,a?}            solid, optional rotation (deg)
    bumper : {x,y,r,power}           radial launcher
+   node   : {x,y,r,power?,color}    launcher that repaints the orb's energy
    hazard : {x,y,w,h,a?,pulse?}     destroys the orb while active
    gate   : {x,y,w,h,a?,color}      rewrites the orb's energy colour
    portal : {x,y,r?,color?}         exit; color null = accepts any
@@ -405,6 +557,7 @@ const LEVELS = [
       { x: 270, y: 180, w: 150, h: 18 },
     ],
     bumpers: [{ x: 270, y: 645, r: 38, power: 15 }],
+    nodes: [{ x: 76, y: 268, r: 23, color: 'cyan' }],
   },
   {
     name: 'VOLT',
@@ -420,6 +573,7 @@ const LEVELS = [
       { x: 270, y: 596, w: 120, h: 16, a: 30 },
       { x: 392, y: 836, w: 190, h: 16, a: -24 },
     ],
+    nodes: [{ x: 474, y: 566, r: 23, power: 9, color: 'magenta' }],
     hazards: [
       { x: 386, y: 700, w: 280, h: 14, pulse: { period: 2.6, duty: 0.34, phase: 0 } },
       { x: 154, y: 462, w: 280, h: 14, pulse: { period: 3.3, duty: 0.34, phase: 0.45 } },
@@ -478,8 +632,9 @@ const LEVELS = [
       { x: 270, y: 196, w: 150, h: 18 },
       { x: 60,  y: 300, w: 20,  h: 150 },
     ],
-    bumpers: [
-      { x: 270, y: 700, r: 36, power: 15, motion: { type: 'osc', dx: 150, dy: 0, period: 3.4, phase: 0 } },
+    nodes: [
+      { x: 270, y: 700, r: 34, power: 15, color: 'magenta',
+        motion: { type: 'osc', dx: 150, dy: 0, period: 3.4, phase: 0 } },
     ],
   },
   {
@@ -497,7 +652,7 @@ const LEVELS = [
       { x: 52,  y: 320, w: 20,  h: 120 },
       { x: 205, y: 786, w: 190, h: 18, a: -26 },
     ],
-    bumpers: [{ x: 320, y: 830, r: 34, power: 14.5 }],
+    nodes: [{ x: 320, y: 830, r: 32, power: 14.5, color: 'orange' }],
     hazards: [
       { x: 150, y: 560, w: 268, h: 14, pulse: { period: 2.9, duty: 0.4, phase: 0.15 } },
       { x: 92,  y: 250, w: 14,  h: 150 },
@@ -522,6 +677,7 @@ const world = {
   statics: [],   // bakeable subset
   movers: [],    // entities with motion (drawn live)
   bumpers: [],
+  nodes: [],
   hazards: [],
   gates: [],
   portal: null,
@@ -536,6 +692,11 @@ function prepEntity(e, kind) {
   e.px = e.x; e.py = e.y;
   e.vx = 0; e.vy = 0; e.av = 0;
   e.seed = Math.random() * 100;
+  e.gfx = {};                 // per-entity gradient cache (built on first draw)
+  // collision constants, resolved once at load: orientation and the radius of
+  // the bounding circle used for the broad-phase reject
+  e.ca = Math.cos(e.a); e.sa = Math.sin(e.a);
+  e.br = e.w !== undefined ? Math.hypot(e.w, e.h) / 2 : (e.r || 0);
   if (e.motion && e.motion.type === 'spin') e.motion.speed = e.motion.speed;
   return e;
 }
@@ -543,7 +704,8 @@ function prepEntity(e, kind) {
 function buildWorld(src) {
   const L = clone(src);
   world.solids.length = 0; world.statics.length = 0; world.movers.length = 0;
-  world.bumpers.length = 0; world.hazards.length = 0; world.gates.length = 0;
+  world.bumpers.length = 0; world.nodes.length = 0;
+  world.hazards.length = 0; world.gates.length = 0;
   world.bg = L.bg; world.accent = L.accent;
 
   const walls = (L.walls || []).concat(clone(BORDER));
@@ -556,6 +718,15 @@ function buildWorld(src) {
     prepEntity(b, 'bumper'); b.hit = 0;
     world.bumpers.push(b);
     if (b.motion) world.movers.push(b);
+  }
+  // energy nodes are bumpers that also rewrite the orb's colour, so they share
+  // the bumper collision list and only differ in response strength and paint
+  for (const n of (L.nodes || [])) {
+    prepEntity(n, 'node'); n.hit = 0;
+    if (n.power === undefined) n.power = 11.5;
+    world.bumpers.push(n);
+    world.nodes.push(n);
+    if (n.motion) world.movers.push(n);
   }
   for (const h of (L.hazards || [])) {
     prepEntity(h, 'hazard'); h.k = 1;
@@ -587,6 +758,7 @@ function updateMotion(t) {
     } else if (m.type === 'sweep') {
       e.a = e.ba + (m.amp || 1) * Math.sin((t / m.period + (m.phase || 0)) * TAU);
     }
+    if (e.a !== pa) { e.ca = Math.cos(e.a); e.sa = Math.sin(e.a); }
     e.vx = e.x - e.px; e.vy = e.y - e.py; e.av = e.a - pa;
   }
 }
@@ -612,8 +784,13 @@ function hazardLevel(h, t) {
    ============================================================ */
 
 function circleVsBox(px, py, r, e) {
-  const ca = Math.cos(-e.a), sa = Math.sin(-e.a);
   const dx = px - e.x, dy = py - e.y;
+  // broad phase: one squared-distance test against the box's bounding circle
+  // rejects every wall the orb is nowhere near, before any trig runs
+  const reach = e.br + r;
+  if (dx * dx + dy * dy > reach * reach) return null;
+  // orientation is cached at load (and refreshed only for entities that spin)
+  const ca = e.ca, sa = -e.sa;
   const lx = dx * ca - dy * sa;
   const ly = dx * sa + dy * ca;
   const hw = e.w / 2, hh = e.h / 2;
@@ -630,7 +807,7 @@ function circleVsBox(px, py, r, e) {
     if (ox < oy) { nx = lx < 0 ? -1 : 1; ny = 0; pen = ox + r; }
     else { nx = 0; ny = ly < 0 ? -1 : 1; pen = oy + r; }
   }
-  const cb = Math.cos(e.a), sb = Math.sin(e.a);
+  const cb = e.ca, sb = e.sa;
   return { nx: nx * cb - ny * sb, ny: nx * sb + ny * cb, pen };
 }
 
@@ -692,7 +869,13 @@ function stepBody(s, useBumpers) {
     // velocity is re-read every substep: after a bounce the remainder of the
     // step continues along the new direction instead of ploughing on
     s.x += s.vx / n; s.y += s.vy / n;
-    for (let k = 0; k < world.solids.length; k++) resolveBox(s, world.solids[k]);
+    for (let k = 0; k < world.solids.length; k++) {
+      const e = world.solids[k];
+      // extension point: a wall carrying `pass:'cyan'` is solid to every energy
+      // signature except that one. Unused by the current levels, one field away.
+      if (e.pass !== undefined && e.pass === orb.color) continue;
+      resolveBox(s, e);
+    }
     if (useBumpers) {
       for (let k = 0; k < world.bumpers.length; k++) resolveBumper(s, world.bumpers[k]);
       if (RES.bumper) break;
@@ -772,11 +955,11 @@ const G = {
 const orb = {
   x: 0, y: 0, vx: 0, vy: 0, r: CFG.orbR,
   color: 'violet', prevColor: 'violet', colorMix: 1,
-  squash: 0, squashAng: 0, pulse: 0, flash: 0,
+  squash: 0, squashAng: 0, pulse: 0, flash: 0, pop: 0,
   alive: true, scale: 1,
   trail: [], trailN: 0,
 };
-const TRAIL_N = 26;
+const TRAIL_N = 18;
 for (let i = 0; i < TRAIL_N; i++) orb.trail.push({ x: 0, y: 0, v: 0 });
 
 const cam = { shake: 0, sx: 0, sy: 0, zoom: 1, zoomT: 1, flash: 0, flashCol: [255, 255, 255] };
@@ -799,6 +982,7 @@ const dom = {
   endRestart: document.getElementById('endRestart'),
   endShots: document.getElementById('endShots'),
   endTime: document.getElementById('endTime'),
+  fps: document.getElementById('fps'),
 };
 const ctx = dom.canvas.getContext('2d');
 
@@ -828,7 +1012,7 @@ function resetOrb() {
   orb.x = s.x; orb.y = s.y; orb.vx = 0; orb.vy = 0;
   orb.color = G.level.color || 'violet';
   orb.prevColor = orb.color; orb.colorMix = 1;
-  orb.squash = 0; orb.flash = 0; orb.alive = true; orb.scale = 1;
+  orb.squash = 0; orb.flash = 0; orb.pop = 0; orb.alive = true; orb.scale = 1;
   for (let i = 0; i < TRAIL_N; i++) { orb.trail[i].x = orb.x; orb.trail[i].y = orb.y; orb.trail[i].v = 0; }
   orb.trailN = 0;
 }
@@ -916,9 +1100,9 @@ function launch(ang, power) {
   dom.shotCount.textContent = G.shots;
   dom.shots.classList.remove('bump'); void dom.shots.offsetWidth; dom.shots.classList.add('bump');
   const c = energy(orb.color);
-  FX.spark(orb.x - Math.cos(ang) * 12, orb.y - Math.sin(ang) * 12, ang + Math.PI, 0.5, 4 + power * 4, 12, c.rgb,
+  FX.spark(orb.x - Math.cos(ang) * 12, orb.y - Math.sin(ang) * 12, ang + Math.PI, 0.5, 4 + power * 4, 8, c.rgb,
            { life: 0.4, size: 2.6, shape: 1, len: 12, drag: 0.9 });
-  FX.spark(orb.x, orb.y, ang, 0.9, 2.2, 6, c.hi, { life: 0.3, size: 2 });
+  FX.spark(orb.x, orb.y, ang, 0.9, 2.2, 4, c.hi, { life: 0.28, size: 2 });
   FX.shock(orb.x, orb.y, orb.r, orb.r + 34 + power * 26, 0.34, c.rgb, 3);
   cam.shake = Math.max(cam.shake, 2 + power * 4);
   cam.flash = Math.max(cam.flash, 0.1 + power * 0.14); cam.flashCol = c.hi;
@@ -926,13 +1110,33 @@ function launch(ang, power) {
   setHint('');
 }
 
+/* Single place where the orb's energy signature changes, so gates and energy
+   nodes feel identical: white core flash, 200ms colour blend (trail and glow
+   follow automatically), scale pop, shockwave, a few matching sparks. */
+function shiftOrbColor(key, x, y) {
+  if (!key || orb.color === key) return false;
+  orb.prevColor = orb.color;
+  orb.color = key;
+  orb.colorMix = 0;
+  orb.flash = 1;
+  orb.pop = 1;
+  const c = energy(key);
+  FX.spark(x, y, 0, Math.PI, 4.0, 6, c.rgb, { life: 0.42, size: 2.6, drag: 0.92 });
+  FX.spark(x, y, 0, Math.PI, 2.0, 3, c.hi, { life: 0.32, size: 2 });
+  FX.shock(x, y, 6, 70, 0.42, c.rgb, 3);
+  cam.flash = Math.max(cam.flash, 0.2); cam.flashCol = c.hi;
+  cam.shake = Math.max(cam.shake, 3);
+  Sfx.shift();
+  return true;
+}
+
 function killOrb() {
   if (!orb.alive) return;
   orb.alive = false;
   G.phase = 'fail'; G.phaseT = 0;
   const c = energy(orb.color);
-  FX.spark(orb.x, orb.y, 0, Math.PI, 7, 26, DANGER, { life: 0.65, size: 3, drag: 0.94, shape: 1, len: 9 });
-  FX.spark(orb.x, orb.y, 0, Math.PI, 4, 14, c.rgb, { life: 0.5, size: 2.4, drag: 0.93 });
+  FX.spark(orb.x, orb.y, 0, Math.PI, 7, 12, DANGER, { life: 0.5, size: 3, drag: 0.94, shape: 1, len: 9 });
+  FX.spark(orb.x, orb.y, 0, Math.PI, 4, 5, c.rgb, { life: 0.42, size: 2.4, drag: 0.93 });
   FX.shock(orb.x, orb.y, 4, 90, 0.45, DANGER, 4);
   cam.shake = 14; cam.flash = 0.5; cam.flashCol = DANGER;
   Sfx.fail();
@@ -943,7 +1147,7 @@ function winLevel() {
   G.phase = 'win'; G.phaseT = 0;
   const p = world.portal;
   const c = energy(p.color || orb.color);
-  FX.implode(p.x, p.y, 96, 26, c.hi, 0.5);
+  FX.implode(p.x, p.y, 92, 14, c.hi, 0.5);
   FX.shock(p.x, p.y, p.r, p.r + 120, 0.7, c.rgb, 4);
   cam.zoomT = 1.045; cam.flash = 0.34; cam.flashCol = c.hi;
   orb.vx *= 0.2; orb.vy *= 0.2;
@@ -971,15 +1175,7 @@ function checkTriggers(px, py) {
     for (let k = 0; k < world.gates.length; k++) {
       const g = world.gates[k];
       if (g.color !== orb.color && overlapsBox(sx, sy, orb.r * 0.7, g)) {
-        orb.prevColor = orb.color; orb.color = g.color; orb.colorMix = 0;
-        orb.flash = 1; g.flash = 1;
-        const c = energy(g.color);
-        FX.spark(sx, sy, 0, Math.PI, 4.2, 18, c.rgb, { life: 0.55, size: 2.6, drag: 0.92 });
-        FX.spark(sx, sy, 0, Math.PI, 2, 8, c.hi, { life: 0.4, size: 2 });
-        FX.shock(sx, sy, 6, 74, 0.45, c.rgb, 3);
-        cam.flash = Math.max(cam.flash, 0.22); cam.flashCol = c.hi;
-        cam.shake = Math.max(cam.shake, 3);
-        Sfx.gate();
+        if (shiftOrbColor(g.color, sx, sy)) g.flash = 1;
       }
     }
     const pd = Math.hypot(sx - p.x, sy - p.y);
@@ -992,7 +1188,7 @@ function checkTriggers(px, py) {
         const sp = Math.max(6, Math.hypot(orb.vx, orb.vy) * 0.7);
         orb.vx = nx * sp; orb.vy = ny * sp;
         FX.shock(p.x, p.y, p.r * 0.6, p.r + 40, 0.4, energy(p.color).rgb, 3);
-        FX.spark(sx, sy, Math.atan2(ny, nx), 1.1, 3, 10, energy(p.color).rgb, { life: 0.4, size: 2.2 });
+        FX.spark(sx, sy, Math.atan2(ny, nx), 1.1, 3, 6, energy(p.color).rgb, { life: 0.36, size: 2.2 });
         cam.shake = Math.max(cam.shake, 5);
         Sfx.reject();
         showToast('WRONG SIGNATURE');
@@ -1031,6 +1227,7 @@ function simStep() {
   if (G.deny > 0) G.deny = Math.max(0, G.deny - STEP * 2.4);
   if (orb.colorMix < 1) orb.colorMix = Math.min(1, orb.colorMix + STEP * 5);
   if (orb.flash > 0) orb.flash = Math.max(0, orb.flash - STEP * 3.4);
+  if (orb.pop > 0) orb.pop = Math.max(0, orb.pop - STEP * 5.5);
   if (orb.squash > 0) orb.squash = Math.max(0, orb.squash - STEP * 3.6);
   orb.pulse += STEP;
 
@@ -1041,19 +1238,23 @@ function simStep() {
       applyDamping(orb);
       if (r.bumper) {
         const b = r.bumper; b.hit = 1;
-        const c = energy(orb.color);
-        FX.shock(b.x, b.y, b.r * 0.7, b.r + 78, 0.5, [120, 210, 255], 4);
-        FX.shock(b.x, b.y, b.r * 0.5, b.r + 40, 0.3, c.hi, 2);
-        FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 5, 14, [150, 220, 255],
-                 { life: 0.5, size: 2.6, shape: 1, len: 10 });
+        const isNode = b.kind === 'node';
+        const bc = isNode ? energy(b.color) : { rgb: [120, 210, 255], hi: [200, 240, 255] };
+        FX.shock(b.x, b.y, b.r * 0.7, b.r + 70, 0.5, bc.rgb, 4);
+        FX.shock(b.x, b.y, b.r * 0.5, b.r + 38, 0.3, bc.hi, 2);
+        FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 5, isNode ? 6 : 10, bc.hi,
+                 { life: 0.45, size: 2.6, shape: 1, len: 10 });
         orb.squash = 0.7; orb.squashAng = Math.atan2(orb.vy, orb.vx); orb.flash = 0.9;
-        cam.shake = Math.max(cam.shake, 8); cam.flash = Math.max(cam.flash, 0.26);
-        cam.flashCol = [160, 220, 255];
-        Sfx.bumper();
+        cam.shake = Math.max(cam.shake, isNode ? 6 : 8);
+        cam.flash = Math.max(cam.flash, 0.24);
+        cam.flashCol = bc.hi;
+        // a node repaints the orb; the impact still lands underneath the shimmer
+        Sfx.bumper(isNode);
+        if (isNode) shiftOrbColor(b.color, RES.hx, RES.hy);
       } else if (r.wall && r.impact > 1.2) {
         const s = clamp(r.impact / 14, 0, 1);
         const c = energy(orb.color);
-        FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 1.4 + s * 4, 4 + (s * 8 | 0), c.rgb,
+        FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 1.4 + s * 4, 3 + (s * 5 | 0), c.rgb,
                  { life: 0.32, size: 1.9, shape: 1, len: 7, drag: 0.9 });
         if (s > 0.28) FX.shock(RES.hx, RES.hy, 2, 16 + s * 40, 0.3, c.rgb, 2);
         orb.squash = Math.min(0.6, 0.18 + s * 0.5);
@@ -1115,8 +1316,10 @@ let RS = 1;                       // render scale (device px per game unit)
 const bakeCv = document.createElement('canvas');
 const bakeCtx = bakeCv.getContext('2d');
 
+let canvasRect = { left: 0, top: 0, width: VW, height: VH };
+
 function fit() {
-  const rect = dom.canvas.getBoundingClientRect();
+  const rect = canvasRect = dom.canvas.getBoundingClientRect();
   // capped at 2x: beyond that the fill-rate cost of the additive glows
   // outweighs the sharpness gain on phone-sized screens
   const dpr = clamp(window.devicePixelRatio || 1, 1, 2);
@@ -1147,10 +1350,13 @@ function bakeStatic() {
   // large soft lights
   const acc = world.accent;
   c.globalCompositeOperation = 'lighter';
+  // baked once per level — these carry the ambient depth that used to be
+  // redrawn (expensively) every frame
   const lights = [
-    [VW * 0.16, VH * 0.22, 330, 0.16],
-    [VW * 0.88, VH * 0.58, 300, 0.13],
-    [VW * 0.45, VH * 0.95, 360, 0.11],
+    [VW * 0.16, VH * 0.20, 340, 0.22],
+    [VW * 0.90, VH * 0.56, 320, 0.19],
+    [VW * 0.42, VH * 0.95, 380, 0.16],
+    [VW * 0.62, VH * 0.34, 280, 0.13],
   ];
   for (const [lx, ly, lr, la] of lights) {
     const rg = c.createRadialGradient(lx, ly, 0, lx, ly, lr);
@@ -1184,27 +1390,41 @@ function bakeStatic() {
   for (const w2 of world.statics) drawWall(c, w2);
 }
 
-function drawWall(c, e) {
+function drawWall(c, e, live) {
   const w = e.w, h = e.h;
   c.save();
   c.translate(e.x, e.y); c.rotate(e.a);
   const r = Math.min(9, Math.min(w, h) / 2);
 
-  // outer glow
-  c.shadowColor = 'rgba(120,150,255,0.5)';
-  c.shadowBlur = 16;
-  roundRect(c, -w / 2, -h / 2, w, h, r);
-  c.fillStyle = '#0d1230';
-  c.fill();
-  c.shadowBlur = 0;
+  // Outer glow. shadowBlur is a per-pixel CPU blur, so it is affordable while
+  // baking the static layer once but never for a wall that moves every frame —
+  // those get a cheap wide translucent stroke instead.
+  if (live) {
+    c.strokeStyle = 'rgba(120,150,255,0.12)';
+    c.lineWidth = 7;
+    roundRect(c, -w / 2, -h / 2, w, h, r);
+    c.stroke();
+  } else {
+    c.shadowColor = 'rgba(120,150,255,0.5)';
+    c.shadowBlur = 16;
+    roundRect(c, -w / 2, -h / 2, w, h, r);
+    c.fillStyle = '#0d1230';
+    c.fill();
+    c.shadowBlur = 0;
+  }
 
-  // body
-  const g = c.createLinearGradient(0, -h / 2, 0, h / 2);
-  g.addColorStop(0, '#222a58');
-  g.addColorStop(0.42, '#141a3c');
-  g.addColorStop(1, '#0a0e26');
+  // body (cached only for live walls — a gradient belongs to the context that
+  // made it, and the static ones are rasterised into the bake layer anyway)
+  const mkBody = () => {
+    const g = c.createLinearGradient(0, -h / 2, 0, h / 2);
+    g.addColorStop(0, '#222a58');
+    g.addColorStop(0.42, '#141a3c');
+    g.addColorStop(1, '#0a0e26');
+    return g;
+  };
   roundRect(c, -w / 2, -h / 2, w, h, r);
-  c.fillStyle = g; c.fill();
+  c.fillStyle = live ? grad(e.gfx, 'body', mkBody) : mkBody();
+  c.fill();
 
   c.strokeStyle = 'rgba(140,175,255,0.30)';
   c.lineWidth = 1.3;
@@ -1213,13 +1433,16 @@ function drawWall(c, e) {
   // neon top edge + inner detail
   c.globalCompositeOperation = 'lighter';
   const long = w >= h;
-  const eg = long
-    ? c.createLinearGradient(-w / 2, 0, w / 2, 0)
-    : c.createLinearGradient(0, -h / 2, 0, h / 2);
-  eg.addColorStop(0, 'rgba(120,160,255,0)');
-  eg.addColorStop(0.5, 'rgba(150,190,255,0.55)');
-  eg.addColorStop(1, 'rgba(120,160,255,0)');
-  c.fillStyle = eg;
+  const mkEdge = () => {
+    const eg = long
+      ? c.createLinearGradient(-w / 2, 0, w / 2, 0)
+      : c.createLinearGradient(0, -h / 2, 0, h / 2);
+    eg.addColorStop(0, 'rgba(120,160,255,0)');
+    eg.addColorStop(0.5, 'rgba(150,190,255,0.55)');
+    eg.addColorStop(1, 'rgba(120,160,255,0)');
+    return eg;
+  };
+  c.fillStyle = live ? grad(e.gfx, 'edge', mkEdge) : mkEdge();
   if (long) c.fillRect(-w / 2 + r, -h / 2 + 1.5, w - r * 2, 1.6);
   else c.fillRect(-w / 2 + 1.5, -h / 2 + r, 1.6, h - r * 2);
 
@@ -1234,59 +1457,105 @@ function drawWall(c, e) {
   c.restore();
 }
 
+const BUMPER_RGB = [120, 210, 255];
+
+/* Bumpers and energy nodes share a body; a node carries an energy colour and
+   wears a hexagonal frame so the two read as related but distinct. */
 function drawBumper(c, b) {
+  const node = b.kind === 'node';
+  const col = node ? energy(b.color).rgb : BUMPER_RGB;
+  const hi = node ? energy(b.color).hi : [230, 250, 255];
   const squeeze = 1 - b.hit * 0.16;
   const t = G.t;
+  const pu = 0.5 + 0.5 * Math.sin(t * 3 + b.seed);
+
   c.save();
   c.translate(b.x, b.y);
   c.scale(squeeze, squeeze);
-  const col = [120, 210, 255];
 
+  // halo — cached ramp, brightness comes from globalAlpha
+  const HR = b.r * 1.65;
   c.globalCompositeOperation = 'lighter';
-  const halo = c.createRadialGradient(0, 0, b.r * 0.2, 0, 0, b.r * 2.1);
-  halo.addColorStop(0, rgba(col, 0.32 + b.hit * 0.4));
-  halo.addColorStop(0.45, rgba(col, 0.12));
-  halo.addColorStop(1, rgba(col, 0));
-  c.fillStyle = halo;
-  c.beginPath(); c.arc(0, 0, b.r * 2.1, 0, TAU); c.fill();
+  c.globalAlpha = 0.5 + b.hit * 0.5;
+  c.fillStyle = grad(b.gfx, 'halo', () => {
+    const g = c.createRadialGradient(0, 0, b.r * 0.2, 0, 0, HR);
+    g.addColorStop(0, rgba(col, 0.42));
+    g.addColorStop(0.45, rgba(col, 0.14));
+    g.addColorStop(1, rgba(col, 0));
+    return g;
+  });
+  c.beginPath(); c.arc(0, 0, HR, 0, TAU); c.fill();
+  c.globalAlpha = 1;
   c.globalCompositeOperation = 'source-over';
 
   // body
-  const bg = c.createRadialGradient(-b.r * 0.25, -b.r * 0.3, b.r * 0.1, 0, 0, b.r);
-  bg.addColorStop(0, 'rgba(40,80,140,0.95)');
-  bg.addColorStop(0.7, 'rgba(14,26,62,0.95)');
-  bg.addColorStop(1, 'rgba(8,14,40,0.98)');
-  c.fillStyle = bg;
+  c.fillStyle = grad(b.gfx, 'body', () => {
+    const g = c.createRadialGradient(-b.r * 0.25, -b.r * 0.3, b.r * 0.1, 0, 0, b.r);
+    g.addColorStop(0, node ? 'rgba(46,44,96,0.95)' : 'rgba(40,80,140,0.95)');
+    g.addColorStop(0.7, 'rgba(14,22,58,0.95)');
+    g.addColorStop(1, 'rgba(8,12,38,0.98)');
+    return g;
+  });
   c.beginPath(); c.arc(0, 0, b.r, 0, TAU); c.fill();
 
-  // pulsing inner core
-  const pu = 0.5 + 0.5 * Math.sin(t * 3 + b.seed);
+  // inner core
   c.globalCompositeOperation = 'lighter';
-  const cg = c.createRadialGradient(0, 0, 0, 0, 0, b.r * 0.72);
-  cg.addColorStop(0, rgba([230, 250, 255], 0.5 + pu * 0.25 + b.hit * 0.3));
-  cg.addColorStop(0.5, rgba(col, 0.28 + pu * 0.14));
-  cg.addColorStop(1, rgba(col, 0));
-  c.fillStyle = cg;
+  c.globalAlpha = 0.62 + pu * 0.22 + b.hit * 0.16;
+  c.fillStyle = grad(b.gfx, 'core', () => {
+    const g = c.createRadialGradient(0, 0, 0, 0, 0, b.r * 0.72);
+    g.addColorStop(0, rgba(hi, 0.85));
+    g.addColorStop(0.5, rgba(col, 0.42));
+    g.addColorStop(1, rgba(col, 0));
+    return g;
+  });
   c.beginPath(); c.arc(0, 0, b.r * 0.72, 0, TAU); c.fill();
+  c.globalAlpha = 1;
 
-  // rings
-  c.strokeStyle = rgba(col, 0.85);
-  c.lineWidth = 2.4;
-  c.beginPath(); c.arc(0, 0, b.r - 1.5, 0, TAU); c.stroke();
-  c.strokeStyle = rgba([255, 255, 255], 0.2 + pu * 0.2);
-  c.lineWidth = 1;
-  c.beginPath(); c.arc(0, 0, b.r * 0.82, 0, TAU); c.stroke();
-
-  // chevrons
-  const rot = t * 1.1 + b.seed;
-  c.strokeStyle = rgba([210, 245, 255], 0.55 + b.hit * 0.4);
-  c.lineWidth = 2.2;
-  c.lineCap = 'round';
-  for (let i = 0; i < 3; i++) {
-    const a = rot + i * TAU / 3;
+  if (node) {
+    // hexagonal frame + counter-rotating inner triangle
+    const rot = t * 0.5 + b.seed;
+    c.strokeStyle = rgba(col, 0.9);
+    c.lineWidth = 2.4;
     c.beginPath();
-    c.arc(0, 0, b.r * 0.55, a, a + 0.5);
+    for (let i = 0; i <= 6; i++) {
+      const a = rot + i * TAU / 6;
+      const x = Math.cos(a) * (b.r - 1.5), y = Math.sin(a) * (b.r - 1.5);
+      if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+    }
     c.stroke();
+    c.strokeStyle = rgba(hi, 0.4 + pu * 0.3);
+    c.lineWidth = 1.5;
+    c.beginPath();
+    for (let i = 0; i <= 3; i++) {
+      const a = -rot * 1.6 + i * TAU / 3;
+      const x = Math.cos(a) * b.r * 0.46, y = Math.sin(a) * b.r * 0.46;
+      if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+    }
+    c.stroke();
+    // orbiting motes — drawn procedurally so they never touch the particle pool
+    c.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) {
+      const a = t * (0.7 + i * 0.16) + i * TAU / 3 + b.seed;
+      const rr = b.r * (0.95 + 0.22 * Math.sin(t * 1.6 + i * 2));
+      c.fillStyle = rgba(hi, 0.5 + 0.28 * Math.sin(t * 2.4 + i));
+      c.beginPath(); c.arc(Math.cos(a) * rr, Math.sin(a) * rr, 1.6, 0, TAU); c.fill();
+    }
+  } else {
+    c.strokeStyle = rgba(col, 0.85);
+    c.lineWidth = 2.4;
+    c.beginPath(); c.arc(0, 0, b.r - 1.5, 0, TAU); c.stroke();
+    c.strokeStyle = rgba([255, 255, 255], 0.2 + pu * 0.2);
+    c.lineWidth = 1;
+    c.beginPath(); c.arc(0, 0, b.r * 0.82, 0, TAU); c.stroke();
+
+    const rot = t * 1.1 + b.seed;
+    c.strokeStyle = rgba([210, 245, 255], 0.55 + b.hit * 0.4);
+    c.lineWidth = 2.2;
+    c.lineCap = 'round';
+    for (let i = 0; i < 3; i++) {
+      const a = rot + i * TAU / 3;
+      c.beginPath(); c.arc(0, 0, b.r * 0.55, a, a + 0.5); c.stroke();
+    }
   }
   c.globalCompositeOperation = 'source-over';
   c.restore();
@@ -1302,16 +1571,23 @@ function drawHazard(c, h) {
 
   // emitter caps
   c.globalCompositeOperation = 'lighter';
+  c.globalAlpha = 0.6 + k * 0.4;
+  c.fillStyle = grad(h.gfx, 'cap', () => {
+    const cg = c.createRadialGradient(0, 0, 0, 0, 0, 13);
+    cg.addColorStop(0, rgba([255, 220, 235], 0.75));
+    cg.addColorStop(0.4, rgba(DANGER, 0.8));
+    cg.addColorStop(1, rgba(DANGER, 0));
+    return cg;
+  });
   for (const s of [-1, 1]) {
     const ex = long ? s * w / 2 : 0;
     const ey = long ? 0 : s * ht / 2;
-    const cg = c.createRadialGradient(ex, ey, 0, ex, ey, 13);
-    cg.addColorStop(0, rgba([255, 220, 235], 0.7));
-    cg.addColorStop(0.4, rgba(DANGER, 0.5 + k * 0.4));
-    cg.addColorStop(1, rgba(DANGER, 0));
-    c.fillStyle = cg;
-    c.beginPath(); c.arc(ex, ey, 13, 0, TAU); c.fill();
+    c.save();
+    c.translate(ex, ey);
+    c.beginPath(); c.arc(0, 0, 13, 0, TAU); c.fill();
+    c.restore();
   }
+  c.globalAlpha = 1;
   c.globalCompositeOperation = 'source-over';
   c.fillStyle = '#1a0a1e';
   for (const s of [-1, 1]) {
@@ -1339,16 +1615,24 @@ function drawHazard(c, h) {
   const th = (long ? ht : w) * (0.35 + k * 0.65);
   const bw = long ? w : th, bh = long ? th : ht;
 
-  // bloom
-  const bg = long
-    ? c.createLinearGradient(0, -th * 2.2, 0, th * 2.2)
-    : c.createLinearGradient(-th * 2.2, 0, th * 2.2, 0);
-  bg.addColorStop(0, rgba(DANGER, 0));
-  bg.addColorStop(0.5, rgba(DANGER, 0.34 * k));
-  bg.addColorStop(1, rgba(DANGER, 0));
-  c.fillStyle = bg;
-  if (long) c.fillRect(-w / 2, -th * 2.2, w, th * 4.4);
-  else c.fillRect(-th * 2.2, -ht / 2, th * 4.4, ht);
+  // bloom — cached at full width, then squeezed across the beam by transform
+  const thMax = (long ? ht : w);
+  c.save();
+  if (long) c.scale(1, th / thMax); else c.scale(th / thMax, 1);
+  c.globalAlpha = k;
+  c.fillStyle = grad(h.gfx, 'bloom', () => {
+    const bg = long
+      ? c.createLinearGradient(0, -thMax * 2.2, 0, thMax * 2.2)
+      : c.createLinearGradient(-thMax * 2.2, 0, thMax * 2.2, 0);
+    bg.addColorStop(0, rgba(DANGER, 0));
+    bg.addColorStop(0.5, rgba(DANGER, 0.34));
+    bg.addColorStop(1, rgba(DANGER, 0));
+    return bg;
+  });
+  if (long) c.fillRect(-w / 2, -thMax * 2.2, w, thMax * 4.4);
+  else c.fillRect(-thMax * 2.2, -ht / 2, thMax * 4.4, ht);
+  c.globalAlpha = 1;
+  c.restore();
 
   // beam body
   c.fillStyle = rgba([255, 110, 160], 0.5 * k);
@@ -1385,29 +1669,39 @@ function drawGate(c, g) {
   c.save();
   c.translate(g.x, g.y); c.rotate(g.a);
 
-  // frame posts
+  // frame posts — cached ramps, the flash rides on globalAlpha
   c.globalCompositeOperation = 'lighter';
+  c.globalAlpha = Math.min(1, 0.8 + g.flash * 0.2);
+  c.fillStyle = grad(g.gfx, 'post', () => {
+    const rg = c.createRadialGradient(0, 0, 0, 0, 0, 18);
+    rg.addColorStop(0, rgba(col.hi, 0.7));
+    rg.addColorStop(0.35, rgba(col.rgb, 0.42));
+    rg.addColorStop(1, rgba(col.rgb, 0));
+    return rg;
+  });
   for (const s of [-1, 1]) {
     const ex = long ? s * w / 2 : 0;
     const ey = long ? 0 : s * h / 2;
-    const rg = c.createRadialGradient(ex, ey, 0, ex, ey, 18);
-    rg.addColorStop(0, rgba(col.hi, 0.55 + g.flash * 0.4));
-    rg.addColorStop(0.35, rgba(col.rgb, 0.4));
-    rg.addColorStop(1, rgba(col.rgb, 0));
-    c.fillStyle = rg;
-    c.beginPath(); c.arc(ex, ey, 18, 0, TAU); c.fill();
+    c.save();
+    c.translate(ex, ey);
+    c.beginPath(); c.arc(0, 0, 18, 0, TAU); c.fill();
+    c.restore();
   }
 
   // membrane
   const th = long ? h : w;
-  const mg = long
-    ? c.createLinearGradient(0, -th / 2, 0, th / 2)
-    : c.createLinearGradient(-th / 2, 0, th / 2, 0);
-  mg.addColorStop(0, rgba(col.rgb, 0.05));
-  mg.addColorStop(0.5, rgba(col.rgb, 0.30 + g.flash * 0.3));
-  mg.addColorStop(1, rgba(col.rgb, 0.05));
-  c.fillStyle = mg;
+  c.globalAlpha = Math.min(1, 0.72 + g.flash * 0.28);
+  c.fillStyle = grad(g.gfx, 'mem', () => {
+    const mg = long
+      ? c.createLinearGradient(0, -th / 2, 0, th / 2)
+      : c.createLinearGradient(-th / 2, 0, th / 2, 0);
+    mg.addColorStop(0, rgba(col.rgb, 0.07));
+    mg.addColorStop(0.5, rgba(col.rgb, 0.42));
+    mg.addColorStop(1, rgba(col.rgb, 0.07));
+    return mg;
+  });
   c.fillRect(-w / 2, -h / 2, w, h);
+  c.globalAlpha = 1;
 
   // travelling shimmer
   c.save();
@@ -1460,34 +1754,46 @@ function drawPortal(c, p) {
   c.scale(scale, scale);
 
   c.globalCompositeOperation = 'lighter';
-  // outer bloom
-  const bg = c.createRadialGradient(0, 0, p.r * 0.3, 0, 0, p.r * 2.6);
-  bg.addColorStop(0, rgba(col.rgb, 0.3 + pulse * 0.1 + open * 0.4));
-  bg.addColorStop(0.4, rgba(col.rgb, 0.12));
-  bg.addColorStop(1, rgba(col.rgb, 0));
-  c.fillStyle = bg;
-  c.beginPath(); c.arc(0, 0, p.r * 2.6, 0, TAU); c.fill();
+  // outer bloom — radius trimmed from 2.6r to 1.95r (44% less blended area)
+  // and the ramp is cached; brightness rides on globalAlpha instead
+  const BR = p.r * 1.95;
+  c.globalAlpha = Math.min(1, 0.78 + pulse * 0.22 + open * 0.8);
+  c.fillStyle = grad(p.gfx, 'bloom', () => {
+    const g = c.createRadialGradient(0, 0, p.r * 0.3, 0, 0, BR);
+    g.addColorStop(0, rgba(col.rgb, 0.42));
+    g.addColorStop(0.42, rgba(col.rgb, 0.15));
+    g.addColorStop(1, rgba(col.rgb, 0));
+    return g;
+  });
+  c.beginPath(); c.arc(0, 0, BR, 0, TAU); c.fill();
+  c.globalAlpha = 1;
 
   // event horizon — dark well first, so the energy reads on top of it
   c.globalCompositeOperation = 'source-over';
-  const eg = c.createRadialGradient(0, 0, 0, 0, 0, p.r * 0.82);
-  eg.addColorStop(0, 'rgba(4,5,18,0.85)');
-  eg.addColorStop(0.55, 'rgba(5,7,24,0.78)');
-  eg.addColorStop(1, 'rgba(6,8,26,0)');
-  c.fillStyle = eg;
+  c.fillStyle = grad(p.gfx, 'eye', () => {
+    const g = c.createRadialGradient(0, 0, 0, 0, 0, p.r * 0.82);
+    g.addColorStop(0, 'rgba(4,5,18,0.85)');
+    g.addColorStop(0.55, 'rgba(5,7,24,0.78)');
+    g.addColorStop(1, 'rgba(6,8,26,0)');
+    return g;
+  });
   c.beginPath(); c.arc(0, 0, p.r * 0.82, 0, TAU); c.fill();
   c.globalCompositeOperation = 'lighter';
 
   // swirl core
-  const cg = c.createRadialGradient(0, 0, 0, 0, 0, p.r * 0.95);
-  cg.addColorStop(0, rgba([255, 255, 255], 0.85 + open * 0.15));
-  cg.addColorStop(0.12, rgba(col.hi, 0.7 + pulse * 0.12));
-  cg.addColorStop(0.3, rgba(col.rgb, 0.3));
-  cg.addColorStop(0.58, rgba(col.rgb, 0.42 + pulse * 0.16));
-  cg.addColorStop(0.84, rgba(col.rgb, 0.18));
-  cg.addColorStop(1, rgba(col.rgb, 0));
-  c.fillStyle = cg;
+  c.globalAlpha = Math.min(1, 0.84 + pulse * 0.16 + open * 0.16);
+  c.fillStyle = grad(p.gfx, 'core', () => {
+    const g = c.createRadialGradient(0, 0, 0, 0, 0, p.r * 0.95);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.12, rgba(col.hi, 0.8));
+    g.addColorStop(0.3, rgba(col.rgb, 0.34));
+    g.addColorStop(0.58, rgba(col.rgb, 0.5));
+    g.addColorStop(0.84, rgba(col.rgb, 0.2));
+    g.addColorStop(1, rgba(col.rgb, 0));
+    return g;
+  });
   c.beginPath(); c.arc(0, 0, p.r * 0.95, 0, TAU); c.fill();
+  c.globalAlpha = 1;
 
   // spiral intake
   c.lineCap = 'round';
@@ -1550,39 +1856,81 @@ function drawPortal(c, p) {
   c.restore();
 }
 
+/* The orb's colour is blended in 8 steps while it transitions, so its gradient
+   set is built at most a handful of times per colour change instead of five
+   gradients every single frame. */
+const MIX_STEPS = 8;
+const orbGfx = { _n: 0 };
+
 function orbColors() {
   const a = energy(orb.prevColor), b = energy(orb.color);
-  const m = orb.colorMix;
+  const m = orb.colorMix >= 1 ? 1 : Math.round(orb.colorMix * MIX_STEPS) / MIX_STEPS;
+  if (m >= 1) return b;
   return {
     rgb: [lerp(a.rgb[0], b.rgb[0], m) | 0, lerp(a.rgb[1], b.rgb[1], m) | 0, lerp(a.rgb[2], b.rgb[2], m) | 0],
     hi: [lerp(a.hi[0], b.hi[0], m) | 0, lerp(a.hi[1], b.hi[1], m) | 0, lerp(a.hi[2], b.hi[2], m) | 0],
   };
 }
 
+function orbKey() {
+  if (orb.colorMix >= 1) return orb.color;
+  return orb.prevColor + '>' + orb.color + ':' + Math.round(orb.colorMix * MIX_STEPS);
+}
+
+function orbLayers(c) {
+  const key = orbKey();
+  let L = orbGfx[key];
+  if (L) return L;
+  if (orbGfx._n > 40) { for (const k in orbGfx) if (k !== '_n') delete orbGfx[k]; orbGfx._n = 0; }
+  const col = orbColors();
+  const r = CFG.orbR;
+  const bloom = c.createRadialGradient(0, 0, r * 0.4, 0, 0, r * 2.5);
+  bloom.addColorStop(0, rgba(col.rgb, 0.62));
+  bloom.addColorStop(0.35, rgba(col.rgb, 0.18));
+  bloom.addColorStop(1, rgba(col.rgb, 0));
+  const shell = c.createRadialGradient(-r * 0.3, -r * 0.35, r * 0.1, 0, 0, r);
+  shell.addColorStop(0, rgba(col.hi, 0.95));
+  shell.addColorStop(0.35, rgba(col.rgb, 0.8));
+  shell.addColorStop(0.78, rgba(col.rgb, 0.42));
+  shell.addColorStop(1, rgba(col.rgb, 0.16));
+  const core = c.createRadialGradient(-r * 0.1, -r * 0.12, 0, 0, 0, r * 0.62);
+  core.addColorStop(0, 'rgba(255,255,255,1)');
+  core.addColorStop(0.35, rgba(col.hi, 0.9));
+  core.addColorStop(1, rgba(col.rgb, 0));
+  const inner = c.createRadialGradient(0, 0, 0, 0, 0, r * 0.75);
+  inner.addColorStop(0, rgba(col.hi, 0.5));
+  inner.addColorStop(1, rgba(col.hi, 0));
+  L = orbGfx[key] = { bloom, shell, core, inner, col };
+  orbGfx._n++;
+  return L;
+}
+
+/* Fixed-size ring buffer, no allocation, and it collapses to nothing as soon
+   as the orb slows down — below ~1.5 units/step the trail is not drawn at all,
+   so a resting orb costs zero. */
 function drawTrail(c, col) {
-  const n = Math.min(orb.trailN, TRAIL_N);
+  const speed = Math.hypot(orb.vx, orb.vy);
+  if (speed < 1.5) return;
+  const n = Math.min(orb.trailN, Q.level < 1 ? (TRAIL_N >> 1) : TRAIL_N);
   if (n < 3) return;
+  const k = clamp(speed / 12, 0, 1);
   c.globalCompositeOperation = 'lighter';
   c.lineCap = 'round'; c.lineJoin = 'round';
-  for (let pass = 0; pass < 2; pass++) {
-    c.beginPath();
-    let started = false;
-    for (let i = 1; i < n; i++) {
-      const idx = (orb.trailN - n + i + TRAIL_N * 4) % TRAIL_N;
-      const p = orb.trail[idx];
-      if (!started) { c.moveTo(p.x, p.y); started = true; }
-      else c.lineTo(p.x, p.y);
-    }
-    const head = orb.trail[(orb.trailN - 1 + TRAIL_N * 4) % TRAIL_N];
-    const tail = orb.trail[(orb.trailN - n + TRAIL_N * 4) % TRAIL_N];
-    const g = c.createLinearGradient(tail.x, tail.y, head.x, head.y);
-    const speed = clamp(Math.hypot(orb.vx, orb.vy) / 12, 0, 1);
-    g.addColorStop(0, rgba(col.rgb, 0));
-    g.addColorStop(1, rgba(pass ? col.hi : col.rgb, (pass ? 0.4 : 0.26) * (0.25 + speed * 0.75)));
-    c.strokeStyle = g;
-    c.lineWidth = pass ? orb.r * 0.5 : orb.r * 1.5;
-    c.stroke();
+
+  c.beginPath();
+  for (let i = 1; i < n; i++) {
+    const p = orb.trail[(orb.trailN - n + i + TRAIL_N * 4) % TRAIL_N];
+    if (i === 1) c.moveTo(p.x, p.y); else c.lineTo(p.x, p.y);
   }
+  const head = orb.trail[(orb.trailN - 1 + TRAIL_N * 4) % TRAIL_N];
+  const tail = orb.trail[(orb.trailN - n + TRAIL_N * 4) % TRAIL_N];
+  const g = c.createLinearGradient(tail.x, tail.y, head.x, head.y);
+  g.addColorStop(0, rgba(col.rgb, 0));
+  g.addColorStop(0.65, rgba(col.rgb, 0.16 * k));
+  g.addColorStop(1, rgba(col.hi, 0.5 * (0.3 + k * 0.7)));
+  c.strokeStyle = g;
+  c.lineWidth = orb.r * (0.7 + k * 0.7);
+  c.stroke();
   c.globalCompositeOperation = 'source-over';
 }
 
@@ -1610,18 +1958,24 @@ function drawOrb(c) {
   const bob = idle * 1.6;
   const x = orb.x + ox, y = orb.y + oy + bob;
 
+  const L = orbLayers(c);
+  const pop = 1 + orb.pop * 0.22;          // colour-change scale pulse
+
   c.save();
   c.translate(x, y);
+  if (pop !== 1) c.scale(pop, pop);
 
-  // outer bloom (unrotated)
+  // outer bloom: one cached ramp, sized by transform and lit by alpha so the
+  // glow still reacts to speed/charge without rebuilding anything
   c.globalCompositeOperation = 'lighter';
-  const bloomR = r * (3.2 + orb.flash * 1.6 + G.power * 0.9);
-  const bg = c.createRadialGradient(0, 0, r * 0.4, 0, 0, bloomR);
-  bg.addColorStop(0, rgba(col.rgb, 0.46 + orb.flash * 0.3 + G.power * 0.16));
-  bg.addColorStop(0.35, rgba(col.rgb, 0.14));
-  bg.addColorStop(1, rgba(col.rgb, 0));
-  c.fillStyle = bg;
-  c.beginPath(); c.arc(0, 0, bloomR, 0, TAU); c.fill();
+  const bloomS = (r / orb.r) * (1 + orb.flash * 0.26 + G.power * 0.2 + clamp(sp / 26, 0, 1) * 0.18);
+  c.save();
+  c.scale(bloomS, bloomS);
+  c.globalAlpha = Math.min(1, 0.74 + orb.flash * 0.26 + G.power * 0.22);
+  c.fillStyle = L.bloom;
+  c.beginPath(); c.arc(0, 0, orb.r * 2.5, 0, TAU); c.fill();
+  c.globalAlpha = 1;
+  c.restore();
   c.globalCompositeOperation = 'source-over';
 
   c.save();
@@ -1632,48 +1986,49 @@ function drawOrb(c) {
   c.scale(sx, sy);
   c.rotate(-ang);
 
+  // body is drawn in unit-radius space and scaled once, so every cached
+  // gradient below is reused verbatim whatever the orb's current size
+  const rs = r / orb.r;
+  c.scale(rs, rs);
+
   // glass shell
-  const shell = c.createRadialGradient(-r * 0.3, -r * 0.35, r * 0.1, 0, 0, r);
-  shell.addColorStop(0, rgba(col.hi, 0.95));
-  shell.addColorStop(0.35, rgba(col.rgb, 0.8));
-  shell.addColorStop(0.78, rgba(col.rgb, 0.42));
-  shell.addColorStop(1, rgba(col.rgb, 0.16));
-  c.fillStyle = shell;
-  c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill();
+  c.fillStyle = L.shell;
+  c.beginPath(); c.arc(0, 0, orb.r, 0, TAU); c.fill();
 
   // inner energy — two slow blobs clipped to the shell
   c.save();
-  c.beginPath(); c.arc(0, 0, r * 0.94, 0, TAU); c.clip();
+  c.beginPath(); c.arc(0, 0, orb.r * 0.94, 0, TAU); c.clip();
   c.globalCompositeOperation = 'lighter';
+  c.fillStyle = L.inner;
   for (let i = 0; i < 2; i++) {
     const a = orb.pulse * (0.9 + i * 0.7) + i * 2.1;
-    const bx = Math.cos(a) * r * 0.34, by = Math.sin(a * 1.3) * r * 0.34;
-    const bgi = c.createRadialGradient(bx, by, 0, bx, by, r * 0.75);
-    bgi.addColorStop(0, rgba(col.hi, 0.5));
-    bgi.addColorStop(1, rgba(col.hi, 0));
-    c.fillStyle = bgi;
-    c.beginPath(); c.arc(bx, by, r * 0.75, 0, TAU); c.fill();
+    const bx = Math.cos(a) * orb.r * 0.34, by = Math.sin(a * 1.3) * orb.r * 0.34;
+    c.save();
+    c.translate(bx, by);
+    c.beginPath(); c.arc(0, 0, orb.r * 0.75, 0, TAU); c.fill();
+    c.restore();
   }
   c.restore();
 
-  // bright core
+  // bright core — the white flash on a colour change rides on alpha
   const corePulse = 1 + Math.sin(orb.pulse * 3.4) * 0.07 + orb.flash * 0.35 + G.power * 0.2;
-  const cg = c.createRadialGradient(-r * 0.1, -r * 0.12, 0, 0, 0, r * 0.62 * corePulse);
-  cg.addColorStop(0, 'rgba(255,255,255,1)');
-  cg.addColorStop(0.35, rgba(col.hi, 0.9));
-  cg.addColorStop(1, rgba(col.rgb, 0));
   c.globalCompositeOperation = 'lighter';
-  c.fillStyle = cg;
-  c.beginPath(); c.arc(0, 0, r * 0.62 * corePulse, 0, TAU); c.fill();
+  c.save();
+  c.scale(corePulse, corePulse);
+  c.globalAlpha = Math.min(1, 0.8 + orb.flash * 0.2);
+  c.fillStyle = L.core;
+  c.beginPath(); c.arc(0, 0, orb.r * 0.62, 0, TAU); c.fill();
+  c.globalAlpha = 1;
+  c.restore();
   c.globalCompositeOperation = 'source-over';
 
   // rim light
   c.strokeStyle = rgba(col.hi, 0.75);
   c.lineWidth = 1.2;
-  c.beginPath(); c.arc(0, 0, r - 0.8, 0, TAU); c.stroke();
+  c.beginPath(); c.arc(0, 0, orb.r - 0.8, 0, TAU); c.stroke();
   // specular
   c.fillStyle = 'rgba(255,255,255,0.55)';
-  c.beginPath(); c.ellipse(-r * 0.34, -r * 0.4, r * 0.2, r * 0.13, -0.6, 0, TAU); c.fill();
+  c.beginPath(); c.ellipse(-orb.r * 0.34, -orb.r * 0.4, orb.r * 0.2, orb.r * 0.13, -0.6, 0, TAU); c.fill();
   c.restore();
 
   // orbiting sparkles
@@ -1688,16 +2043,25 @@ function drawOrb(c) {
   c.restore();
 }
 
+let lastPvx = NaN, lastPvy = NaN, lastPvf = -99;
+
 function drawAim(c) {
   if (!G.aiming || G.power <= 0.02) return;
   const col = orbColors();
   const a = Math.atan2(-G.pullY, -G.pullX);   // launch direction
   const p = G.power;
 
-  // predicted path
+  // predicted path — the orb is frozen while aiming, so this only has to be
+  // re-simulated when the drag actually changes (plus a slow refresh so moving
+  // obstacles stay honest)
   const maxB = G.levelIndex === 0 ? 0 : (G.levelIndex < 3 ? 1 : 2);
   const sp = lerp(CFG.minLaunch, CFG.maxLaunch, p);
-  const pv = predict(orb.x, orb.y, Math.cos(a) * sp, Math.sin(a) * sp, maxB);
+  const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
+  if (vx !== lastPvx || vy !== lastPvy || frameCount - lastPvf > 3) {
+    lastPvx = vx; lastPvy = vy; lastPvf = frameCount;
+    predict(orb.x, orb.y, vx, vy, maxB);
+  }
+  const pv = preview;
 
   c.globalCompositeOperation = 'lighter';
   for (let i = 0; i < pv.n; i++) {
@@ -1829,7 +2193,9 @@ function drawParticles(c) {
 
 function drawDust(c) {
   c.globalCompositeOperation = 'lighter';
-  for (const d of DUST) {
+  const step = Q.level < 1 ? 2 : 1;
+  for (let i = 0; i < DUST.length; i += step) {
+    const d = DUST[i];
     const a = (0.1 + 0.16 * d.z) * (0.6 + 0.4 * Math.sin(d.t));
     c.fillStyle = rgba([190, 215, 255], a);
     c.beginPath(); c.arc(d.x, d.y, d.s * d.z, 0, TAU); c.fill();
@@ -1837,21 +2203,32 @@ function drawDust(c) {
   c.globalCompositeOperation = 'source-over';
 }
 
+/* One small drifting light instead of two screen-sized ones.
+   Additive fills cost their whole area every frame: the old pair covered
+   ~517k units^2 — about 83% of everything blended in a frame — for an effect
+   the baked background lights already provide. This keeps the movement at a
+   fraction of the fill cost, and drops out entirely on reduced quality. */
+const ambientGfx = {};
+const AMBIENT_R = 150;
 function drawAmbient(c) {
+  if (Q.level < 1) return;
   const acc = world.accent;
+  const g = grad(ambientGfx, 'k' + acc.join(), () => {
+    const gg = c.createRadialGradient(0, 0, 0, 0, 0, AMBIENT_R);
+    gg.addColorStop(0, rgba(acc, 0.16));
+    gg.addColorStop(0.55, rgba(acc, 0.05));
+    gg.addColorStop(1, rgba(acc, 0));
+    return gg;
+  });
+  const t = G.t * 0.07;
+  const x = VW * (0.5 + 0.3 * Math.sin(t));
+  const y = VH * (0.45 + 0.26 * Math.cos(t * 0.8));
+  c.save();
   c.globalCompositeOperation = 'lighter';
-  for (let i = 0; i < 2; i++) {
-    const t = G.t * (0.06 + i * 0.03) + i * 3;
-    const x = VW * (0.5 + 0.34 * Math.sin(t));
-    const y = VH * (0.42 + 0.3 * Math.cos(t * 0.8 + i));
-    const r = 250 + i * 70;
-    const g = c.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, rgba(acc, 0.07));
-    g.addColorStop(1, rgba(acc, 0));
-    c.fillStyle = g;
-    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill();
-  }
-  c.globalCompositeOperation = 'source-over';
+  c.translate(x, y);
+  c.fillStyle = g;
+  c.beginPath(); c.arc(0, 0, AMBIENT_R, 0, TAU); c.fill();
+  c.restore();
 }
 
 function drawTransition(c) {
@@ -1898,7 +2275,7 @@ function render() {
   for (const g of world.gates) drawGate(c, g);
   for (const h of world.hazards) drawHazard(c, h);
   for (const b of world.bumpers) drawBumper(c, b);
-  for (const m of world.movers) if (m.kind === 'wall') drawWall(c, m);
+  for (const m of world.movers) if (m.kind === 'wall') drawWall(c, m, true);
   drawPortal(c, world.portal);
 
   drawReadyHint(c);
@@ -1925,12 +2302,13 @@ function render() {
    9. INPUT
    ============================================================ */
 
+/* The canvas rect is cached by fit(); reading it on every pointermove forces a
+   layout flush mid-drag, which is exactly when the game must stay smooth. */
+const gp = { x: 0, y: 0 };
 function toGame(e) {
-  const r = dom.canvas.getBoundingClientRect();
-  return {
-    x: (e.clientX - r.left) * (VW / r.width),
-    y: (e.clientY - r.top) * (VH / r.height),
-  };
+  gp.x = (e.clientX - canvasRect.left) * (VW / canvasRect.width);
+  gp.y = (e.clientY - canvasRect.top) * (VH / canvasRect.height);
+  return gp;
 }
 
 let pointerId = null;
@@ -1954,6 +2332,7 @@ function onDown(e) {
     if (G.phase === 'play' && orb.alive) G.deny = 1;
     return;
   }
+  canvasRect = dom.canvas.getBoundingClientRect();  // one read per drag, not per move
   const p = toGame(e);
   const near = Math.hypot(p.x - orb.x, p.y - orb.y) < CFG.grabRadius;
   G.anchorX = near ? orb.x : p.x;
@@ -2002,6 +2381,11 @@ let muted = false;
 window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') restartLevel();
   if (e.key === 'm' || e.key === 'M') { muted = !muted; Sfx.setMuted(muted); }
+  if (e.key === 'f' || e.key === 'F') {
+    fpsOn = !fpsOn;
+    dom.fps.classList.toggle('hidden', !fpsOn);
+    fpsFrames = 0; fpsSince = performance.now();
+  }
 });
 
 window.addEventListener('resize', fit);
@@ -2012,19 +2396,47 @@ if (window.visualViewport) window.visualViewport.addEventListener('resize', fit)
    10. MAIN LOOP
    ============================================================ */
 
+const DT_MAX = 1 / 15;        // never simulate more than 4 steps for one frame
+
 let last = 0, acc = 0, frameCount = 0;
+let fpsOn = false, fpsFrames = 0, fpsSince = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   if (!last) last = now;
   let dt = (now - last) / 1000;
   last = now;
-  if (dt > 0.25) dt = 0.25;
+
+  // A stall (tab switch, GC, a slow frame) must never turn into a burst of
+  // physics: clamp, then let the accumulator run at most four fixed steps.
+  if (dt > DT_MAX) dt = DT_MAX;
   acc += dt;
   let guard = 0;
-  while (acc >= STEP && guard < 6) { simStep(); acc -= STEP; guard++; }
-  if (guard >= 6) acc = 0;
-  if ((frameCount++ & 15) === 0) fit();   // cheap guard against missed resizes
+  while (acc >= STEP && guard < 4) { simStep(); acc -= STEP; guard++; }
+  if (acc > STEP) acc = 0;
+
+  // adaptive quality — decoration only, physics is untouched
+  const ms = dt * 1000;
+  Q.avg += (ms - Q.avg) * 0.08;
+  if (Q.level === 1) {
+    if (Q.avg > 21) { if (++Q.bad > 40) { Q.level = 0; Q.particleScale = 0.55; Q.bad = 0; } }
+    else Q.bad = 0;
+  } else {
+    if (Q.avg < 15) { if (++Q.good > 150) { Q.level = 1; Q.particleScale = 1; Q.good = 0; } }
+    else Q.good = 0;
+  }
+
+  if ((frameCount++ & 31) === 0) fit();   // cheap guard against missed resizes
   render();
+
+  // optional readout — one DOM write every half second, never per frame
+  if (fpsOn) {
+    fpsFrames++;
+    if (now - fpsSince >= 500) {
+      const f = Math.round(fpsFrames * 1000 / (now - fpsSince));
+      dom.fps.textContent = f + ' FPS · ' + Q.avg.toFixed(1) + ' ms · Q' + Q.level;
+      fpsFrames = 0; fpsSince = now;
+    }
+  }
 }
 
 startLevel(0);
@@ -2033,10 +2445,25 @@ requestAnimationFrame(frame);
 
 /* ---- small debug surface (handy for tuning / automated checks) ---- */
 window.FLUX = {
-  G, orb, world, LEVELS, CFG,
+  G, orb, world, LEVELS, CFG, Q,
   go: (i) => startLevel(clamp(i | 0, 0, LEVELS.length - 1)),
   shoot: (ang, power) => { if (canGrab()) launch(ang, clamp(power, 0, 1)); },
   tick: (n) => { for (let i = 0; i < n; i++) simStep(); },
+  // bench(n)       — JS cost of render() only
+  // bench(n, true) — also stalls on a pixel readback so the timing includes
+  //                  GPU fill-rate. Off by default: repeated readbacks can make
+  //                  the browser drop this canvas to software rendering.
+  bench: (n, sync) => {
+    n = n || 120;
+    render(); // warm
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) {
+      render();
+      if (sync === true) ctx.getImageData(0, 0, 1, 1);
+    }
+    const ms = (performance.now() - t0) / n;
+    return { frameMs: +ms.toFixed(3), budgetPct: +(ms / 16.67 * 100).toFixed(1) };
+  },
   mute: (v) => { muted = !!v; Sfx.setMuted(muted); },
   ready: () => canGrab(),
 };
