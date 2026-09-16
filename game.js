@@ -231,6 +231,10 @@ const Sfx = (() => {
     ui() {
       tone({ type: 'sine', f0: 1180, f1: 820, dur: 0.07, peak: 0.05 });
     },
+    sweep() {
+      noise({ dur: 0.5, peak: 0.05, f0: 260, f1: 3400, q: 0.7 });
+      tone({ type: 'sine', f0: 140, f1: 420, dur: 0.45, peak: 0.05 });
+    },
     complete() {
       [523.25, 783.99, 1046.5, 1567.98].forEach((f, i) =>
         tone({ type: 'triangle', f0: f, dur: 1.2, peak: 0.08, delay: i * 0.1 }));
@@ -359,7 +363,7 @@ function updateDust() {
 const LEVELS = [
   {
     name: 'INFLUX',
-    tip: 'Drag back from the orb — release to launch',
+    tip: 'Drag  ·  Aim  ·  Release',
     bg: ['#191c44', '#07091b'], accent: [140, 130, 255],
     start: { x: 120, y: 850 }, color: 'violet',
     portal: { x: 430, y: 205 },
@@ -848,6 +852,7 @@ function startLevel(i) {
 
 function transitionTo(fn) {
   G.phase = 'trans'; G.transDir = 1; G.transT = 0; G.transNext = fn;
+  Sfx.sweep();
 }
 
 function nextLevel() {
@@ -1991,7 +1996,7 @@ if (window.visualViewport) window.visualViewport.addEventListener('resize', fit)
    10. MAIN LOOP
    ============================================================ */
 
-let last = 0, acc = 0;
+let last = 0, acc = 0, frameCount = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   if (!last) last = now;
