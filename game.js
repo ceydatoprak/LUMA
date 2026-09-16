@@ -90,6 +90,7 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 const Q = {
   level: 1,          // 1 = full, 0 = reduced decoration
   avg: 16.7,         // rolling frame time (ms)
+  work: 0,          // CPU submission time, separate from display refresh rate
   bad: 0, good: 0,
   particleScale: 1,
 };
@@ -584,24 +585,23 @@ const LEVELS = [
   {
     /* 1 — teach: launch, wall colour, matching exit. */
     name: 'SPECTRUM',
-    tip: 'Hit a wall. Take its colour.',
+    tip: 'Red bars and spikes kill. Take cyan, then weave to the exit.',
     bg: ['#191c44', '#07091b'], accent: [140, 130, 255],
     start: { x: 110, y: 850 }, color: 'violet',
     portal: { x: 430, y: 230, color: 'cyan' },
     walls: [
       { x: 508, y: 585, w: 20, h: 570, color: 'cyan' },   // unmissable cyan face
-      { x: 32,  y: 812, w: 20, h: 170, color: 'magenta' },// small decoy
-      { x: 300, y: 400, w: 180, h: 20 },
-      { x: 150, y: 560, w: 220, h: 20 },
-      { x: 60,  y: 700, w: 20,  h: 150 },
-      { x: 250, y: 900, w: 180, h: 18, a: -14 },
-      { x: 180, y: 250, w: 170, h: 18, a: 16 },
+      { x: 190, y: 510, w: 350, h: 22 },
+    ],
+    deadly: [
+      { x: 300, y: 715, w: 180, h: 18 },
+      { x: 425, y: 400, w: 100, h: 28, spikes: true },
     ],
   },
   {
     /* 2 — teach: not every colour is the right one. */
     name: 'CROSSROADS',
-    tip: 'Red means gone. Only one colour opens the way.',
+    tip: 'Choose orange. The centre divider makes you commit to a lane.',
     bg: ['#15204a', '#06091c'], accent: [90, 170, 255],
     start: { x: 270, y: 862 }, color: 'violet',
     portal: { x: 270, y: 200, color: 'orange' },
@@ -610,18 +610,22 @@ const LEVELS = [
       { x: 448, y: 700, w: 180, h: 20, a: 35, color: 'orange' },    // right route
       { x: 110, y: 470, w: 190, h: 22 },
       { x: 430, y: 470, w: 190, h: 22 },
-      { x: 270, y: 908, w: 190, h: 18 },                  // the orb rests over this
+      { x: 270, y: 620, w: 22, h: 190 },
       { x: 128, y: 292, w: 170, h: 18, a: 20 },           // funnel into the exit
       { x: 412, y: 292, w: 170, h: 18, a: -20 },
       { x: 60,  y: 420, w: 20,  h: 130 },
       { x: 480, y: 420, w: 20,  h: 130 },
     ],
-    deadly: [{ x: 96, y: 386, w: 150, h: 18 }],   // guards the magenta detour
+    deadly: [
+      { x: 96, y: 386, w: 150, h: 18 },
+      { x: 365, y: 590, w: 115, h: 28, spikes: true },
+      { x: 260, y: 365, w: 115, h: 18 },
+    ],
   },
   {
     /* 3 — teach: ice takes two solid hits. No colour in play. */
     name: 'GLACIER',
-    tip: 'Ice takes two solid hits.',
+    tip: 'Dodge the red bar. Break the ice. Watch the spikes above.',
     bg: ['#102a44', '#050f20'], accent: [70, 190, 255],
     start: { x: 270, y: 806 }, color: 'violet',
     portal: { x: 270, y: 195 },
@@ -635,14 +639,17 @@ const LEVELS = [
       { x: 60,  y: 600, w: 20,  h: 120 },
       { x: 480, y: 600, w: 20,  h: 120 },
     ],
-    voids: [{ x: 132, y: 904, w: 150, h: 76 }],          // pit beside the bay
     ice: [{ x: 270, y: 520, w: 110, h: 46 }],
+    deadly: [
+      { x: 270, y: 665, w: 115, h: 18 },
+      { x: 170, y: 420, w: 140, h: 28, spikes: true },
+      { x: 365, y: 260, w: 130, h: 28, spikes: true },
+    ],
   },
   {
-    /* 4 — first real route choice: the colour you need is on one side,
-       a live wall stands over the only way up. Pick a lane. */
+    /* 4 — introduce timing: take cyan, then cross the pulsing choke point. */
     name: 'CROSSFIRE',
-    tip: 'Take the colour, then pick the safe lane.',
+    tip: 'Take cyan. Wait below the beam, then cross while it is dark.',
     bg: ['#2a1236', '#0a0618'], accent: [230, 100, 180],
     start: { x: 270, y: 862 }, color: 'violet',
     portal: { x: 430, y: 215, color: 'cyan' },
@@ -656,16 +663,22 @@ const LEVELS = [
       { x: 150, y: 830, w: 170, h: 18, a: -18 },
       { x: 390, y: 830, w: 170, h: 18, a: 18 },
     ],
-    deadly: [{ x: 152, y: 388, w: 20, h: 152 }],
-    shots: 7,
+    hazards: [{ x: 270, y: 520, w: 170, h: 14,
+      pulse: { period: 4.8, duty: 0.38, phase: 0.1 } }],
+    deadly: [
+      { x: 330, y: 700, w: 165, h: 18, a: -16 },
+      { x: 220, y: 375, w: 130, h: 28, spikes: true },
+      { x: 360, y: 285, w: 90, h: 18 },
+    ],
+    shots: 6,
   },
   {
     /* 5 — teach: a gate only opens for its own colour. */
     name: 'LOCKDOWN',
-    tip: 'Limited launches. Take cyan, open the gate.',
+    tip: 'Cyan opens the first lock. Orange opens the exit.',
     bg: ['#0f2540', '#050e1e'], accent: [60, 210, 255],
     start: { x: 270, y: 864 }, color: 'violet',
-    portal: { x: 270, y: 205, color: 'cyan' },
+    portal: { x: 270, y: 205, color: 'orange' },
     walls: [
       { x: 115, y: 470, w: 200, h: 22 },
       { x: 425, y: 470, w: 200, h: 22 },
@@ -677,10 +690,16 @@ const LEVELS = [
       { x: 402, y: 310, w: 170, h: 18, a: -22 },
       { x: 80,  y: 620, w: 20,  h: 120 },
       { x: 460, y: 620, w: 20,  h: 120 },
+      { x: 508, y: 290, w: 20, h: 190, color: 'orange' },
     ],
     gates: [{ x: 270, y: 470, w: 110, h: 22, color: 'cyan' }],
     hazards: [{ x: 108, y: 248, w: 130, h: 14 }],   // punishes drifting left up top
-    shots: 7,                                        // clean route is 4
+    deadly: [
+      { x: 270, y: 670, w: 160, h: 28, spikes: true },
+      { x: 360, y: 565, w: 100, h: 18, a: 24 },
+      { x: 185, y: 380, w: 100, h: 28, spikes: true },
+    ],
+    shots: 6,
   },
   {
     /* 6 — combine: the bumper supplies the speed, but it throws you at the
@@ -703,23 +722,28 @@ const LEVELS = [
       { x: 330, y: 180, w: 150, h: 18 },
     ],
     bumpers: [{ x: 270, y: 640, r: 36, power: 15 }],
+    deadly: [
+      { x: 155, y: 570, w: 90, h: 28, spikes: true },
+      { x: 390, y: 735, w: 95, h: 18, a: -25 },
+      { x: 150, y: 370, w: 85, h: 18 },
+    ],
     hazards: [
       { x: 336, y: 360, w: 130, h: 14,
         motion: { type: 'osc', dx: 68, dy: 0, period: 7.0, phase: 0 } },
     ],
-    shots: 6,
+    shots: 5,
   },
   {
     /* 7 — combine: break through, then route around a live wall to reach
        the colour the exit wants. */
     name: 'FRACTURE',
-    tip: 'Break through, then avoid the live wall.',
+    tip: 'Break the left passage. Cross right for lime, then time the beam.',
     bg: ['#14294a', '#060d1e'], accent: [90, 200, 235],
     start: { x: 110, y: 862 }, color: 'violet',
     portal: { x: 420, y: 225, color: 'lime' },
     walls: [
-      { x: 105, y: 560, w: 180, h: 22 },
-      { x: 415, y: 560, w: 220, h: 22 },
+      { x: 62.5, y: 560, w: 95, h: 22 },
+      { x: 367.5, y: 560, w: 315, h: 22 },
       { x: 508, y: 380, w: 20, h: 260, color: 'lime' },
       { x: 32,  y: 380, w: 20, h: 240, color: 'magenta' },
       { x: 150, y: 200, w: 170, h: 18 },
@@ -727,20 +751,27 @@ const LEVELS = [
       { x: 400, y: 840, w: 190, h: 18, a: 14 },
       { x: 436, y: 470, w: 120, h: 16, a: -25 },
     ],
-    ice: [{ x: 250, y: 560, w: 110, h: 46 }],
-    deadly: [{ x: 148, y: 360, w: 120, h: 18 }],
-    shots: 10,
+    ice: [{ x: 160, y: 560, w: 100, h: 46 }],
+    deadly: [
+      { x: 148, y: 360, w: 120, h: 18 },
+      { x: 200, y: 725, w: 130, h: 28, spikes: true },
+      { x: 285, y: 435, w: 130, h: 18, a: -20 },
+      { x: 325, y: 240, w: 28, h: 95, spikes: true },
+    ],
+    hazards: [{ x: 390, y: 302, w: 180, h: 14,
+      pulse: { period: 4.2, duty: 0.48, phase: 0.35 } }],
+    shots: 7,
   },
   {
     /* 8 — teach: a crystal only yields to its own colour. */
     name: 'PRISM CORE',
-    tip: 'Its colour breaks it — and carries you through.',
+    tip: 'Lime shatters the crystal. Keep it to pass the energy filter.',
     bg: ['#241540', '#0a0819'], accent: [190, 120, 255],
     start: { x: 270, y: 868 }, color: 'violet',
     portal: { x: 270, y: 200, color: 'lime' },
     walls: [
-      { x: 108, y: 500, w: 186, h: 22 },
-      { x: 432, y: 500, w: 186, h: 22 },
+      { x: 122.5, y: 500, w: 215, h: 22 },
+      { x: 417.5, y: 500, w: 215, h: 22 },
       { x: 508, y: 700, w: 20, h: 260, color: 'lime' },
       { x: 32,  y: 700, w: 20, h: 260, color: 'magenta' },
       { x: 150, y: 810, w: 190, h: 18, a: -18 },
@@ -751,20 +782,26 @@ const LEVELS = [
     ],
     crystals: [{ x: 270, y: 500, r: 40, color: 'lime' }],
     hazards: [{ x: 262, y: 332, w: 104, h: 24, safe: 'lime' }],  // lime passes
-    shots: 10,
+    deadly: [
+      { x: 390, y: 665, w: 115, h: 28, spikes: true },
+      { x: 140, y: 605, w: 105, h: 18 },
+      { x: 310, y: 415, w: 130, h: 28, spikes: true },
+      { x: 170, y: 230, w: 28, h: 85, spikes: true },
+    ],
+    shots: 6,
   },
   {
     /* 9 — order puzzle: the cyan source sits behind the ice, the gate needs cyan. */
     name: 'CASCADE',
-    tip: 'Order matters.',
+    tip: 'Break ice, collect cyan on the left, then cross to the right lock.',
     bg: ['#102542', '#050f1f'], accent: [70, 195, 255],
     start: { x: 110, y: 872 }, color: 'violet',
     portal: { x: 430, y: 220, color: 'cyan' },
     walls: [
       { x: 105, y: 620, w: 180, h: 22 },
       { x: 415, y: 620, w: 220, h: 22 },
-      { x: 115, y: 300, w: 200, h: 22 },
-      { x: 425, y: 300, w: 200, h: 22 },
+      { x: 170, y: 300, w: 310, h: 22 },
+      { x: 475, y: 300, w: 100, h: 22 },
       { x: 32,  y: 462, w: 20, h: 290, color: 'cyan' },   // only cyan, mid chamber
       { x: 200, y: 210, w: 200, h: 18 },
       { x: 430, y: 420, w: 140, h: 18, a: -22 },
@@ -772,16 +809,23 @@ const LEVELS = [
       { x: 480, y: 780, w: 20,  h: 140 },
     ],
     ice: [{ x: 250, y: 620, w: 110, h: 46 }],
-    gates: [{ x: 270, y: 300, w: 110, h: 22, color: 'cyan' }],
+    gates: [{ x: 375, y: 300, w: 100, h: 22, color: 'cyan' }],
     bumpers: [{ x: 320, y: 790, r: 32, power: 14 }],
-    deadly: [{ x: 430, y: 494, w: 150, h: 18 }],   // the right-hand shortcut bites
-    shots: 11,
+    deadly: [
+      { x: 430, y: 494, w: 150, h: 18 },
+      { x: 170, y: 705, w: 125, h: 28, spikes: true },
+      { x: 175, y: 395, w: 110, h: 18, a: -25 },
+      { x: 325, y: 200, w: 28, h: 85, spikes: true },
+    ],
+    hazards: [{ x: 245, y: 450, w: 100, h: 14,
+      pulse: { period: 3.8, duty: 0.48, phase: 0.2 } }],
+    shots: 7,
   },
   {
     /* 10 — the finale. The gate wants cyan; the exit wants orange; the only
        orange is on the far side of the gate. That is the whole puzzle. */
     name: 'SINGULARITY',
-    tip: 'Everything you have learned. Mind the beam.',
+    tip: 'Cyan, ice, moving beam, lock, then orange. Plan every launch.',
     bg: ['#2b1034', '#090616'], accent: [255, 110, 190],
     start: { x: 100, y: 872 }, color: 'violet',
     portal: { x: 445, y: 205, color: 'orange' },
@@ -799,11 +843,20 @@ const LEVELS = [
     ice: [{ x: 250, y: 640, w: 110, h: 46 }],
     gates: [{ x: 270, y: 330, w: 110, h: 22, color: 'cyan' }],
     bumpers: [{ x: 300, y: 784, r: 34, power: 14.5 }],
+    deadly: [
+      { x: 150, y: 715, w: 135, h: 28, spikes: true },
+      { x: 365, y: 590, w: 135, h: 18 },
+      { x: 145, y: 475, w: 28, h: 135, spikes: true },
+      { x: 365, y: 385, w: 110, h: 28, spikes: true },
+      { x: 350, y: 190, w: 28, h: 90, spikes: true },
+    ],
     hazards: [
       { x: 396, y: 500, w: 130, h: 14,
-        motion: { type: 'osc', dx: 62, dy: 0, period: 8.0, phase: 0.2 } },
+        motion: { type: 'osc', dx: 62, dy: 0, period: 5.2, phase: 0.2 } },
+      { x: 270, y: 410, w: 170, h: 14,
+        pulse: { period: 3.6, duty: 0.52, phase: 0.15 } },
     ],
-    shots: 11,
+    shots: 6,
   },
 ];
 
@@ -868,6 +921,23 @@ function prepEntity(e, kind) {
   // the bounding circle used for the broad-phase reject
   e.ca = Math.cos(e.a); e.sa = Math.sin(e.a);
   e.br = e.w !== undefined ? Math.hypot(e.w, e.h) / 2 : (e.r || 0);
+  if (e.spikes) {
+    const horizontal = e.w >= e.h;
+    const length = Math.max(e.w, e.h), depth = Math.min(e.w, e.h);
+    const teeth = Math.max(2, Math.round(length / 22)), pitch = length / teeth;
+    e.outline = [];
+    const point = (x, y) => e.outline.push(horizontal ? { x, y } : { x: y, y: x });
+    point(-length / 2, -depth / 6);
+    for (let i = 0; i < teeth; i++) {
+      point(-length / 2 + (i + .5) * pitch, -depth / 2);
+      point(-length / 2 + (i + 1) * pitch, -depth / 6);
+    }
+    point(length / 2, depth / 6);
+    for (let i = teeth - 1; i >= 0; i--) {
+      point(-length / 2 + (i + .5) * pitch, depth / 2);
+      point(-length / 2 + i * pitch, depth / 6);
+    }
+  }
   const spec = ENTITY_KINDS[kind];
   if (spec && spec.init) spec.init(e);
   return e;
@@ -982,6 +1052,22 @@ function overlapsBox(px, py, r, e) {
   return circleVsBox(px, py, r, e) !== null;
 }
 
+// Test the visible serrated outline, including the tooth tips and valleys.
+function touchesSpikes(s, e) {
+  const dx = s.x - e.x, dy = s.y - e.y;
+  if (dx * dx + dy * dy > (e.br + s.r) ** 2) return false;
+  const x = dx * e.ca + dy * e.sa, y = -dx * e.sa + dy * e.ca;
+  let inside = false;
+  const pts = e.outline;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[j], b = pts[i], vx = b.x - a.x, vy = b.y - a.y;
+    const t = clamp(((x - a.x) * vx + (y - a.y) * vy) / (vx * vx + vy * vy), 0, 1);
+    if ((x - a.x - t * vx) ** 2 + (y - a.y - t * vy) ** 2 <= s.r * s.r) return true;
+    if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
 const RES = { impact: 0, wall: false, bumper: null, nx: 0, ny: 0, hx: 0, hy: 0 };
 
 /* Contacts made during one step, so every entity that was actually touched can
@@ -1089,6 +1175,7 @@ function resolveBumper(s, b) {
 
 function stepBody(s, useBumpers, record) {
   RES.impact = 0; RES.wall = false; RES.bumper = null;
+  RES.deadly = false;
   if (record) HITS.n = 0;
   const sp = Math.hypot(s.vx, s.vy);
   const n = Math.min(9, Math.max(1, Math.ceil(sp / (s.r * 0.5))));
@@ -1100,6 +1187,15 @@ function stepBody(s, useBumpers, record) {
     for (let k = 0; k < solids.length; k++) {
       const e = solids[k];
       if (e.dead || isPassable(e, orb.color)) continue;
+      if (e.deadly) {
+        const touched = e.spikes ? touchesSpikes(s, e) : overlapsBox(s.x, s.y, s.r, e);
+        if (touched) {
+          RES.deadly = true;
+          if (record) HITS.add(e, 1, s.x, s.y);
+          return RES;
+        }
+        continue;
+      }
       if (e.round) resolveRound(s, e, record); else resolveBox(s, e, record);
     }
     if (useBumpers) {
@@ -1135,6 +1231,13 @@ function predict(x, y, vx, vy, maxBounce) {
   for (let i = 0; i < steps; i++) {
     const ox = probe.x, oy = probe.y;
     const r = stepBody(probe, true);
+    if (r.deadly) {
+      const idx = preview.n++;
+      if (!preview.pts[idx]) preview.pts[idx] = { x: 0, y: 0 };
+      preview.pts[idx].x = probe.x; preview.pts[idx].y = probe.y;
+      preview.hazard = true;
+      break;
+    }
     if (r.wall) bounces++;
     applyDamping(probe);
     const moved = Math.hypot(probe.x - ox, probe.y - oy);
@@ -1223,6 +1326,7 @@ function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 function updateShotHud() {
   const lim = G.shotLimit;
   dom.shotCount.textContent = lim ? (lim - G.shots) : G.shots;
+  dom.shots.title = lim ? 'Launches remaining' : 'Launches used';
   dom.shots.classList.toggle('limited', !!lim);
   dom.shots.classList.toggle('low', !!lim && lim - G.shots <= 2);
 }
@@ -1249,6 +1353,7 @@ function setHint(text) {
 
 function resetOrb() {
   lastPaint = -9;
+  lastPvx = NaN;
   const s = G.level.start;
   orb.x = s.x; orb.y = s.y; orb.vx = 0; orb.vy = 0;
   orb.color = G.level.color || 'violet';
@@ -1629,12 +1734,12 @@ function simStep() {
       }
       resolveContacts();
       compactWorld();
-      checkTriggers(px, py);
+      if (orb.alive) checkTriggers(px, py);
     }
     // out of energy — checked only once the final launch has played out, so a
     // last-second win always counts
-    if (orb.alive && !G.aiming && G.shotLimit && G.shots >= G.shotLimit &&
-        Math.hypot(orb.vx, orb.vy) < CFG.readySpeed) {
+    if (G.phase === 'play' && orb.alive && !G.aiming && G.shotLimit && G.shots >= G.shotLimit &&
+        Math.hypot(orb.vx, orb.vy) < CFG.stopSpeed) {
       killOrb('power');
     }
 
@@ -1718,9 +1823,10 @@ function fit() {
   const budget = Q.level < 1 ? PIXEL_BUDGET_LOW : PIXEL_BUDGET;
   const cssPx = rect.width * rect.height;
   const maxScale = Math.sqrt(budget / cssPx);
-  const dpr = clamp(window.devicePixelRatio || 1, 1, Math.min(2, maxScale));
-  const w = Math.max(1, Math.round(rect.width * dpr));
-  const h = Math.max(1, Math.round(rect.height * dpr));
+  // Large desktop windows must also be allowed to render below 1x.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2, maxScale);
+  const w = Math.max(1, Math.floor(rect.width * dpr));
+  const h = Math.max(1, Math.floor(rect.height * dpr));
   if (dom.canvas.width !== w || dom.canvas.height !== h) {
     dom.canvas.width = w; dom.canvas.height = h;
     RS = w / VW;
@@ -2038,6 +2144,19 @@ function drawVoid(c, v) {
 }
 
 function drawLiveWall(c, e) {
+  if (e.spikes) {
+    c.save();
+    c.translate(e.x, e.y); c.rotate(e.a);
+    c.beginPath();
+    c.moveTo(e.outline[0].x, e.outline[0].y);
+    for (let i = 1; i < e.outline.length; i++) c.lineTo(e.outline[i].x, e.outline[i].y);
+    c.closePath();
+    c.fillStyle = '#8e163e'; c.fill();
+    c.strokeStyle = 'rgba(255,45,110,.22)'; c.lineWidth = 7; c.stroke();
+    c.strokeStyle = '#ff719c'; c.lineWidth = 1.6; c.stroke();
+    c.restore();
+    return;
+  }
   const w = e.w, h = e.h;
   const r = Math.min(9, Math.min(w, h) / 2);
   const long = w >= h;
@@ -2779,7 +2898,9 @@ function drawAim(c) {
   const maxB = G.levelIndex === 0 ? 0 : (G.levelIndex < 3 ? 1 : 2);
   const sp = lerp(CFG.minLaunch, CFG.maxLaunch, p);
   const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
-  if (vx !== lastPvx || vy !== lastPvy || frameCount - lastPvf > 3) {
+  const dynamicGuide = world.movers.length || world.hazards.some(h => h.pulse);
+  if (vx !== lastPvx || vy !== lastPvy ||
+      (dynamicGuide && frameCount - lastPvf > 3)) {
     lastPvx = vx; lastPvy = vy; lastPvf = frameCount;
     predict(orb.x, orb.y, vx, vy, maxB);
   }
@@ -3058,6 +3179,7 @@ function updateDrag(px, py) {
 }
 
 function onDown(e) {
+  if (G.aiming || (e.button !== undefined && e.button !== 0)) return;
   Sfx.unlock();
   if (G.phase === 'done') return;
   if (e.target === dom.restart || dom.restart.contains(e.target)) return;
@@ -3072,6 +3194,7 @@ function onDown(e) {
   G.anchorX = near ? orb.x : p.x;
   G.anchorY = near ? orb.y : p.y;
   G.aiming = true;
+  lastPvx = NaN;
   pointerId = e.pointerId;
   dom.canvas.setPointerCapture && dom.canvas.setPointerCapture(e.pointerId);
   Sfx.tensionStart();
@@ -3103,7 +3226,15 @@ function onUp(e) {
 dom.canvas.addEventListener('pointerdown', onDown, { passive: false });
 window.addEventListener('pointermove', onMove, { passive: false });
 window.addEventListener('pointerup', onUp, { passive: false });
-window.addEventListener('pointercancel', onUp, { passive: false });
+function cancelAim() {
+  G.aiming = false;
+  pointerId = null;
+  G.power = 0; G.pullX = 0; G.pullY = 0;
+  lastPvx = NaN;
+  Sfx.tensionStop();
+}
+window.addEventListener('pointercancel', cancelAim);
+dom.canvas.addEventListener('lostpointercapture', cancelAim);
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 window.addEventListener('touchmove', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
@@ -3141,6 +3272,12 @@ const DEV = (() => {
 window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') restartLevel();
   if (e.key === 'm' || e.key === 'M') applyMute(!muted);
+  if (DEV && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+    e.preventDefault();
+    cancelAim();
+    G.transDir = 0;
+    startLevel(clamp(G.levelIndex + (e.key === 'ArrowRight' ? 1 : -1), 0, LEVELS.length - 1));
+  }
   if (DEV && (e.key === 'f' || e.key === 'F')) {
     fpsOn = !fpsOn;
     dom.fps.classList.toggle('hidden', !fpsOn);
@@ -3151,6 +3288,9 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('resize', fit);
 window.addEventListener('orientationchange', () => setTimeout(fit, 120));
 if (window.visualViewport) window.visualViewport.addEventListener('resize', fit);
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(fit).observe(dom.canvas);
+}
 
 /* ============================================================
    10. MAIN LOOP
@@ -3160,11 +3300,21 @@ const DT_MAX = 1 / 15;        // never simulate more than 4 steps for one frame
 
 let last = 0, acc = 0, frameCount = 0, doneFrames = 0;
 let fpsOn = false, fpsFrames = 0, fpsSince = 0;
+let frameId = 0;
 function frame(now) {
-  requestAnimationFrame(frame);
+  frameId = requestAnimationFrame(frame);
+  if (document.hidden) return;
+  // The end card has CSS animations; it needs no background simulation once
+  // the final curtain has cleared. Restart keeps the same RAF chain.
+  if (G.phase === 'done' && G.transDir === 0 && doneFrames >= 3) {
+    last = now; acc = 0;
+    return;
+  }
   if (!last) last = now;
-  let dt = (now - last) / 1000;
+  const rawDt = (now - last) / 1000;
+  let dt = rawDt;
   last = now;
+  const workStart = performance.now();
 
   // A stall (tab switch, GC, a slow frame) must never turn into a burst of
   // physics: clamp, then let the accumulator run at most four fixed steps.
@@ -3175,18 +3325,27 @@ function frame(now) {
   if (acc > STEP) acc = 0;
 
   // adaptive quality — decoration only, physics is untouched
-  const ms = dt * 1000;
-  Q.avg += (ms - Q.avg) * 0.08;
+  if (rawDt > 0 && rawDt < 0.25) Q.avg += (rawDt * 1000 - Q.avg) * 0.08;
+  // Physics updates at 60 Hz. Higher-refresh displays need no duplicate
+  // canvas repaint of exactly the same state.
+  if (!guard) return;
+  frameCount++;
+  render();
+  if (G.phase === 'done' && G.transDir === 0) doneFrames++;
+  Q.work += (performance.now() - workStart - Q.work) * 0.08;
   if (Q.level === 1) {
-    if (Q.avg > 21) { if (++Q.bad > 40) { Q.level = 0; Q.particleScale = 0.55; Q.bad = 0; } }
+    if (Q.avg > 21 || Q.work > 14) {
+      if (++Q.bad > 40) { Q.level = 0; Q.particleScale = 0.55; Q.bad = 0; fit(); }
+    }
     else Q.bad = 0;
   } else {
-    if (Q.avg < 15) { if (++Q.good > 150) { Q.level = 1; Q.particleScale = 1; Q.good = 0; } }
+    // A healthy 60 Hz screen is ~16.7 ms: the former <15 ms threshold could
+    // never restore quality there. Require sustained headroom before retrying.
+    if (Q.avg < 18 && Q.work < 7) {
+      if (++Q.good > 480) { Q.level = 1; Q.particleScale = 1; Q.good = 0; fit(); }
+    }
     else Q.good = 0;
   }
-
-  if ((frameCount++ & 31) === 0) fit();   // cheap guard against missed resizes
-  if (G.phase !== 'done' || doneFrames < 3) { render(); if (G.phase === 'done') doneFrames++; }
 
   // optional readout — one DOM write every half second, never per frame
   if (fpsOn) {
@@ -3199,12 +3358,21 @@ function frame(now) {
   }
 }
 
+document.addEventListener('visibilitychange', () => {
+  cancelAnimationFrame(frameId);
+  cancelAim();
+  last = 0; acc = 0;
+  Q.bad = 0; Q.good = 0;
+  fpsFrames = 0; fpsSince = performance.now();
+  if (!document.hidden) { fit(); frameId = requestAnimationFrame(frame); }
+});
+
 try { if (localStorage.getItem('flux.muted') === '1') applyMute(true); } catch (err) {}
 if (DEV) { fpsOn = true; dom.fps.classList.remove('hidden'); }
 
 startLevel(0);
 fit();
-requestAnimationFrame(frame);
+frameId = requestAnimationFrame(frame);
 
 /* ---- small debug surface (handy for tuning / automated checks) ---- */
 window.FLUX = {
