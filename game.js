@@ -45,7 +45,6 @@ const TAU = Math.PI * 2;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, t) => a + (b - a) * t;
 const rand = (a, b) => a + Math.random() * (b - a);
-const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 const easeOut = (t) => 1 - Math.pow(1 - t, 3);
 const easeIn = (t) => t * t * t;
 const easeInOut = (t) => (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -383,10 +382,10 @@ const LEVELS = [
     start: { x: 110, y: 862 }, color: 'violet',
     portal: { x: 110, y: 235 },
     walls: [
-      { x: 186, y: 606, w: 344, h: 22 },
-      { x: 455, y: 470, w: 170, h: 18, a: -45 },
-      { x: 150, y: 330, w: 250, h: 20 },
-      { x: 320, y: 440, w: 20,  h: 150 },
+      { x: 186, y: 606, w: 344, h: 22 },          // lower divider — gap on the right
+      { x: 455, y: 470, w: 170, h: 18, a: -45 },  // deflector: kicks the climb up-left
+      { x: 400, y: 330, w: 250, h: 20 },          // upper shelf — gap on the left
+      { x: 250, y: 215, w: 120, h: 18 },          // roof of the exit pocket
       { x: 350, y: 782, w: 240, h: 18, a: -20 },
       { x: 60,  y: 470, w: 20,  h: 120 },
     ],
@@ -496,7 +495,7 @@ const LEVELS = [
       { x: 430, y: 320, w: 150, h: 16, motion: { type: 'spin', speed: 0.75 } },
       { x: 330, y: 268, w: 180, h: 18, a: 18 },
       { x: 52,  y: 320, w: 20,  h: 120 },
-      { x: 185, y: 800, w: 190, h: 18, a: -26 },
+      { x: 205, y: 786, w: 190, h: 18, a: -26 },
     ],
     bumpers: [{ x: 320, y: 830, r: 34, power: 14.5 }],
     hazards: [
@@ -719,14 +718,20 @@ const preview = { pts: [], n: 0, blocked: false, hazard: false };
 function predict(x, y, vx, vy, maxBounce) {
   probe.x = x; probe.y = y; probe.vx = vx; probe.vy = vy;
   preview.n = 0; preview.blocked = false; preview.hazard = false;
-  let bounces = 0;
-  const speed0 = Math.hypot(vx, vy);
-  const steps = Math.round(38 + clamp(speed0 / CFG.maxLaunch, 0, 1) * 54);
+  let bounces = 0, travelled = 0, sinceDot = 1e9;
+  // the guide is a fixed *length* of path, not a fixed time: a gentle nudge is
+  // previewed almost to its resting point, a full-power shot only gets the
+  // opening stretch, so strong shots stay a matter of skill
+  const steps = 88, maxDist = 340;
   for (let i = 0; i < steps; i++) {
+    const ox = probe.x, oy = probe.y;
     const r = stepBody(probe, true);
     if (r.wall) bounces++;
     applyDamping(probe);
-    if (i % 2 === 0) {
+    const moved = Math.hypot(probe.x - ox, probe.y - oy);
+    travelled += moved; sinceDot += moved;
+    if (sinceDot >= 21) {                 // evenly spaced dots, whatever the speed
+      sinceDot = 0;
       const idx = preview.n++;
       if (!preview.pts[idx]) preview.pts[idx] = { x: 0, y: 0 };
       preview.pts[idx].x = probe.x; preview.pts[idx].y = probe.y;
@@ -736,6 +741,7 @@ function predict(x, y, vx, vy, maxBounce) {
       if (h.k > 0.35 && overlapsBox(probe.x, probe.y, probe.r, h)) { preview.hazard = true; i = steps; break; }
     }
     if (r.bumper || bounces > maxBounce) { preview.blocked = true; break; }
+    if (travelled > maxDist) break;
   }
   return preview;
 }
@@ -752,12 +758,9 @@ const G = {
   level: null,
   shots: 0,
   totalShots: 0,
-  runStart: 0,
   runTime: 0,
   idle: 0,
-  hintOn: false,
   aiming: false,
-  dragX: 0, dragY: 0,     // current pointer, in game units
   anchorX: 0, anchorY: 0,
   power: 0,
   pullX: 0, pullY: 0,
@@ -769,7 +772,7 @@ const G = {
 const orb = {
   x: 0, y: 0, vx: 0, vy: 0, r: CFG.orbR,
   color: 'violet', prevColor: 'violet', colorMix: 1,
-  squash: 0, squashAng: 0, spin: 0, pulse: 0, flash: 0,
+  squash: 0, squashAng: 0, pulse: 0, flash: 0,
   alive: true, scale: 1,
   trail: [], trailN: 0,
 };
@@ -816,8 +819,8 @@ function showToast(msg) {
   dom.toast.classList.add('show');
 }
 function setHint(text) {
-  if (text) { dom.hint.textContent = text; dom.hint.classList.remove('hidden'); G.hintOn = true; }
-  else { dom.hint.classList.add('hidden'); G.hintOn = false; }
+  if (text) { dom.hint.textContent = text; dom.hint.classList.remove('hidden'); }
+  else dom.hint.classList.add('hidden');
 }
 
 function resetOrb() {
@@ -884,6 +887,7 @@ function restartRun() {
 }
 
 function restartLevel(silent) {
+  if (G.phase === 'done' || G.transDir !== 0) return;
   if (!silent) Sfx.ui();
   const i = G.levelIndex;
   G.level = buildWorld(LEVELS[i]);
@@ -1699,16 +1703,28 @@ function drawAim(c) {
   for (let i = 0; i < pv.n; i++) {
     const u = i / Math.max(1, pv.n - 1);
     const q = pv.pts[i];
-    const fade = (1 - u) * (1 - u);
-    const rr = lerp(4.2, 1.4, u);
-    c.fillStyle = rgba(i < 3 ? col.hi : col.rgb, 0.12 + fade * 0.72);
+    const fade = 1 - u * u * 0.85;
+    const rr = lerp(4.4, 1.6, u);
+    c.fillStyle = rgba(i < 2 ? col.hi : col.rgb, 0.2 + fade * 0.62);
     c.beginPath(); c.arc(q.x, q.y, rr, 0, TAU); c.fill();
   }
   if (pv.n > 0 && pv.hazard) {
+    // the predicted line ends in a hazard — warn, but do not block the shot
     const q = pv.pts[pv.n - 1];
-    c.strokeStyle = rgba(DANGER, 0.9);
+    const bl = 0.55 + 0.45 * Math.sin(G.t * 12);
+    c.strokeStyle = rgba(DANGER, 0.55 + bl * 0.4);
     c.lineWidth = 2;
     c.beginPath(); c.arc(q.x, q.y, 9, 0, TAU); c.stroke();
+    c.beginPath();
+    c.moveTo(q.x - 4, q.y - 4); c.lineTo(q.x + 4, q.y + 4);
+    c.moveTo(q.x + 4, q.y - 4); c.lineTo(q.x - 4, q.y + 4);
+    c.stroke();
+  } else if (pv.n > 2 && pv.blocked) {
+    // prediction stops at a bumper: mark the contact instead of guessing
+    const q = pv.pts[pv.n - 1];
+    c.strokeStyle = rgba(col.hi, 0.45);
+    c.lineWidth = 1.6;
+    c.beginPath(); c.arc(q.x, q.y, 7, 0, TAU); c.stroke();
   }
 
   // elastic band from pull point to orb
@@ -1982,11 +1998,11 @@ window.addEventListener('touchmove', (e) => { if (e.cancelable) e.preventDefault
 dom.restart.addEventListener('click', (e) => { e.stopPropagation(); Sfx.unlock(); restartLevel(); });
 dom.endRestart.addEventListener('click', () => { Sfx.unlock(); Sfx.ui(); restartRun(); });
 
+let muted = false;
 window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') restartLevel();
   if (e.key === 'm' || e.key === 'M') { muted = !muted; Sfx.setMuted(muted); }
 });
-let muted = false;
 
 window.addEventListener('resize', fit);
 window.addEventListener('orientationchange', () => setTimeout(fit, 120));

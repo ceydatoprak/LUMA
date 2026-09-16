@@ -71,14 +71,54 @@ body{
 @keyframes drift2{0%,100%{transform:translate3d(0,0,0) scale(1.05)}50%{transform:translate3d(-7vmax,6vmax,0) scale(.92)}}
 @keyframes drift3{0%,100%{transform:translate3d(0,0,0) scale(.95)}50%{transform:translate3d(5vmax,-6vmax,0) scale(1.1)}}
 
+/* ---------- Desktop-only side mark ---------- */
+
+.deskmark{
+  position:absolute;
+  left:clamp(24px,5vw,80px);
+  top:50%;
+  transform:translateY(-50%);
+  display:none;
+  flex-direction:column;
+  gap:10px;
+  pointer-events:none;
+  animation:markIn 1.4s cubic-bezier(.16,.9,.24,1) .3s both;
+}
+@keyframes markIn{from{opacity:0;transform:translateY(-50%) translateX(-18px)}to{opacity:1}}
+.dm-name{
+  font-size:clamp(38px,5vw,76px);
+  font-weight:200;
+  letter-spacing:.34em;
+  line-height:1;
+  background:linear-gradient(180deg,#fff 10%,#b98cff 65%,#3f8cff 100%);
+  -webkit-background-clip:text;background-clip:text;
+  color:transparent;
+  filter:drop-shadow(0 0 30px rgba(160,108,255,.45));
+}
+.dm-sub{
+  font-size:12px;letter-spacing:.34em;text-transform:uppercase;
+  color:rgba(226,232,255,.42);
+}
+.dm-keys{
+  margin-top:6px;
+  font-size:11px;letter-spacing:.14em;
+  color:rgba(226,232,255,.26);
+}
+@media (min-width:900px) and (min-aspect-ratio:1/1){
+  .deskmark{display:flex;}
+}
+
 /* ---------- Stage (9:16) ---------- */
 
 #stage{
+  /* sized from the viewport, never from percentages: a percentage height here
+     is indefinite inside the centring grid and collapses to the canvas's
+     intrinsic 540x960, which overflows the window. */
+  --avail-w:calc(100vw - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px));
+  --avail-h:calc(100vh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));
   position:relative;
-  aspect-ratio:9/16;
-  height:min(100%, calc(100vw * 16 / 9));
-  max-height:100%;
-  max-width:100%;
+  width:min(var(--avail-w), calc(var(--avail-h) * 9 / 16));
+  height:min(var(--avail-h), calc(var(--avail-w) * 16 / 9));
   border-radius:clamp(14px,3.2vmin,30px);
   overflow:hidden;
   isolation:isolate;
@@ -89,8 +129,10 @@ body{
     0 30px 90px rgba(0,0,0,.65);
 }
 
-@supports not (aspect-ratio:9/16){
-  #stage{width:min(100vw,56.25vh);height:min(177.77vw,100vh);}
+/* dynamic viewport height on mobile browsers that support it, so the stage
+   does not jump when the URL bar collapses */
+@supports (height:100dvh){
+  #stage{--avail-h:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));}
 }
 
 #game{
