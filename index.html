@@ -39,6 +39,7 @@
             <div id="progress"><i id="progressFill"></i></div>
           </div>
           <div class="hud-side">
+            <button id="levelsBtn" class="hud-btn" type="button" aria-label="Bölümler">☷</button>
             <button id="soundBtn" class="hud-btn" type="button" aria-pressed="true">
               <svg class="ic-on" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 9.5h3.2L12 5.4v13.2L7.2 14.5H4z"/>
@@ -70,6 +71,17 @@
         <div id="fps" class="hidden"></div>
       </div>
 
+      <section id="menuCard" class="hidden" aria-label="Ana menü">
+        <div class="menu-inner">
+          <div class="menu-symbol" aria-hidden="true">✧</div>
+          <h1 id="menuTitle"></h1>
+          <p>Küçük bir ruh. On beş ışık.</p>
+          <button id="menuStart" type="button">BAŞLA</button>
+          <button id="menuLevels" type="button">BÖLÜMLER</button>
+          <div id="levelGrid" class="hidden" aria-label="Bölüm seç"></div>
+          <button id="menuBack" class="hidden" type="button">GERİ DÖN</button>
+        </div>
+      </section>
       <div id="endCard" class="hidden">
         <div class="end-glow" aria-hidden="true"></div>
         <div class="end-inner">
@@ -84,10 +96,11 @@
           <h1 id="endTitle"></h1>
           <p class="end-sub" id="endSub"></p>
           <div class="end-stats">
-            <div><span id="endTime">0:00</span><em id="endTimeLabel"></em></div>
+            <div hidden><span id="endTime">0:00</span><em id="endTimeLabel"></em></div>
             <div><span id="endLevels">0</span><em id="endLevelLabel"></em></div>
           </div>
           <button id="endRestart" type="button"></button>
+          <button id="endSelect" type="button">BÖLÜMLER</button>
         </div>
       </div>
     </div>

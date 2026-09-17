@@ -39,7 +39,7 @@
    survive a rename, so the key the player's browser already holds has to stay
    what it is. Change it only to intentionally discard everyone's progress. */
 const GAME = {
-  title:      'FLUX',
+  title:      'GAME_NAME_HERE',
   lang:       'tr',
   storageKey: 'flux',
 };
@@ -69,10 +69,10 @@ const TEXT = {
   resume:       'KALDIĞIN BÖLÜMDEN DEVAM',
 
   /* completion */
-  endSub:       'Tüm bölümler tamamlandı',
+  endSub:       'YOLCULUK TAMAMLANDI',
   endTime:      'süre',
   endLevels:    'bölüm',
-  replay:       'Baştan oyna',
+  replay:       'BAŞTAN OYNA',
 };
 
 const VW = 540, VH = 960;          // camera viewport, in world units
@@ -350,6 +350,7 @@ const Sfx = (() => {
 
   let ctx = null, master = null, bus = null, air = null, noiseBuf = null;
   let on = true, ready = false, tension = null;
+  let ambience = null, windGain = null;
   let voices = 0;
   let lastLand = -1;
 
@@ -390,6 +391,12 @@ const Sfx = (() => {
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
 
+    ambience = ctx.createGain(); ambience.gain.value=.012; ambience.connect(bus);
+    for (const hz of [130.81,196.0]) { const o=ctx.createOscillator(); o.frequency.value=hz; o.connect(ambience); o.start(); }
+    const breeze=ctx.createBufferSource(); breeze.buffer=noiseBuf; breeze.loop=true;
+    const filter=ctx.createBiquadFilter(); filter.type='lowpass'; filter.frequency.value=550;
+    windGain=ctx.createGain(); windGain.gain.value=0;
+    breeze.connect(filter); filter.connect(windGain); windGain.connect(bus); breeze.start();
     ready = true;
     return ctx;
   }
@@ -502,6 +509,9 @@ const Sfx = (() => {
 
   return {
     unlock, tensionStart, tensionUpdate, tensionStop,
+    environment(near) { if(windGain) windGain.gain.setTargetAtTime(near?.018:0,ctx.currentTime,.3); },
+    suspend(hidden) { if(ctx) { if(hidden) ctx.suspend(); else if(on) ctx.resume(); } },
+    crack() { air_noise({dur:.22,peak:.065,f0:1800,f1:650,q:2,cap:2800}); tone({f0:740*rand(.98,1.02),f1:370,dur:.16,peak:.022}); },
     setMuted(v) { on = !v; if (master) master.gain.value = v ? 0 : MIX.master; },
 
     /* the spirit throwing itself: a low pulse and a rising breath */
@@ -520,17 +530,17 @@ const Sfx = (() => {
       const now = ready ? ctx.currentTime : 0;
       if (now - lastLand < 0.05) return;
       lastLand = now;
-      const m = MIX.land * (0.4 + s * 0.6);
-      tone({ type: 'sine', f0: 132 - s * 28, f1: 82, dur: 0.14, glide: 0.1,
+      const m = MIX.land * (0.4 + s * 0.6) * rand(.94,1.06);
+      tone({ type: 'sine', f0: (132 - s * 28) * rand(.97,1.03), f1: 82, dur: 0.14, glide: 0.1,
              peak: 0.5 * m, attack: 0.005, lp: 760 });
       air_noise({ dur: 0.07, peak: 0.24 * m, f0: 520 + s * 500, f1: 260, q: 1.3, cap: 2600 });
     },
 
     /* taking hold of a wall: a short breath, almost a gasp */
     cling() {
-      const v = MIX.cling;
+      const v = MIX.cling * rand(.94,1.06);
       air_noise({ dur: 0.14, peak: 0.22 * v, f0: 1700, f1: 700, q: 1.1, cap: 4200, send: 0.2 });
-      tone({ type: 'sine', f0: 320, f1: 250, dur: 0.14, glide: 0.1, peak: 0.2 * v, attack: 0.008, lp: 1800 });
+      tone({ type: 'sine', f0: 320 * rand(.97,1.03), f1: 250, dur: 0.14, glide: 0.1, peak: 0.2 * v, attack: 0.008, lp: 1800 });
     },
 
     /* an energy node taking hold: a warm bell that sits under the aim */
@@ -778,149 +788,1373 @@ function updateDust() {
 
 const LEVELS = [
   {
-    /* 1 — one job: learn that you drag the way you want to go.
-
-       Everything here is deliberately unfailable. The ledges are wide and
-       barely apart, so almost any forward drag lands on the next one, and a
-       catch floor runs under the whole level: a bad first input costs a couple
-       of seconds, never a life. */
-    name: 'İLK IŞIK',
-    tip: 'Basılı tut, geriye çek ve bırak.',
-    w: 1560, h: 940,
-    bg: ['#141a44', '#06091c'], accent: [120, 170, 255],
-    spawn: { x: 130, y: 540 },
-    gate: { x: 1320, y: 350 },
-    solids: [
-      { x: 780, y: 900, w: 1560, h: 240 },     // catch floor, top 780
-      // Very wide ledges on purpose. The shortest possible leap already
-      // travels a few hundred units, so a small target would mean only a
-      // narrow band of pulls landed on it — the opposite of a first lesson.
-      { x: 220, y: 660, w: 440, h: 160 },      // home ledge, top 580
-      { x: 760, y: 570, w: 480, h: 160 },      // top 490   (gap 80)
-      { x: 1320, y: 470, w: 460, h: 160 },     // top 390   (gap 90)
+    "name": "İlk Sıçrayış",
+    "tip": "Basılı tut, geriye çek ve bırak.",
+    "w": 760,
+    "h": 940,
+    "bg": [
+      "#141a44",
+      "#06091c"
     ],
-    route: [
-      [130, 567, 'ground'], [760, 477, 'ground'], [1320, 377, 'ground'], [0, 0, 'gate'],
+    "accent": [
+      120,
+      170,
+      255
     ],
+    "spawn": {
+      "x": 130,
+      "y": 540
+    },
+    "gate": {
+      "x": 450,
+      "y": 450
+    },
+    "solids": [
+      {
+        "x": 380,
+        "y": 900,
+        "w": 760,
+        "h": 240
+      },
+      {
+        "x": 140,
+        "y": 660,
+        "w": 280,
+        "h": 160
+      },
+      {
+        "x": 470,
+        "y": 570,
+        "w": 340,
+        "h": 160
+      }
+    ],
+    "route": [
+      [
+        130,
+        567,
+        "ground"
+      ],
+      [
+        450,
+        477,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
   },
   {
-    /* 2 — one wall, used once. Floor, wall and the ledge above are all in one
-       composition, and the ledge is out of reach from the floor by a clear
-       margin, so the wall is obviously the answer rather than a trick. */
-    name: 'TAŞ EZGİSİ',
-    tip: 'Duvara tutun ve yeniden yön seç.',
-    w: 760, h: 980,
-    bg: ['#102542', '#040a18'], accent: [90, 190, 255],
-    spawn: { x: 150, y: 700 },
-    gate: { x: 200, y: 300 },
-    solids: [
-      { x: 380, y: 900, w: 760, h: 240 },      // floor, top 780
-      { x: 650, y: 520, w: 120, h: 500 },      // the wall: left face at x = 590
-      { x: 200, y: 400, w: 340, h: 70 },       // upper ledge, top 365
+    "name": "Duvara Tutun",
+    "tip": "Duvara tutun ve yeniden yön seç.",
+    "w": 760,
+    "h": 980,
+    "bg": [
+      "#102542",
+      "#040a18"
     ],
-    route: [
-      [150, 767, 'ground'], [577, 600, 'cling'], [200, 352, 'ground'], [0, 0, 'gate'],
+    "accent": [
+      90,
+      190,
+      255
     ],
+    "spawn": {
+      "x": 150,
+      "y": 700
+    },
+    "gate": {
+      "x": 650,
+      "y": 270
+    },
+    "solids": [
+      {
+        "x": 380,
+        "y": 900,
+        "w": 760,
+        "h": 240
+      },
+      {
+        "x": 650,
+        "y": 550,
+        "w": 180,
+        "h": 460
+      },
+      {
+        "x": 200,
+        "y": 400,
+        "w": 340,
+        "h": 70
+      }
+    ],
+    "route": [
+      [
+        150,
+        767,
+        "ground"
+      ],
+      [
+        547,
+        530,
+        "cling"
+      ],
+      [
+        650,
+        307,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
   },
   {
-    /* 3 — one node. The ledge above is higher than any leap can reach and the
-       node hangs in plain sight between the two, so what it is for cannot be
-       misread. The node sits clear of the ledge overhead: put it underneath
-       and every leap out of it hits the ceiling. */
-    name: 'KOR YOLU',
-    tip: 'Işık küresine yaklaş ve yönünü değiştir.',
-    w: 800, h: 960,
-    bg: ['#231640', '#08061c'], accent: [170, 130, 255],
-    spawn: { x: 110, y: 640 },
-    gate: { x: 230, y: 155 },
-    solids: [
-      { x: 170, y: 820, w: 340, h: 240 },      // start ledge, top 700
-      { x: 230, y: 270, w: 380, h: 70 },       // destination, top 235
+    "name": "Işık Noktası",
+    "tip": "Işık küresine yaklaş ve yönünü değiştir.",
+    "w": 800,
+    "h": 960,
+    "bg": [
+      "#231640",
+      "#08061c"
     ],
-    nodes: [{ x: 590, y: 470 }],
-    route: [
-      [110, 687, 'ground'], [590, 470, 'node'], [230, 222, 'ground'], [0, 0, 'gate'],
+    "accent": [
+      170,
+      130,
+      255
     ],
+    "spawn": {
+      "x": 110,
+      "y": 640
+    },
+    "gate": {
+      "x": 230,
+      "y": 155
+    },
+    "solids": [
+      {
+        "x": 170,
+        "y": 820,
+        "w": 340,
+        "h": 240
+      },
+      {
+        "x": 230,
+        "y": 270,
+        "w": 380,
+        "h": 70
+      }
+    ],
+    "nodes": [
+      {
+        "x": 590,
+        "y": 470
+      }
+    ],
+    "route": [
+      [
+        110,
+        687,
+        "ground"
+      ],
+      [
+        590,
+        470,
+        "node"
+      ],
+      [
+        230,
+        222,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
   },
   {
-    /* 4 — one spring, tilted so its arrow means something: it throws up and
-       across onto a wide ledge you can see from the ground. The ledge is out
-       of reach from the floor, so the bloom is the only way up, and nothing
-       dangerous is anywhere near the arc. */
-    name: 'ÇİÇEK DÜŞÜŞÜ',
-    tip: 'Yeşil yüzey seni ok yönünde fırlatır.',
-    w: 1150, h: 1080,
-    bg: ['#0d2c34', '#040f18'], accent: [90, 220, 190],
-    spawn: { x: 130, y: 840 },
-    gate: { x: 830, y: 390 },
-    solids: [
-      { x: 575, y: 1000, w: 1150, h: 240 },    // floor, top 880
-      { x: 830, y: 465, w: 400, h: 70 },       // destination, top 430
+    "name": "Ruh Yayı",
+    "tip": "Yeşil yüzey seni ok yönünde fırlatır.",
+    "w": 1150,
+    "h": 1080,
+    "bg": [
+      "#0d2c34",
+      "#040f18"
     ],
-    springs: [
-      { x: 330, y: 856, w: 200, h: 44, a: 17 },          // throws up and to the right
+    "accent": [
+      90,
+      220,
+      190
     ],
-    route: [
-      [130, 867, 'ground'], [330, 843, 'spring'], [830, 417, 'ground'], [0, 0, 'gate'],
+    "spawn": {
+      "x": 130,
+      "y": 840
+    },
+    "gate": {
+      "x": 830,
+      "y": 390
+    },
+    "solids": [
+      {
+        "x": 575,
+        "y": 1000,
+        "w": 1150,
+        "h": 240
+      },
+      {
+        "x": 830,
+        "y": 465,
+        "w": 400,
+        "h": 70
+      }
     ],
+    "springs": [
+      {
+        "x": 330,
+        "y": 856,
+        "w": 200,
+        "h": 44,
+        "a": 17
+      }
+    ],
+    "route": [
+      [
+        130,
+        867,
+        "ground"
+      ],
+      [
+        330,
+        843,
+        "spring"
+      ],
+      [
+        830,
+        417,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
   },
   {
-    /* 5 — the first real challenge: wall, then node, with a rest ledge and a
-       checkpoint between them so the second half is never retried from the
-       very start. The spikes sit under the opening gap where they can be seen
-       from the spawn, never under anything you are asked to jump to. */
-    name: 'DAR GEÇİT',
-    tip: 'Dikenlere dokunma. Mor ışık kayıt noktandır.',
-    w: 1000, h: 1180,
-    bg: ['#2a1330', '#0a0418'], accent: [220, 120, 220],
-    spawn: { x: 120, y: 900 },
-    gate: { x: 300, y: 310 },
-    solids: [
-      { x: 160, y: 1070, w: 320, h: 240 },     // start ledge, top 950
-      { x: 620, y: 790, w: 420, h: 70 },       // rest ledge, top 755
-      { x: 890, y: 620, w: 120, h: 520 },      // the wall: left face at x = 830
-      { x: 300, y: 385, w: 560, h: 70 },       // gate ledge, top 350
+    "bg": [
+      "#161a3a",
+      "#050919"
     ],
-    nodes: [{ x: 700, y: 560 }],
-    motes: [{ x: 640, y: 715 }],
-    spikes: [{ x: 620, y: 1150, w: 620, h: 60 }],
-    route: [
-      [120, 937, 'ground'], [640, 742, 'ground'], [817, 600, 'cling'],
-      [700, 560, 'node'], [300, 337, 'ground'], [0, 0, 'gate'],
+    "accent": [
+      140,
+      175,
+      245
     ],
+    "name": "İlk Tehlike",
+    "tip": "Kırmızı yüzeylerden uzak dur.",
+    "w": 1450,
+    "h": 960,
+    "spawn": {
+      "x": 120,
+      "y": 680
+    },
+    "gate": {
+      "x": 1260,
+      "y": 440
+    },
+    "solids": [
+      {
+        "x": 170,
+        "y": 810,
+        "w": 340,
+        "h": 180
+      },
+      {
+        "x": 680,
+        "y": 700,
+        "w": 400,
+        "h": 80
+      },
+      {
+        "x": 1240,
+        "y": 520,
+        "w": 420,
+        "h": 80
+      }
+    ],
+    "spikes": [
+      {
+        "x": 735,
+        "y": 930,
+        "w": 720,
+        "h": 40
+      }
+    ],
+    "route": [
+      [
+        120,
+        707,
+        "ground"
+      ],
+      [
+        680,
+        647,
+        "ground"
+      ],
+      [
+        1240,
+        467,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
   },
   {
-    /* 6 — the flow level. Nothing new; it asks for the chain, in order: leap,
-       take the wall, leap off it, be thrown by the bloom, be caught by the
-       node, redirect home. The wall is deliberately on the far side of where
-       you are going next, because a hold pushes you off the way it faces —
-       so the wall itself turns you back toward the climb. */
-    name: 'GÖĞE DOĞRU',
-    tip: 'Zıpla, tutun, fırla, yakalan. Zinciri sürdür.',
-    w: 1120, h: 1520,
-    bg: ['#191646', '#05061a'], accent: [140, 150, 255],
-    spawn: { x: 120, y: 1240 },
-    gate: { x: 300, y: 255 },
-    solids: [
-      { x: 180, y: 1400, w: 360, h: 240 },     // start ledge, top 1280
-      { x: 680, y: 1090, w: 120, h: 480 },     // the wall: left face at x = 620
-      { x: 315, y: 985, w: 450, h: 70 },       // bloom ledge, top 950
-      { x: 300, y: 330, w: 400, h: 70 },       // gate ledge, top 295
+    "bg": [
+      "#161a3a",
+      "#050919"
     ],
-    springs: [
-      { x: 280, y: 931, w: 200, h: 44, a: 20 },          // throws up and to the right
+    "accent": [
+      140,
+      175,
+      245
     ],
-    nodes: [{ x: 620, y: 450 }],
-    motes: [{ x: 430, y: 910 }],
-    spikes: [{ x: 700, y: 1490, w: 560, h: 60 }],
-    beams: [
-      { x: 520, y: 1180, w: 44, h: 260, pulse: { period: 3.0, phase: 0.25, duty: 0.3 } },
+    "name": "Nabız",
+    "tip": "Işık sönünce geç. Zamanlamanı ayarla.",
+    "w": 1300,
+    "h": 960,
+    "spawn": {
+      "x": 130,
+      "y": 690
+    },
+    "gate": {
+      "x": 1120,
+      "y": 410
+    },
+    "solids": [
+      {
+        "x": 170,
+        "y": 820,
+        "w": 340,
+        "h": 180
+      },
+      {
+        "x": 600,
+        "y": 690,
+        "w": 360,
+        "h": 80
+      },
+      {
+        "x": 1090,
+        "y": 510,
+        "w": 380,
+        "h": 80
+      }
     ],
-    route: [
-      [120, 1267, 'ground'], [607, 1100, 'cling'], [480, 913, 'ground'],
-      [280, 918, 'spring'], [620, 450, 'node'], [300, 282, 'ground'], [0, 0, 'gate'],
+    "beams": [
+      {
+        "x": 835,
+        "y": 540,
+        "w": 26,
+        "h": 220,
+        "pulse": {
+          "period": 5,
+          "phase": 0,
+          "duty": 0.16
+        }
+      }
     ],
+    "route": [
+      [
+        130,
+        717,
+        "ground"
+      ],
+      [
+        600,
+        637,
+        "ground"
+      ],
+      [
+        1090,
+        457,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
   },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Hareketli Zemin",
+    "tip": "Zemini izle, üzerine in ve devam et.",
+    "w": 1360,
+    "h": 960,
+    "spawn": {
+      "x": 130,
+      "y": 700
+    },
+    "gate": {
+      "x": 1160,
+      "y": 380
+    },
+    "solids": [
+      {
+        "x": 160,
+        "y": 830,
+        "w": 320,
+        "h": 180
+      },
+      {
+        "x": 650,
+        "y": 680,
+        "w": 330,
+        "h": 60,
+        "motion": {
+          "type": "osc",
+          "dx": 100,
+          "dy": 0,
+          "period": 8
+        }
+      },
+      {
+        "x": 1150,
+        "y": 480,
+        "w": 400,
+        "h": 80
+      }
+    ],
+    "route": [
+      [
+        130,
+        727,
+        "ground"
+      ],
+      [
+        650,
+        637,
+        "ground"
+      ],
+      [
+        1150,
+        427,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Kırılgan Zemin",
+    "tip": "Çatlakları görünce yeniden sıçra.",
+    "w": 1420,
+    "h": 1000,
+    "spawn": {
+      "x": 140,
+      "y": 670
+    },
+    "gate": {
+      "x": 1210,
+      "y": 370
+    },
+    "solids": [
+      {
+        "x": 710,
+        "y": 1010,
+        "w": 1420,
+        "h": 180
+      },
+      {
+        "x": 170,
+        "y": 800,
+        "w": 340,
+        "h": 180
+      },
+      {
+        "x": 660,
+        "y": 650,
+        "w": 400,
+        "h": 65,
+        "crumble": 1.5
+      },
+      {
+        "x": 1200,
+        "y": 475,
+        "w": 400,
+        "h": 80
+      },
+      {
+        "x": 660,
+        "y": 840,
+        "w": 480,
+        "h": 60
+      }
+    ],
+    "route": [
+      [
+        140,
+        697,
+        "ground"
+      ],
+      [
+        660,
+        604.5,
+        "ground"
+      ],
+      [
+        1200,
+        422,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Zincir",
+    "tip": "Duvara tutun, yüksel ve yayı kullan.",
+    "w": 1120,
+    "h": 1520,
+    "spawn": {
+      "x": 120,
+      "y": 1240
+    },
+    "gate": {
+      "x": 820,
+      "y": 470
+    },
+    "solids": [
+      {
+        "x": 180,
+        "y": 1400,
+        "w": 360,
+        "h": 240
+      },
+      {
+        "x": 680,
+        "y": 1090,
+        "w": 120,
+        "h": 480
+      },
+      {
+        "x": 315,
+        "y": 985,
+        "w": 450,
+        "h": 70
+      },
+      {
+        "x": 850,
+        "y": 555,
+        "w": 440,
+        "h": 70
+      }
+    ],
+    "springs": [
+      {
+        "x": 280,
+        "y": 931,
+        "w": 200,
+        "h": 44,
+        "a": 20
+      }
+    ],
+    "route": [
+      [
+        120,
+        1267,
+        "ground"
+      ],
+      [
+        607,
+        1100,
+        "cling"
+      ],
+      [
+        480,
+        913,
+        "ground"
+      ],
+      [
+        280,
+        918,
+        "spring"
+      ],
+      [
+        850,
+        507,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Akış",
+    "tip": "Kürede dur, hareketli zemine yönel.",
+    "w": 1160,
+    "h": 1160,
+    "spawn": {
+      "x": 130,
+      "y": 940
+    },
+    "gate": {
+      "x": 300,
+      "y": 270
+    },
+    "solids": [
+      {
+        "x": 180,
+        "y": 1060,
+        "w": 360,
+        "h": 180
+      },
+      {
+        "x": 820,
+        "y": 590,
+        "w": 330,
+        "h": 65,
+        "motion": {
+          "type": "osc",
+          "dx": 65,
+          "dy": 25,
+          "period": 9
+        }
+      },
+      {
+        "x": 300,
+        "y": 370,
+        "w": 420,
+        "h": 80
+      }
+    ],
+    "nodes": [
+      {
+        "x": 570,
+        "y": 740
+      }
+    ],
+    "route": [
+      [
+        130,
+        957,
+        "ground"
+      ],
+      [
+        570,
+        740,
+        "node"
+      ],
+      [
+        820,
+        544.5,
+        "ground"
+      ],
+      [
+        300,
+        317,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Rüzgâr",
+    "tip": "Işık akımı seni ok yönünde taşır.",
+    "w": 1500,
+    "h": 980,
+    "spawn": {
+      "x": 130,
+      "y": 700
+    },
+    "gate": {
+      "x": 1280,
+      "y": 380
+    },
+    "solids": [
+      {
+        "x": 160,
+        "y": 840,
+        "w": 320,
+        "h": 180
+      },
+      {
+        "x": 820,
+        "y": 640,
+        "w": 540,
+        "h": 70
+      },
+      {
+        "x": 1280,
+        "y": 480,
+        "w": 380,
+        "h": 80
+      }
+    ],
+    "winds": [
+      {
+        "x": 590,
+        "y": 510,
+        "w": 780,
+        "h": 500,
+        "dx": 1,
+        "dy": -0.25,
+        "strength": 0.075
+      }
+    ],
+    "route": [
+      [
+        130,
+        737,
+        "ground"
+      ],
+      [
+        820,
+        592,
+        "ground"
+      ],
+      [
+        1280,
+        427,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Dar Geçit",
+    "tip": "Yayı kullan. Mor ışıkta dinlen, geçişi bekle.",
+    "w": 1460,
+    "h": 1280,
+    "spawn": {
+      "x": 130,
+      "y": 1030
+    },
+    "gate": {
+      "x": 1280,
+      "y": 380
+    },
+    "solids": [
+      {
+        "x": 530,
+        "y": 1190,
+        "w": 1060,
+        "h": 240
+      },
+      {
+        "x": 800,
+        "y": 650,
+        "w": 430,
+        "h": 80
+      },
+      {
+        "x": 1270,
+        "y": 475,
+        "w": 360,
+        "h": 70
+      }
+    ],
+    "springs": [
+      {
+        "x": 310,
+        "y": 1046,
+        "w": 200,
+        "h": 44,
+        "a": 17
+      }
+    ],
+    "motes": [
+      {
+        "x": 800,
+        "y": 570
+      }
+    ],
+    "beams": [
+      {
+        "x": 1040,
+        "y": 460,
+        "w": 26,
+        "h": 290,
+        "pulse": {
+          "period": 5,
+          "phase": 0.1,
+          "duty": 0.24
+        }
+      }
+    ],
+    "route": [
+      [
+        130,
+        1057,
+        "ground"
+      ],
+      [
+        310,
+        1033,
+        "spring"
+      ],
+      [
+        800,
+        597,
+        "ground"
+      ],
+      [
+        1270,
+        427,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Parçalanan Yol",
+    "tip": "Hareketi izle. Çatlak zeminden küreye geç.",
+    "w": 1560,
+    "h": 1280,
+    "spawn": {
+      "x": 130,
+      "y": 1050
+    },
+    "gate": {
+      "x": 1320,
+      "y": 240
+    },
+    "solids": [
+      {
+        "x": 180,
+        "y": 1180,
+        "w": 360,
+        "h": 180
+      },
+      {
+        "x": 640,
+        "y": 940,
+        "w": 340,
+        "h": 60,
+        "motion": {
+          "type": "osc",
+          "dx": 75,
+          "dy": 30,
+          "period": 8
+        }
+      },
+      {
+        "x": 1150,
+        "y": 740,
+        "w": 370,
+        "h": 70,
+        "crumble": 1.3
+      },
+      {
+        "x": 1320,
+        "y": 340,
+        "w": 400,
+        "h": 80
+      },
+      {
+        "x": 1110,
+        "y": 1090,
+        "w": 440,
+        "h": 70
+      }
+    ],
+    "nodes": [
+      {
+        "x": 850,
+        "y": 490
+      }
+    ],
+    "route": [
+      [
+        130,
+        1077,
+        "ground"
+      ],
+      [
+        640,
+        897,
+        "ground"
+      ],
+      [
+        1150,
+        692,
+        "ground"
+      ],
+      [
+        850,
+        490,
+        "node"
+      ],
+      [
+        1320,
+        287,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Yükseliş",
+    "tip": "Her mor ışıkta yolculuğun kaydedilir.",
+    "w": 1120,
+    "h": 2300,
+    "spawn": {
+      "x": 120,
+      "y": 2020
+    },
+    "gate": {
+      "x": 300,
+      "y": 210
+    },
+    "solids": [
+      {
+        "x": 180,
+        "y": 2180,
+        "w": 360,
+        "h": 240
+      },
+      {
+        "x": 680,
+        "y": 1870,
+        "w": 120,
+        "h": 480
+      },
+      {
+        "x": 315,
+        "y": 1765,
+        "w": 450,
+        "h": 70
+      },
+      {
+        "x": 830,
+        "y": 1345,
+        "w": 420,
+        "h": 70
+      },
+      {
+        "x": 350,
+        "y": 1090,
+        "w": 330,
+        "h": 60,
+        "motion": {
+          "type": "osc",
+          "dx": 65,
+          "dy": 20,
+          "period": 9
+        }
+      },
+      {
+        "x": 800,
+        "y": 850,
+        "w": 400,
+        "h": 70
+      },
+      {
+        "x": 300,
+        "y": 310,
+        "w": 440,
+        "h": 80
+      }
+    ],
+    "springs": [
+      {
+        "x": 280,
+        "y": 1711,
+        "w": 200,
+        "h": 44,
+        "a": 20
+      }
+    ],
+    "nodes": [
+      {
+        "x": 700,
+        "y": 530
+      }
+    ],
+    "winds": [
+      {
+        "x": 590,
+        "y": 950,
+        "w": 600,
+        "h": 430,
+        "dx": 0.3,
+        "dy": -1,
+        "strength": 0.045
+      }
+    ],
+    "motes": [
+      {
+        "x": 830,
+        "y": 1270
+      },
+      {
+        "x": 820,
+        "y": 775
+      }
+    ],
+    "spikes": [
+      {
+        "x": 760,
+        "y": 2250,
+        "w": 580,
+        "h": 40
+      }
+    ],
+    "route": [
+      [
+        120,
+        2047,
+        "ground"
+      ],
+      [
+        607,
+        1880,
+        "cling"
+      ],
+      [
+        480,
+        1693,
+        "ground"
+      ],
+      [
+        280,
+        1698,
+        "spring"
+      ],
+      [
+        830,
+        1297,
+        "ground"
+      ],
+      [
+        350,
+        1047,
+        "ground"
+      ],
+      [
+        800,
+        802,
+        "ground"
+      ],
+      [
+        700,
+        530,
+        "node"
+      ],
+      [
+        300,
+        257,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  },
+  {
+    "bg": [
+      "#161a3a",
+      "#050919"
+    ],
+    "accent": [
+      140,
+      175,
+      245
+    ],
+    "name": "Son Işık",
+    "tip": "Öğrendiklerini birleştir. Son ışığa ulaş.",
+    "w": 1580,
+    "h": 2520,
+    "spawn": {
+      "x": 130,
+      "y": 2240
+    },
+    "gate": {
+      "x": 1270,
+      "y": 230,
+      "r": 52
+    },
+    "solids": [
+      {
+        "x": 180,
+        "y": 2400,
+        "w": 360,
+        "h": 240
+      },
+      {
+        "x": 680,
+        "y": 2090,
+        "w": 120,
+        "h": 480
+      },
+      {
+        "x": 300,
+        "y": 1940,
+        "w": 360,
+        "h": 65,
+        "motion": {
+          "type": "osc",
+          "dx": 60,
+          "dy": 0,
+          "period": 9
+        }
+      },
+      {
+        "x": 1070,
+        "y": 1510,
+        "w": 500,
+        "h": 80
+      },
+      {
+        "x": 560,
+        "y": 1090,
+        "w": 430,
+        "h": 80
+      },
+      {
+        "x": 1100,
+        "y": 860,
+        "w": 380,
+        "h": 65,
+        "crumble": 1.5
+      },
+      {
+        "x": 1270,
+        "y": 330,
+        "w": 450,
+        "h": 80
+      },
+      {
+        "x": 1260,
+        "y": 1200,
+        "w": 400,
+        "h": 65
+      }
+    ],
+    "nodes": [
+      {
+        "x": 640,
+        "y": 1650
+      },
+      {
+        "x": 820,
+        "y": 550
+      }
+    ],
+    "winds": [
+      {
+        "x": 850,
+        "y": 1430,
+        "w": 650,
+        "h": 450,
+        "dx": 1,
+        "dy": -0.3,
+        "strength": 0.05
+      }
+    ],
+    "springs": [
+      {
+        "x": 1080,
+        "y": 1455,
+        "w": 170,
+        "h": 40,
+        "a": -20
+      }
+    ],
+    "beams": [
+      {
+        "x": 765,
+        "y": 1070,
+        "w": 26,
+        "h": 310,
+        "pulse": {
+          "period": 5.4,
+          "phase": 0,
+          "duty": 0.22
+        }
+      }
+    ],
+    "motes": [
+      {
+        "x": 470,
+        "y": 1005
+      }
+    ],
+    "spikes": [
+      {
+        "x": 1030,
+        "y": 2480,
+        "w": 760,
+        "h": 40
+      }
+    ],
+    "route": [
+      [
+        130,
+        2267,
+        "ground"
+      ],
+      [
+        607,
+        2100,
+        "cling"
+      ],
+      [
+        300,
+        1894.5,
+        "ground"
+      ],
+      [
+        640,
+        1650,
+        "node"
+      ],
+      [
+        1250,
+        1457,
+        "ground"
+      ],
+      [
+        1080,
+        1442,
+        "spring"
+      ],
+      [
+        560,
+        1037,
+        "ground"
+      ],
+      [
+        1100,
+        814.5,
+        "ground"
+      ],
+      [
+        820,
+        550,
+        "node"
+      ],
+      [
+        1270,
+        277,
+        "ground"
+      ],
+      [
+        0,
+        0,
+        "gate"
+      ]
+    ]
+  }
 ];
 
 /* ============================================================
@@ -935,6 +2169,7 @@ const world = {
   lethal: [],   // spikes and beams
   beams: [],
   movers: [],
+  winds: [],
   gate: null,
   w: VW, h: VH,
   bg: ['#141a44', '#06091c'],
@@ -942,7 +2177,7 @@ const world = {
 };
 
 const ENTITY_KINDS = {
-  solid:  { list: 'solids',  init: () => {} },
+  solid:  { list: 'solids',  init: (e) => { e.crumbleT = -1; e.broken = false; } },
   spring: { list: 'springs', init: (e) => { e.fire = 0; e.lock = false; e.off = false; e.cool = 0; } },
   node:   { list: 'nodes',   init: (e) => { e.r = e.r || 26; e.cool = 0; e.glow = 0; e.spin = 0; } },
   mote:   { list: 'motes',   init: (e) => { e.r = e.r || 20; e.got = false; e.pop = 0; } },
@@ -979,6 +2214,7 @@ function buildWorld(src) {
   world.solids.length = 0; world.springs.length = 0; world.nodes.length = 0;
   world.motes.length = 0; world.lethal.length = 0; world.beams.length = 0;
   world.movers.length = 0;
+  world.winds = L.winds || [];
   world.w = L.w; world.h = L.h;
   world.bg = L.bg; world.accent = L.accent;
 
@@ -1129,7 +2365,7 @@ const RES = {
   impact: 0, hx: 0, hy: 0, nx: 0, ny: 0,
   spring: null, lethal: null,
   reset() {
-    this.floor = false; this.wall = false; this.wallHold = false; this.ceil = false;
+    this.floorE = null; this.floor = false; this.wall = false; this.wallHold = false; this.ceil = false;
     this.wallNx = 0; this.wallE = null;
     this.impact = 0; this.spring = null; this.lethal = null;
   },
@@ -1143,19 +2379,21 @@ function surfaceVel(e, px, py) {
 }
 
 function collectSolid(s, e) {
+  if (e.broken) return;
   const hit = circleVsBox(s.x, s.y, s.r, e);
   if (!hit) return;
   const nx = hit.nx, ny = hit.ny;
   s.x += nx * (hit.pen + MOVE.slop);
   s.y += ny * (hit.pen + MOVE.slop);
   const sv = surfaceVel(e, s.x, s.y);
+  if (s === body && PS.state === 'ground' && PS.support === e && e.motion) { sv.x = 0; sv.y = 0; }
   const vn = (s.vx - sv.x) * nx + (s.vy - sv.y) * ny;
   CT.add(nx, ny, hit.pen, sv.x, sv.y, vn < 0);
 
   // classify the surface from its normal, so the player logic never has to
   // reason about geometry: a normal pointing up is something to stand on,
   // a normal pointing down is something you bonk, anything else is a wall
-  if (ny < -MOVE.floorDot) RES.floor = true;
+  if (ny < -MOVE.floorDot) { RES.floor = true; RES.floorE = e; }
   else if (ny > MOVE.floorDot) RES.ceil = true;
   else if (!RES.wall || -vn > RES.impact) { RES.wall = true; RES.wallNx = nx; RES.wallE = e; }
 
@@ -1344,7 +2582,7 @@ function landingAssist(s) {
   let bestDir = 0, bestGap = MOVE.assistReach;
   for (let i = 0; i < world.solids.length; i++) {
     const e = world.solids[i];
-    if (e.a || e.w < 60) continue;              // flat, standable tops only
+    if (e.broken || e.a || e.w < 60) continue;              // flat, standable tops only
     const top = e.y - e.h / 2;
     if (foot > top + 12 || foot < top - MOVE.assistBand) continue;
     const gapL = (e.x - e.w / 2) - s.x;         // >0: surface is to our right
@@ -1386,7 +2624,7 @@ function ledgeAssist(s) {
   const foot = s.y + s.r;
   for (let i = 0; i < world.solids.length; i++) {
     const e = world.solids[i];
-    if (e.a || e.w < 40) continue;
+    if (e.broken || e.a || e.w < 40) continue;
     const top = e.y - e.h / 2;
     // The feet have to be clear of the top before drifting inward means
     // anything: any earlier and it is just pressing into the face again.
@@ -1403,6 +2641,13 @@ function ledgeAssist(s) {
    for a few frames so a release reads as a deliberate throw rather than
    something that begins falling the instant it leaves. */
 function integrate(s) {
+  // Shared by live flight and trajectory: currents never alter a resting body.
+  if (s !== body || PS.state === 'air') for (const w of world.winds) {
+    if (Math.abs(s.x-w.x)<w.w/2 && Math.abs(s.y-w.y)<w.h/2) {
+      const len = Math.hypot(w.dx,w.dy) || 1;
+      s.vx += w.dx/len*w.strength; s.vy += w.dy/len*w.strength;
+    }
+  }
   if (s.noWallT > 0) s.noWallT = Math.max(0, s.noWallT - STEP);
   if (s.ledgeT > 0) s.ledgeT = Math.max(0, s.ledgeT - STEP);
   if (s.burst > 0) {
@@ -1426,13 +2671,26 @@ const preview = {
   danger: false, spring: false,
 };
 
+const MOTION_KEYS = ['x','y','px','py','vx','vy','a','ca','sa','av'];
 function predict(x, y, vx, vy, maxDist) {
+  // Forecast moving surfaces and beam phases, then restore the live world.
+  // Reused records keep aiming free of per-frame snapshot allocations.
+  for (const e of world.movers) {
+    if (!e.forecast) e.forecast = {};
+    for (const k of MOTION_KEYS) e.forecast[k] = e[k];
+  }
+  for (const e of world.solids) if (e.crumble) e.forecastBroken = e.broken;
+  for (const e of world.beams) e.forecastK = e.k;
   probe.x = x; probe.y = y; probe.vx = vx; probe.vy = vy;
   probe.burst = MOVE.burstTime;
   preview.n = 0; preview.land = -1; preview.landFloor = false;
   preview.danger = false; preview.spring = false;
   let travelled = 0, sinceDot = 1e9;
   for (let i = 0; i < 150; i++) {
+    const future = G.t + (i + 1) * STEP;
+    updateMotion(future);
+    for (const e of world.beams) e.k = beamLevel(e, future);
+    for (const e of world.solids) if (e.crumble && e.crumbleT >= 0 && e.crumbleT + (i + 1) * STEP >= e.crumble) e.broken = true;
     const ox = probe.x, oy = probe.y;
     integrate(probe);
     landingAssist(probe);          // the guide must include the help the player gets
@@ -1452,6 +2710,9 @@ function predict(x, y, vx, vy, maxDist) {
     if (sinceDot >= 22) { sinceDot = 0; pushDot(probe.x, probe.y); }
     if (travelled > maxDist) break;
   }
+  for (const e of world.movers) for (const k of MOTION_KEYS) e[k] = e.forecast[k];
+  for (const e of world.solids) if (e.crumble) e.broken = e.forecastBroken;
+  for (const e of world.beams) e.k = e.forecastK;
   return preview;
 }
 function pushDot(x, y) {
@@ -1501,7 +2762,7 @@ const PS = {
 /* The three states that hand control back. Everything else is committed
    motion, and the only ways out of it are a node, a wall, or the ground. */
 function canAim() {
-  if (G.phase !== 'play') return false;
+  if (G.menu || G.phase !== 'play') return false;
   const s = PS.state;
   return s === 'ground' || s === 'cling' || s === 'node' ||
          (s === 'air' && PS.coyote > 0);
@@ -1662,6 +2923,7 @@ function doBurst(ang, power) {
     body.noWall = PS.clingWall; body.noWallT = MOVE.wallRegrab;
     armLedgeAssist(body, ang, sp);
   }
+  PS.support = null;
   body.vx = vx; body.vy = vy;
   body.burst = MOVE.burstTime;
   PS.facing = Math.atan2(vy, vx);
@@ -1752,6 +3014,8 @@ const Save = {
         if (Array.isArray(o.done)) {
           this.data.done = o.done.filter(
             (i) => Number.isInteger(i) && i >= 0 && i < LEVELS.length);
+          // A save that finished the old six-level game now opens chapter seven.
+          for (const i of this.data.done) this.data.unlocked = Math.max(this.data.unlocked, Math.min(i + 1, LEVELS.length - 1));
         }
       }
     } catch (err) { /* corrupt or foreign: start clean, and keep playing */ }
@@ -1850,6 +3114,7 @@ function applyBranding() {
 
   document.title = GAME.title;
   setText('markName', GAME.title);
+  setText('menuTitle', GAME.title);
   setText('endTitle', GAME.title);
   setAttr('game', 'aria-label', GAME.title + ' ' + TEXT.canvasLabel);
 
@@ -1892,6 +3157,7 @@ function setHint(text) {
 
 /* Put the spirit down at a point, fully reset, and let it reform. */
 function placeSpirit(x, y) {
+  PS.support = null;
   body.x = x; body.y = y; body.vx = 0; body.vy = 0; body.burst = 0;
   PS.state = 'spawn'; PS.t = 0; PS.prev = 'spawn';
   PS.coyote = 0; PS.clingT = 0; PS.clingSide = 0; PS.node = null;
@@ -1903,6 +3169,11 @@ function placeSpirit(x, y) {
 }
 
 function startLevel(i) {
+  G.menu = false;
+  document.getElementById('ui').inert = false;
+  dom.endCard.inert = false;
+  document.getElementById('menuCard').classList.add('hidden');
+  dom.endCard.classList.add('hidden');
   G.levelIndex = i;
   G.level = buildWorld(LEVELS[i]);
   G.bursts = 0;
@@ -1933,7 +3204,7 @@ function finishRun() {
   G.phase = 'done';
   const secs = Math.round(G.runTime);
   dom.endTime.textContent = Math.floor(secs / 60) + ':' + pad2(secs % 60);
-  dom.endLevels.textContent = String(LEVELS.length);
+  dom.endLevels.textContent = LEVELS.length + ' / ' + LEVELS.length;
   dom.endCard.classList.remove('hidden');
   Sfx.complete();
   G.level = buildWorld(LEVELS[LEVELS.length - 1]);
@@ -1947,7 +3218,7 @@ function restartRun() {
   startLevel(0);
 }
 function restartLevel(silent) {
-  if (G.phase === 'done' || G.transDir !== 0) return;
+  if (G.menu || G.phase === 'done' || G.transDir !== 0) return;
   if (!silent) Sfx.ui();
   startLevel(G.levelIndex);
   G.fadeIn = 0.3;
@@ -1975,6 +3246,7 @@ function killSpirit(kind) {
 }
 
 function respawn() {
+  for (const e of world.solids) { e.crumbleT = -1; e.broken = false; }
   placeSpirit(G.spawnX, G.spawnY);
   G.fadeIn = 0.12;
   FX.implode(G.spawnX, G.spawnY, 54, 9, HUE.spirit.hi, 0.34);
@@ -1984,6 +3256,7 @@ function respawn() {
 
 function reachGate() {
   G.phase = 'win'; G.phaseT = 0;
+  G.goalBurst = false;
   // banked here rather than on the transition, so a level counts the moment it
   // is actually finished and a refresh mid-transition cannot lose it
   Save.complete(G.levelIndex);
@@ -2023,6 +3296,7 @@ function checkTriggers(px, py) {
 
 /* ---- one fixed simulation step ---- */
 function simStep() {
+  if (G.menu) return;
   // A wind-up freezes the world. On a phone that is the difference between a
   // mechanic you can use and one you fumble, and it costs nothing: the spirit
   // is already held by the ground, a wall or a node whenever it is allowed.
@@ -2047,6 +3321,21 @@ function simStep() {
   G.phaseT += STEP;
 
   updateMotion(G.t);
+  if (PS.state === 'ground' && PS.support && !PS.support.broken) {
+    body.x += PS.support.vx; body.y += PS.support.vy;
+    // Translation is applied exactly once. Contact velocity stays relative.
+    body.vy = 0;
+  }
+  for (const e of world.solids) if (e.crumble && e.crumbleT >= 0 && !e.broken) {
+    e.crumbleT += STEP;
+    if (e.crumbleT >= e.crumble) {
+      e.broken = true;
+      FX.spark(e.x,e.y,-Math.PI/2,Math.PI,2.5,8,HUE.stone.rgb,{life:.5,size:3,grav:.15});
+      Sfx.crack();
+      if (PS.support === e) { PS.support = null; PS.set('air'); PS.coyote = MOVE.coyote; }
+    }
+  }
+  Sfx.environment(G.phase === 'play' ? world.winds.some(w => Math.abs(body.x-w.x)<w.w/2+100 && Math.abs(body.y-w.y)<w.h/2+100) : false);
   for (const b of world.beams) b.k = beamLevel(b, G.t);
   for (const n of world.nodes) {
     if (n.cool > 0) n.cool = Math.max(0, n.cool - STEP);
@@ -2082,6 +3371,12 @@ function simStep() {
   if (G.phase === 'play') updateSpirit();
   else if (G.phase === 'win') {
     const g = world.gate;
+    if (!G.goalBurst && G.phaseT > .34) {
+      G.goalBurst = true;
+      const finale = G.levelIndex === LEVELS.length - 1;
+      FX.spark(g.x,g.y,0,Math.PI,finale?6:4,finale?22:12,HUE.gate.hi,{life:.65,size:2.6,drag:.94});
+      FX.shock(g.x,g.y,20,finale?210:140,.55,HUE.gate.rgb,3);
+    }
     g.open = Math.min(1, g.open + STEP * 3);
     body.x = lerp(body.x, g.x, 0.2); body.y = lerp(body.y, g.y, 0.2);
     body.vx *= 0.8; body.vy *= 0.8;
@@ -2169,6 +3464,10 @@ function updateSpirit() {
     cam.flash = Math.max(cam.flash, 0.16); cam.flashCol = HUE.spring.hi;
     Sfx.spring();
   } else if (r.floor) {
+    PS.support = r.floorE;
+    if (PS.support && PS.support.crumble && PS.support.crumbleT < 0) {
+      PS.support.crumbleT = 0; Sfx.crack();
+    }
     // arriving on something you can stand on
     if (PS.state !== 'ground') {
       const hard = clamp(fallSpeed / MOVE.landHard, 0, 1);
@@ -2185,6 +3484,7 @@ function updateSpirit() {
     body.ledgeDir = 0; body.ledgeT = 0;
     PS.coyote = MOVE.coyote;
     PS.clingT = 0;
+    if (PS.support && PS.support.motion) body.vy = 0;
     body.vx *= MOVE.groundDrag;
     if (Math.abs(body.vx) < MOVE.groundStop) body.vx = 0;
   } else if (r.wallHold) {
@@ -2388,6 +3688,7 @@ function inView(e, pad) {
    lit top edge — the line the player actually aims at — is kept whenever the
    real edge is on screen. */
 function drawSolid(c, e) {
+  if (e.broken) return;
   let hw = e.w / 2, hh = e.h / 2;
   let ox = 0, oy = 0, topReal = true;
   if (!e.a && (e.w > VW || e.h > VH)) {
@@ -2810,7 +4111,7 @@ function drawSpirit(c) {
   for (let i = 0; i < 2; i++) {
     const side = i ? 1 : -1;
     const base = -Math.PI / 2 + side * 0.52;
-    const wob = Math.sin(Vis.pulse * 2.3 + i * 1.9) * 0.08;
+    const wob = Math.sin(Vis.pulse * 2.3 + i * 1.9) * (PS.state === 'node' ? .15 : .08);
     const tipA = base + side * 0.1 + lean + wob;
     const midA = base + side * 0.04 + lean * 0.45 + wob * 0.5;
     const bx = Math.cos(base) * R * 0.66, by = Math.sin(base) * R * 0.66;
@@ -3128,6 +4429,40 @@ function drawTransition(c) {
   c.globalCompositeOperation = 'source-over';
 }
 
+
+function drawEnvironment(c) {
+  for (const e of world.solids) {
+    if (e.broken || !inView(e)) continue;
+    if (e.motion) {
+      c.strokeStyle='rgba(100,225,255,.3)'; c.lineWidth=2; c.setLineDash([5,9]);
+      c.beginPath(); c.moveTo(e.bx-(e.motion.dx||0),e.by-(e.motion.dy||0));
+      c.lineTo(e.bx+(e.motion.dx||0),e.by+(e.motion.dy||0)); c.stroke(); c.setLineDash([]);
+      c.strokeStyle='#80dff7'; c.strokeRect(e.x-e.w/2+5,e.y-e.h/2+5,e.w-10,5);
+    }
+    if (e.crumble) {
+      const k=e.crumbleT<0?0:clamp(e.crumbleT/e.crumble,0,1);
+      c.save(); c.translate(e.x+Math.sin(G.t*65)*k*2,e.y-e.h/2);
+      c.strokeStyle=k>.5?'#ffc09a':'#b5a2d6'; c.lineWidth=2;
+      for(let j=-1;j<=1;j++) { const x=j*e.w*.28; c.beginPath(); c.moveTo(x,-1); c.lineTo(x-9,9); c.lineTo(x+4,17); c.lineTo(x-8,25+k*25); c.stroke(); }
+      if(k) { c.fillStyle='#ffd0a1'; c.fillRect(-e.w/2,-7,e.w*(1-k),3); }
+      c.restore();
+    }
+  }
+  for (const w of world.winds) {
+    if (Math.abs(w.x-cam.x)>w.w/2+VW/cam.zoom || Math.abs(w.y-cam.y)>w.h/2+VH/cam.zoom) continue;
+    c.fillStyle='rgba(75,213,222,.035)'; c.fillRect(w.x-w.w/2,w.y-w.h/2,w.w,w.h);
+    c.strokeStyle='rgba(137,235,240,.4)'; c.lineWidth=1.5;
+    const len=Math.hypot(w.dx,w.dy)||1, dx=w.dx/len,dy=w.dy/len;
+    for(let j=0;j<22;j++) {
+      const x=w.x-w.w/2+((j*97+G.t*dx*75)%w.w+w.w)%w.w;
+      const y=w.y-w.h/2+((j*137+G.t*dy*75)%w.h+w.h)%w.h;
+      c.beginPath(); c.moveTo(x-dx*18,y-dy*18); c.lineTo(x,y);
+      c.lineTo(x-dx*6-dy*4,y-dy*6+dx*4); c.moveTo(x,y);
+      c.lineTo(x-dx*6+dy*4,y-dy*6-dx*4); c.stroke();
+    }
+  }
+}
+
 function render() {
   const c = ctx;
   c.setTransform(RS, 0, 0, RS, 0, 0);
@@ -3147,6 +4482,7 @@ function render() {
   for (const e of world.springs) if (inView(e)) drawSpring(c, e);
   for (const e of world.motes) if (inView(e)) drawMote(c, e);
   for (const e of world.nodes) if (inView(e, MOVE.nodeReach)) drawNode(c, e);
+  drawEnvironment(c);
   drawGate(c, world.gate);
 
   drawReady(c);
@@ -3288,6 +4624,7 @@ function grabNode(n, px, py, id) {
 }
 
 function onDown(e) {
+  if (G.menu) return;
   if (Aim.on || (e.button !== undefined && e.button !== 0)) return;
   if (buffered.on && e.pointerId !== buffered.id) return;
   Sfx.unlock();
@@ -3397,7 +4734,7 @@ window.addEventListener('pointercancel', cancelAim);
    they are both handled on `window`, so they arrive with or without capture. */
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('gesturestart', (e) => e.preventDefault());
-window.addEventListener('touchmove', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
+window.addEventListener('touchmove', (e) => { if (!G.menu && e.cancelable) e.preventDefault(); }, { passive: false });
 
 dom.restart.addEventListener('click', (e) => { e.stopPropagation(); Sfx.unlock(); restartLevel(); });
 
@@ -3410,9 +4747,45 @@ function applyMute(v) {
   Store.set('muted', v ? '1' : '0');
 }
 dom.sound.addEventListener('click', (e) => {
-  e.stopPropagation(); Sfx.unlock(); applyMute(!muted); if (!muted) Sfx.ui();
+  e.stopPropagation(); applyMute(!muted); Sfx.unlock(); if (!muted) Sfx.ui();
 });
 dom.endRestart.addEventListener('click', () => { Sfx.unlock(); Sfx.ui(); restartRun(); });
+
+
+function selectLevel(i) {
+  if (!Number.isInteger(i) || i<0 || i>Save.unlocked()) return false;
+  cancelAim(); G.transDir=0; G.transNext=null; doneFrames=0;
+  Sfx.unlock(); Sfx.ui(); startLevel(i); return true;
+}
+function showMenu(select) {
+  cancelAim(); G.menu=true; Sfx.environment(false);
+  document.getElementById('ui').inert = true;
+  dom.endCard.inert = true;
+  const card=document.getElementById('menuCard'); card.classList.remove('hidden');
+  document.getElementById('menuStart').textContent=Save.unlocked()>0?'DEVAM ET':'BAŞLA';
+  document.getElementById('levelGrid').classList.toggle('hidden',!select);
+  document.getElementById('menuBack').classList.toggle('hidden',!select);
+  for(let i=0;i<LEVELS.length;i++) {
+    const b=document.getElementById('chooseLevel'+i);
+    b.disabled=i>Save.unlocked();
+    b.textContent='BÖLÜM '+(i+1)+(b.disabled?' · Kilitli':Save.completed(i)?' · ✓':'');
+    b.setAttribute('aria-label','Bölüm '+(i+1)+': '+LEVELS[i].name+(b.disabled?' · Kilitli':''));
+  }
+}
+for(let i=0;i<LEVELS.length;i++) {
+  const b=document.createElement('button'); b.id='chooseLevel'+i; b.type='button';
+  b.addEventListener('click',()=>selectLevel(i)); document.getElementById('levelGrid').appendChild(b);
+}
+document.getElementById('menuStart').addEventListener('click',()=>selectLevel(Save.unlocked()));
+document.getElementById('menuLevels').addEventListener('click',()=>showMenu(true));
+document.getElementById('endSelect').addEventListener('click',()=>showMenu(true));
+document.getElementById('levelsBtn').addEventListener('click',()=>showMenu(true));
+document.getElementById('menuBack').addEventListener('click',()=>{
+  G.menu=false;
+  document.getElementById('menuCard').classList.add('hidden');
+  document.getElementById('ui').inert=false;
+  dom.endCard.inert=false;
+});
 
 const DEV = (() => {
   if (/[?&]dev=1/.test(location.search)) { Store.set('dev', '1'); return true; }
@@ -3421,8 +4794,8 @@ const DEV = (() => {
 })();
 
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'r' || e.key === 'R') restartLevel();
-  if (e.key === 'm' || e.key === 'M') applyMute(!muted);
+  if (!G.menu && (e.key === 'r' || e.key === 'R')) restartLevel();
+  if (e.key === 'm' || e.key === 'M') { applyMute(!muted); Sfx.unlock(); }
   if (DEV && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
     e.preventDefault();
     cancelAim();
@@ -3493,6 +4866,7 @@ function frame(now) {
 }
 
 document.addEventListener('visibilitychange', () => {
+  Sfx.suspend(document.hidden);
   cancelAnimationFrame(frameId);
   cancelAim();
   last = 0; acc = 0;
@@ -3514,7 +4888,7 @@ applyBranding();
 Save.load();
 const resumeAt = Save.unlocked();
 startLevel(resumeAt);
-if (resumeAt > 0) showToast(TEXT.resume, { info: true });
+showMenu(false);
 fit();
 frameId = requestAnimationFrame(frame);
 
@@ -3523,7 +4897,7 @@ frameId = requestAnimationFrame(frame);
    GAME.title: renaming the game must not break a bookmarked console call or
    the test harness. */
 window.FLUX = {
-  G, body, PS, Vis, Aim, world, LEVELS, MOVE, Q, Player, cam, Save, Store, TEXT, GAME,
+  G, body, PS, Vis, Aim, world, LEVELS, MOVE, Q, Player, cam, Save, Store, TEXT, GAME, selectLevel, showMenu,
   go: (i) => startLevel(clamp(i | 0, 0, LEVELS.length - 1)),
   burst: (ang, power) => { if (canAim()) doBurst(ang, clamp(power, 0, 1)); },
   tick: (n) => { for (let i = 0; i < n; i++) simStep(); },

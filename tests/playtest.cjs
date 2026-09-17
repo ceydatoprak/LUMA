@@ -40,6 +40,9 @@ function place(wp) {
       x < s.x + s.w / 2 + 30 && x > s.x - s.w / 2 - 30 && s.x > x &&
       y > s.y - s.h / 2 && y < s.y + s.h / 2);
     f.PS.clingSide = right ? -1 : 1;
+    f.PS.clingWall = f.world.solids.find(s => !s.a &&
+      Math.abs(x - (s.x + (right ? -1 : 1) * s.w / 2)) < 30 &&
+      y > s.y - s.h / 2 && y < s.y + s.h / 2) || null;
     f.PS.clingT = 0;
   } else if (kind === 'node') {
     const n = f.world.nodes.reduce((b, n) =>

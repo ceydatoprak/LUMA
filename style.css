@@ -527,3 +527,22 @@ body{
 @media (prefers-reduced-motion:reduce){
   .blob,.end-glow,.end-orb,.end-orb .spark,.end-orb .core,.end-orb .ring{animation:none!important;}
 }
+/* Menus retain native buttons and scroll on small landscape screens. */
+#menuCard{position:absolute;inset:0;z-index:6;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 20%,#24224beF,#060917fa);overflow-y:auto;touch-action:pan-y;padding:24px 18px;}
+#menuCard.hidden{display:none;}
+.menu-inner{width:100%;max-width:420px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px;}
+.menu-symbol{font-size:54px;color:#a9eaff;text-shadow:0 0 28px #8c6cff;}
+#menuTitle,#endCard h1{font-size:clamp(18px,4.6vmin,34px);letter-spacing:.08em;overflow-wrap:anywhere;max-width:95%;line-height:1.3;}
+.menu-inner p{color:#bbc5dc;font-size:13px;margin:0 0 14px;}
+.menu-inner button,#endSelect{min-height:44px;padding:12px 18px;border:1px solid #7686bd66;border-radius:16px;background:#4a519f26;color:#e9f5ff;font:600 12px var(--ui-font);letter-spacing:.08em;cursor:pointer;touch-action:manipulation;}
+.menu-inner>button{width:85%;}
+.menu-inner button:disabled{color:#697289;border-color:#59617533;cursor:default;}
+button:focus-visible{outline:2px solid #94edff;outline-offset:3px;}
+#levelGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;}
+#levelGrid button{padding:10px 4px;min-height:48px;font-size:10px;}
+#levelGrid.hidden,#menuBack.hidden{display:none;}
+.dm-name{max-width:clamp(150px,20vw,340px);font-size:clamp(18px,2.2vw,34px);letter-spacing:.06em;overflow-wrap:anywhere;}
+.hud-btn{width:36px;height:36px;}
+.hud-side{gap:8px;}
+@media(max-height:500px){#menuCard{position:fixed;z-index:10;}.menu-inner{max-width:540px;}#levelGrid{grid-template-columns:repeat(5,1fr);}.menu-symbol{display:none;}}
+.end-stats [hidden]{display:none;}

@@ -39,6 +39,7 @@ function boot(opts) {
       setAttribute: (k, v) => { el.attrs[k] = String(v); },
       getAttribute: (k) => (k in el.attrs ? el.attrs[k] : null),
       contains: () => false,
+      appendChild: (child) => { nodes.set(child.id, child); },
       addEventListener: (key, fn) => { events[key] = fn; },
     };
     return el;

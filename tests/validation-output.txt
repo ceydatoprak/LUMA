@@ -1,0 +1,169 @@
+
+> test
+> node tests/game.test.cjs && node tests/environment.test.cjs && node tests/playtest.cjs && node tests/solve-levels.cjs
+
+PASS:
+  - every level spawns safe, and every checkpoint is a usable restart
+  - leap power band is monotonic and clamped
+  - short, medium and full pulls are three distinct leaps
+  - gravity produces a readable arc and a capped fall
+  - floors catch and slide instead of bouncing
+  - wall holds grip, slide, expire and push off cleanly
+  - wall to the top of the same block works from both sides, widely
+  - nodes catch, freeze, throw, recharge and cannot be spammed
+  - springs throw along their own face, predictably
+  - a spring throws once per contact, cannot be re-entered, and can never trap the player
+  - corners are deterministic, thin walls hold, channels stay quiet
+  - death is fast, checkpoints hold, the void is a boundary
+  - beams cycle and kill only while lit
+  - one gesture, identical for mouse and touch, safe against stray fingers
+  - early presses are buffered and leaving an edge is forgiven
+  - landing assist catches near misses without grabbing clear ones
+  - TEST A — a held stretch does not drift while the camera moves
+  - TEST B — aim is identical at every camera zoom and position
+  - TEST C — aim zoom converges once, with no oscillation
+  - TEST D — the guide and the jump are the same simulation
+  - the camera leads the launch and always keeps the spirit in shot
+  - levels are compact, routed, and level 1 teaches one thing
+  - the camera follows and never leaves the world
+  - progression, restart and every pixel budget hold
+  - frame loop clamps stalls and adapts quality
+  - the guide matches the jump from the ground and from a wall
+  - the level readout always comes from LEVELS.length
+  - the leap counter is gone from the UI and still tracked internally
+  - progress saves, restores, clamps, survives corruption and survives no storage at all
+  - one name, one place, and a Turkish UI that renders intact
+PASS: 15 levels; menu locks/save reload; moving landings and 20-second rides; forecast isolation/parity; crumbling warning/pause/reset; directional airborne wind.
+
+=== 1. İlk Sıçrayış  (760 x 940, 2 hops) ===
+   1. ground -> ground   OK          aim   -56deg p0  slack  34deg   30 inputs work,  22 land in view
+   2. ground -> gate     OK          aim     0deg p0  slack 360deg  576 inputs work, 576 land in view
+
+=== 2. Duvara Tutun  (760 x 980, 3 hops) ===
+   1. ground -> cling    OK          aim   -38deg p0.648  slack  60deg   66 inputs work,  66 land in view
+   2. cling -> ground    OK          aim   -79deg p1  slack  23deg   14 inputs work,  14 land in view
+   3. ground -> gate     OK          aim     0deg p0  slack 360deg  576 inputs work, 576 land in view
+
+=== 3. Işık Noktası  (800 x 960, 3 hops) ===
+   1. ground -> node     OK          aim   -45deg p0.8960000000000001  slack  53deg   46 inputs work,  46 land in view
+   2. node -> ground     OK          aim  -105deg p0.3520000000000001  slack  15deg   16 inputs work,  14 land in view
+   3. ground -> gate     OK          aim   -90deg p0  slack  86deg  138 inputs work, 138 land in view
+
+=== 4. Ruh Yayı  (1150 x 1080, 3 hops) ===
+   1. ground -> spring   OK          aim   -19deg p0  slack  38deg   82 inputs work,  82 land in view
+   2. spring -> ground   OK   (the spring does the work)
+   3. ground -> gate     OK          aim     0deg p0  slack 360deg  576 inputs work, 576 land in view
+
+=== 5. İlk Tehlike  (1450 x 960, 3 hops) ===
+   1. ground -> ground   OK          aim   -45deg p0.648  slack  56deg   57 inputs work,  25 land in view
+   2. ground -> ground   OK          aim   -56deg p0.648  slack  26deg   13 inputs work,   7 land in view
+   3. ground -> gate     OK          aim     0deg p0  slack 360deg  576 inputs work, 576 land in view
+
+=== 6. Nabız  (1300 x 960, 3 hops) ===
+   1. ground -> ground   OK          aim   -49deg p0.648  slack  56deg   52 inputs work,  32 land in view
+   2. ground -> ground   OK          aim   -64deg p0.648  slack  19deg   15 inputs work,  11 land in view
+   3. ground -> gate     OK          aim   -56deg p0  slack 113deg  180 inputs work, 180 land in view
+
+=== 7. Hareketli Zemin  (1360 x 960, 3 hops) ===
+   1. ground -> ground   OK          aim   -45deg p0.8960000000000001  slack  49deg   41 inputs work,  15 land in view
+   2. ground -> ground   OK          aim   -60deg p0.648  slack  23deg   12 inputs work,  10 land in view
+   3. ground -> gate     OK          aim   -75deg p0  slack 150deg  240 inputs work, 240 land in view
+
+=== 8. Kırılgan Zemin  (1420 x 1000, 3 hops) ===
+   1. ground -> ground   OK          aim   -49deg p0.648  slack  49deg   48 inputs work,  26 land in view
+   2. ground -> ground   OK          aim   -56deg p0.648  slack  30deg   16 inputs work,   9 land in view
+   3. ground -> gate     OK          aim   -79deg p0  slack 124deg  198 inputs work, 198 land in view
+
+=== 9. Zincir  (1120 x 1520, 5 hops) ===
+   1. ground -> cling    OK          aim   -30deg p0.648  slack  49deg   55 inputs work,  55 land in view
+   2. cling -> ground    OK          aim   -98deg p0.3520000000000001  slack  15deg   16 inputs work,  16 land in view
+   3. ground -> spring   OK          aim  -169deg p0  slack  26deg   78 inputs work,  78 land in view
+   4. spring -> ground   OK   (the spring does the work)
+   5. ground -> gate     OK          aim  -116deg p0  slack 131deg  334 inputs work, 334 land in view
+
+=== 10. Akış  (1160 x 1160, 4 hops) ===
+   1. ground -> node     OK          aim   -49deg p0.8960000000000001  slack  56deg   52 inputs work,  52 land in view
+   2. node -> ground     OK          aim   -75deg p0.3520000000000001  slack  19deg   26 inputs work,  19 land in view
+   3. ground -> ground   OK          aim  -116deg p0.648  slack  19deg   13 inputs work,  10 land in view
+   4. ground -> gate     OK          aim   -90deg p0  slack 161deg  258 inputs work, 258 land in view
+
+=== 11. Rüzgâr  (1500 x 980, 3 hops) ===
+   1. ground -> ground   OK          aim   -56deg p0.8960000000000001  slack  49deg   45 inputs work,  11 land in view
+   2. ground -> ground   OK          aim   -64deg p0.3520000000000001  slack  38deg   27 inputs work,  12 land in view
+   3. ground -> gate     OK          aim   -90deg p0  slack 161deg  258 inputs work, 258 land in view
+
+=== 12. Dar Geçit  (1460 x 1280, 4 hops) ===
+   1. ground -> spring   OK          aim   -23deg p0  slack  45deg   87 inputs work,  87 land in view
+   2. spring -> ground   OK   (the spring does the work)
+   3. ground -> ground   OK          aim   -60deg p0.3520000000000001  slack  19deg   15 inputs work,   9 land in view
+   4. ground -> gate     OK          aim   -75deg p0  slack 150deg  240 inputs work, 240 land in view
+
+=== 13. Parçalanan Yol  (1560 x 1280, 5 hops) ===
+   1. ground -> ground   OK          aim   -53deg p0.8960000000000001  slack  38deg   28 inputs work,  11 land in view
+   2. ground -> ground   OK          aim   -60deg p0.8960000000000001  slack  34deg   25 inputs work,  14 land in view
+   3. ground -> node     OK          aim  -128deg p0.648  slack  60deg   79 inputs work,  79 land in view
+   4. node -> ground     OK          aim   -64deg p0.3520000000000001  slack  26deg   24 inputs work,  14 land in view
+   5. ground -> gate     OK          aim   -90deg p0  slack 161deg  258 inputs work, 258 land in view
+
+=== 14. Yükseliş  (1120 x 2300, 9 hops) ===
+   1. ground -> cling    OK          aim   -30deg p0.648  slack  49deg   55 inputs work,  55 land in view
+   2. cling -> ground    OK          aim   -98deg p0.3520000000000001  slack  15deg   16 inputs work,  16 land in view
+   3. ground -> spring   OK          aim  -169deg p0  slack  26deg   78 inputs work,  78 land in view
+   4. spring -> ground   OK   (the spring does the work)
+   5. ground -> ground   OK          aim  -113deg p0.648  slack  23deg   16 inputs work,   7 land in view
+   6. ground -> ground   OK          aim   -68deg p0.648  slack  26deg   22 inputs work,  11 land in view
+   7. ground -> node     OK          aim  -109deg p0.8960000000000001  slack  49deg   65 inputs work,  65 land in view
+   8. node -> ground     OK          aim  -105deg p0.648  slack  15deg   13 inputs work,  13 land in view
+   9. ground -> gate     OK          aim   -90deg p0  slack 161deg  258 inputs work, 258 land in view
+
+=== 15. Son Işık  (1580 x 2520, 10 hops) ===
+   1. ground -> cling    OK          aim   -34deg p0.648  slack  60deg   65 inputs work,  65 land in view
+   2. cling -> ground    OK          aim  -101deg p0.648  slack  19deg   18 inputs work,  16 land in view
+   3. ground -> node     OK          aim   -53deg p0.8960000000000001  slack  53deg   50 inputs work,  50 land in view
+   4. node -> ground     OK          aim   -75deg p0  slack  15deg   25 inputs work,  15 land in view
+   5. ground -> spring   OK          aim  -158deg p0  slack  38deg   92 inputs work,  92 land in view
+   6. spring -> ground   OK   (the spring does the work)
+   7. ground -> ground   OK          aim   -60deg p1  slack  30deg   20 inputs work,  11 land in view
+   8. ground -> node     OK          aim  -120deg p1  slack  53deg   51 inputs work,  51 land in view
+   9. node -> ground     OK          aim   -71deg p0.648  slack  19deg   13 inputs work,  12 land in view
+  10. ground -> gate     OK          aim     0deg p0  slack 360deg  576 inputs work, 576 land in view
+
+Every hop is reachable, forgiving and visible.
+L2 move 1: 16 candidates, best gap 212
+L3 move 1: 7 candidates, best gap 478
+L5 move 1: 15 candidates, best gap 476
+L6 move 1: 16 candidates, best gap 403
+L7 move 1: 17 candidates, best gap 351
+L8 move 1: 23 candidates, best gap 476
+L9 move 1: 11 candidates, best gap 642
+L10 move 1: 8 candidates, best gap 542
+L10 move 2: 25 candidates, best gap 253
+L11 move 1: 19 candidates, best gap 302
+L12 move 1: 15 candidates, best gap 144
+L13 move 1: 17 candidates, best gap 827
+L13 move 2: 36 candidates, best gap 452
+L14 move 1: 12 candidates, best gap 1674
+L14 move 2: 36 candidates, best gap 802
+L14 move 3: 36 candidates, best gap 427
+L14 move 4: 36 candidates, best gap -6
+L15 move 1: 15 candidates, best gap 1911
+L15 move 2: 36 candidates, best gap 1553
+L15 move 3: 36 candidates, best gap 1016
+L15 move 4: 36 candidates, best gap 552
+
+  lvl  name           moves  cling  node  spring  mote   result
+    1  İlk Sıçrayış      1      0     0       0     0   WIN
+    2  Duvara Tutun      2      1     0       0     0   WIN
+    3  Işık Noktası      2      0     1       0     0   WIN
+    4  Ruh Yayı          1      0     0       1     0   WIN
+    5  İlk Tehlike       2      0     0       0     0   WIN
+    6  Nabız             2      1     0       0     0   WIN
+    7  Hareketli Zemin     2      0     0       0     0   WIN
+    8  Kırılgan Zemin     2      0     0       0     0   WIN
+    9  Zincir            2      1     0       1     0   WIN
+   10  Akış              3      1     1       0     0   WIN
+   11  Rüzgâr            2      0     0       0     0   WIN
+   12  Dar Geçit         2      0     0       1     1   WIN
+   13  Parçalanan Yol     3      0     1       0     0   WIN
+   14  Yükseliş          5      1     1       1     1   WIN
+   15  Son Işık          5      1     2       1     0   WIN

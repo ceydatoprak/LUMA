@@ -27,6 +27,10 @@ function snapshot() {
     G: { t: f.G.t, phase: f.G.phase, phaseT: f.G.phaseT,
          spawnX: f.G.spawnX, spawnY: f.G.spawnY, bursts: f.G.bursts },
     nodes: f.world.nodes.map(n => n.cool),
+    support: f.world.solids.indexOf(f.PS.support),
+    solids: f.world.solids.map(e => ({crumbleT:e.crumbleT,broken:e.broken})),
+    springs: f.world.springs.map(e => ({lock:e.lock,off:e.off,cool:e.cool,fire:e.fire})),
+    loop: {...T.springLoop},
     motes: f.world.motes.map(m => m.got),
     movers: f.world.movers.map(m => ({ x: m.x, y: m.y, a: m.a, ca: m.ca, sa: m.sa })),
   };
@@ -35,6 +39,10 @@ function restore(s) {
   Object.assign(f.body, s.body);
   Object.assign(f.PS, s.PS);
   f.PS.node = s.PS.nodeIndex >= 0 ? f.world.nodes[s.PS.nodeIndex] : null;
+  f.PS.support = f.world.solids[s.support] || null;
+  f.world.solids.forEach((e,i)=>Object.assign(e,s.solids[i]));
+  f.world.springs.forEach((e,i)=>Object.assign(e,s.springs[i]));
+  Object.assign(T.springLoop,s.loop);
   Object.assign(f.G, s.G);
   f.world.nodes.forEach((n, i) => { n.cool = s.nodes[i]; });
   f.world.motes.forEach((m, i) => { m.got = s.motes[i]; });
@@ -185,3 +193,4 @@ for (const r of report) {
 }
 if (failed) process.exitCode = 1;
 module.exports = { out, report };
+require('node:fs').writeFileSync(require('node:path').join(__dirname,'completion-routes.json'),JSON.stringify({out,report},null,2));

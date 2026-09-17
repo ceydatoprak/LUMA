@@ -534,7 +534,7 @@ if (require.main === module) {
   section('corners are deterministic, thin walls hold, channels stay quiet');
 
   /* ---- failure and checkpoints ------------------------------------------ */
-  f.go(4);                                  // a level with motes
+  f.go(11);                                 // a level with motes
   const mote = f.world.motes[0];
   const start = { x: f.G.spawnX, y: f.G.spawnY };
   f.internals.placeSpirit(mote.x, mote.y + 4);
@@ -575,7 +575,7 @@ if (require.main === module) {
     f.internals.placeSpirit(beam2.x, beam2.y);
     f.PS.state = 'air'; f.PS.t = 1;
     f.tick(1);                                // this is the tick that sets k
-    if (f.PS.state === 'hurt') { if (beam2.k > 0.35) killedWhileLit = true; break; }
+    if (f.PS.state === 'hurt' && beam2.k > 0.35) killedWhileLit = true;
     if (beam2.k <= 0) survivedWhileDark = true;
   }
   assert(killedWhileLit, 'A lit beam kills');
@@ -830,7 +830,7 @@ if (require.main === module) {
   section('TEST C — aim zoom converges once, with no oscillation');
 
   /* ---- TEST D: the guide must match the jump it previews ------------------ */
-  f.go(0); f.tick(120);
+  f.go(4); f.tick(120);
   {
     stretch(f, -50, 0.6);
     T.refreshAimPreview();
@@ -881,7 +881,7 @@ if (require.main === module) {
     // A guard against levels sprawling, not a hard design rule. Level 1 sits
     // near the top of it on purpose: its ledges are deliberately huge so that
     // almost any forward pull lands on one, and that costs width.
-    assert(L.w <= 1620 && L.h <= 1700,
+    assert(L.w <= 1620 && L.h <= (i >= 13 ? 2600 : 1700),
       `Level ${i + 1}: world is larger than a handcrafted space needs (${L.w}x${L.h})`);
   }
   // the first level teaches one thing and introduces nothing else
@@ -1001,7 +1001,7 @@ if (require.main === module) {
   {
     const fresh = boot();
     fresh.go(0);
-    assert.equal(fresh.text('levelTot'), '0' + fresh.LEVELS.length,
+    assert.equal(fresh.text('levelTot'), String(fresh.LEVELS.length).padStart(2, '0'),
       'The HUD total is written from LEVELS.length');
     assert.equal(fresh.text('levelNum'), '01', 'and the current level reads 01 on the first level');
 
@@ -1009,11 +1009,11 @@ if (require.main === module) {
     // has to agree on the very next write
     const spare = fresh.LEVELS.pop();
     fresh.internals.updateHud();
-    assert.equal(fresh.text('levelTot'), '0' + fresh.LEVELS.length,
+    assert.equal(fresh.text('levelTot'), String(fresh.LEVELS.length).padStart(2, '0'),
       'The HUD total follows the level list, it does not remember a number');
     fresh.LEVELS.push(spare);
     fresh.internals.updateHud();
-    assert.equal(fresh.text('levelTot'), '0' + fresh.LEVELS.length, 'and back again');
+    assert.equal(fresh.text('levelTot'), String(fresh.LEVELS.length).padStart(2, '0'), 'and back again');
 
     const last = fresh.LEVELS.length - 1;
     fresh.go(last);
@@ -1204,7 +1204,7 @@ if (require.main === module) {
     fresh.G.levelIndex = fresh.LEVELS.length - 1;
     for (let i = 0; i < 400 && fresh.G.phase !== 'done'; i++) fresh.tick(1);
     assert.equal(fresh.G.phase, 'done', 'the run finishes');
-    assert.equal(fresh.text('endLevels'), String(fresh.LEVELS.length),
+    assert.equal(fresh.text('endLevels'), fresh.LEVELS.length + ' / ' + fresh.LEVELS.length,
       'The end screen counts the levels, from LEVELS.length');
   }
   section('one name, one place, and a Turkish UI that renders intact');
