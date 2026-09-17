@@ -830,7 +830,7 @@ if (require.main === module) {
   section('TEST C — aim zoom converges once, with no oscillation');
 
   /* ---- TEST D: the guide must match the jump it previews ------------------ */
-  f.go(4); f.tick(120);
+  f.go(5); f.tick(120);
   {
     stretch(f, -50, 0.6);
     T.refreshAimPreview();

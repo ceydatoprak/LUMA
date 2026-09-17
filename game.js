@@ -39,7 +39,7 @@
    survive a rename, so the key the player's browser already holds has to stay
    what it is. Change it only to intentionally discard everyone's progress. */
 const GAME = {
-  title:      'GAME_NAME_HERE',
+  title:      'LUMA',
   lang:       'tr',
   storageKey: 'flux',
 };
@@ -54,7 +54,7 @@ const GAME = {
    the level, and the sentence is only there to name what they are seeing. */
 const TEXT = {
   /* shell */
-  tagline:      'Küçük bir ruhun sıçrayışları',
+  tagline:      'Işığın yolunu bul.',
   controls:     'Basılı tut · geriye çek · bırak · R yeniden başlatır',
   description:  GAME.title + ' — küçük bir ruhu neon harabelerde yönlendir: ' +
                 'geriye çek ve bırak, duvarlara tutun, ışık kürelerini kullan.',
@@ -787,335 +787,141 @@ function updateDust() {
    ============================================================ */
 
 const LEVELS = [
+  // 1 — Three broad ledges: 40–50% pull, 55–65% pull, short finish.
   {
-    "name": "İlk Sıçrayış",
-    "tip": "Basılı tut, geriye çek ve bırak.",
-    "w": 760,
-    "h": 940,
-    "bg": [
-      "#141a44",
-      "#06091c"
+    name: "İlk Işık",
+    tip: "Basılı tut, geriye çek ve bırak.",
+    w: 900,
+    h: 900,
+    bg: ["#141a44","#06091c"],
+    accent: [120,170,255],
+    spawn: {"x":120,"y":755},
+    gate: {"x":820,"y":265},
+    solids: [
+      {"x":450,"y":945,"w":900,"h":130},
+      {"x":140,"y":840,"w":280,"h":80},
+      {"x":370,"y":680,"w":250,"h":80},
+      {"x":625,"y":490,"w":290,"h":80},
+      {"x":815,"y":350,"w":170,"h":60}
     ],
-    "accent": [
-      120,
-      170,
-      255
-    ],
-    "spawn": {
-      "x": 130,
-      "y": 540
-    },
-    "gate": {
-      "x": 450,
-      "y": 450
-    },
-    "solids": [
-      {
-        "x": 380,
-        "y": 900,
-        "w": 760,
-        "h": 240
-      },
-      {
-        "x": 140,
-        "y": 660,
-        "w": 280,
-        "h": 160
-      },
-      {
-        "x": 470,
-        "y": 570,
-        "w": 340,
-        "h": 160
-      }
-    ],
-    "route": [
-      [
-        130,
-        567,
-        "ground"
-      ],
-      [
-        450,
-        477,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
+    route: [
+      [120,787,"ground"],
+      [370,627,"ground"],
+      [565,437,"ground"],
+      [815,307,"ground"],
+      [0,0,"gate"]
     ]
   },
+  // 2 — One wall hold, the top of the same tower, then a separate goal ledge.
   {
-    "name": "Duvara Tutun",
-    "tip": "Duvara tutun ve yeniden yön seç.",
-    "w": 760,
-    "h": 980,
-    "bg": [
-      "#102542",
-      "#040a18"
+    name: "Tutun",
+    tip: "Duvara tutun. Yeniden yön seç.",
+    w: 800,
+    h: 1000,
+    bg: ["#102542","#040a18"],
+    accent: [90,190,255],
+    spawn: {"x":120,"y":810},
+    gate: {"x":710,"y":215},
+    solids: [
+      {"x":400,"y":980,"w":800,"h":120},
+      {"x":150,"y":890,"w":300,"h":80},
+      {"x":540,"y":665,"w":280,"h":470},
+      {"x":705,"y":305,"w":190,"h":70}
     ],
-    "accent": [
-      90,
-      190,
-      255
-    ],
-    "spawn": {
-      "x": 150,
-      "y": 700
-    },
-    "gate": {
-      "x": 650,
-      "y": 270
-    },
-    "solids": [
-      {
-        "x": 380,
-        "y": 900,
-        "w": 760,
-        "h": 240
-      },
-      {
-        "x": 650,
-        "y": 550,
-        "w": 180,
-        "h": 460
-      },
-      {
-        "x": 200,
-        "y": 400,
-        "w": 340,
-        "h": 70
-      }
-    ],
-    "route": [
-      [
-        150,
-        767,
-        "ground"
-      ],
-      [
-        547,
-        530,
-        "cling"
-      ],
-      [
-        650,
-        307,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
+    route: [
+      [120,837,"ground"],
+      [387,610,"cling"],
+      [470,417,"ground"],
+      [705,257,"ground"],
+      [0,0,"gate"]
     ]
   },
+  // 3 — Rest first; the only node supplies a second decision in the air.
   {
-    "name": "Işık Noktası",
-    "tip": "Işık küresine yaklaş ve yönünü değiştir.",
-    "w": 800,
-    "h": 960,
-    "bg": [
-      "#231640",
-      "#08061c"
+    name: "Yankı",
+    tip: "Işık küresine yaklaş. Havada yönünü değiştir.",
+    w: 1050,
+    h: 900,
+    bg: ["#231640","#08061c"],
+    accent: [170,130,255],
+    spawn: {"x":120,"y":760},
+    gate: {"x":920,"y":130},
+    solids: [
+      {"x":525,"y":950,"w":1050,"h":140},
+      {"x":150,"y":840,"w":300,"h":80},
+      {"x":445,"y":695,"w":330,"h":80},
+      {"x":915,"y":225,"w":270,"h":80}
     ],
-    "accent": [
-      170,
-      130,
-      255
+    nodes: [
+      {"x":660,"y":320}
     ],
-    "spawn": {
-      "x": 110,
-      "y": 640
-    },
-    "gate": {
-      "x": 230,
-      "y": 155
-    },
-    "solids": [
-      {
-        "x": 170,
-        "y": 820,
-        "w": 340,
-        "h": 240
-      },
-      {
-        "x": 230,
-        "y": 270,
-        "w": 380,
-        "h": 70
-      }
-    ],
-    "nodes": [
-      {
-        "x": 590,
-        "y": 470
-      }
-    ],
-    "route": [
-      [
-        110,
-        687,
-        "ground"
-      ],
-      [
-        590,
-        470,
-        "node"
-      ],
-      [
-        230,
-        222,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
+    route: [
+      [120,787,"ground"],
+      [445,642,"ground"],
+      [660,320,"node"],
+      [0,0,"gate"]
     ]
   },
+  // 4 — The angled spring ends at a safe rest before the final normal leap.
   {
-    "name": "Ruh Yayı",
-    "tip": "Yeşil yüzey seni ok yönünde fırlatır.",
-    "w": 1150,
-    "h": 1080,
-    "bg": [
-      "#0d2c34",
-      "#040f18"
+    name: "Yükseliş",
+    tip: "Yeşil yüzey seni gösterdiği yöne fırlatır.",
+    w: 1100,
+    h: 1100,
+    bg: ["#0d2c34","#040f18"],
+    accent: [90,220,190],
+    spawn: {"x":110,"y":975},
+    gate: {"x":1005,"y":240},
+    solids: [
+      {"x":550,"y":1170,"w":1100,"h":220},
+      {"x":135,"y":1040,"w":270,"h":70},
+      {"x":370,"y":915,"w":360,"h":80},
+      {"x":840,"y":485,"w":420,"h":70},
+      {"x":995,"y":320,"w":210,"h":60}
     ],
-    "accent": [
-      90,
-      220,
-      190
+    springs: [
+      {"x":430,"y":851,"w":180,"h":44,"a":12}
     ],
-    "spawn": {
-      "x": 130,
-      "y": 840
-    },
-    "gate": {
-      "x": 830,
-      "y": 390
-    },
-    "solids": [
-      {
-        "x": 575,
-        "y": 1000,
-        "w": 1150,
-        "h": 240
-      },
-      {
-        "x": 830,
-        "y": 465,
-        "w": 400,
-        "h": 70
-      }
-    ],
-    "springs": [
-      {
-        "x": 330,
-        "y": 856,
-        "w": 200,
-        "h": 44,
-        "a": 17
-      }
-    ],
-    "route": [
-      [
-        130,
-        867,
-        "ground"
-      ],
-      [
-        330,
-        843,
-        "spring"
-      ],
-      [
-        830,
-        417,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
+    route: [
+      [110,992,"ground"],
+      [285,862,"ground"],
+      [430,838,"spring"],
+      [740,437,"ground"],
+      [995,277,"ground"],
+      [0,0,"gate"]
     ]
   },
+  // 5 — Lower ledge for safety; the direct crossing is optional.
   {
-    "bg": [
-      "#161a3a",
-      "#050919"
+    name: "Kızıl Yol",
+    tip: "Kırmızı enerjiye dokunma.",
+    w: 1250,
+    h: 950,
+    bg: ["#2a1330","#0a0418"],
+    accent: [220,120,220],
+    spawn: {"x":120,"y":785},
+    gate: {"x":1090,"y":400},
+    solids: [
+      {"x":160,"y":870,"w":320,"h":90},
+      {"x":490,"y":750,"w":280,"h":70},
+      {"x":735,"y":650,"w":370,"h":80},
+      {"x":1110,"y":500,"w":280,"h":70}
     ],
-    "accent": [
-      140,
-      175,
-      245
+    spikes: [
+      {"x":700,"y":890,"w":700,"h":50}
     ],
-    "name": "İlk Tehlike",
-    "tip": "Kırmızı yüzeylerden uzak dur.",
-    "w": 1450,
-    "h": 960,
-    "spawn": {
-      "x": 120,
-      "y": 680
-    },
-    "gate": {
-      "x": 1260,
-      "y": 440
-    },
-    "solids": [
-      {
-        "x": 170,
-        "y": 810,
-        "w": 340,
-        "h": 180
-      },
-      {
-        "x": 680,
-        "y": 700,
-        "w": 400,
-        "h": 80
-      },
-      {
-        "x": 1240,
-        "y": 520,
-        "w": 420,
-        "h": 80
-      }
+    route: [
+      [120,812,"ground"],
+      [490,702,"ground"],
+      [735,597,"ground"],
+      [1110,452,"ground"],
+      [0,0,"gate"]
     ],
-    "spikes": [
-      {
-        "x": 735,
-        "y": 930,
-        "w": 720,
-        "h": 40
-      }
-    ],
-    "route": [
-      [
-        120,
-        707,
-        "ground"
-      ],
-      [
-        680,
-        647,
-        "ground"
-      ],
-      [
-        1240,
-        467,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
+    fastRoute: [
+      [120,812,"ground"],
+      [735,597,"ground"],
+      [1110,452,"ground"],
+      [0,0,"gate"]
     ]
   },
   {
@@ -3115,6 +2921,7 @@ function applyBranding() {
   document.title = GAME.title;
   setText('markName', GAME.title);
   setText('menuTitle', GAME.title);
+  setText('menuTagline', TEXT.tagline);
   setText('endTitle', GAME.title);
   setAttr('game', 'aria-label', GAME.title + ' ' + TEXT.canvasLabel);
 

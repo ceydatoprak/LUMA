@@ -1,0 +1,217 @@
+[
+  {
+    "level": 1,
+    "route": "safe",
+    "path": [
+      {
+        "deg": -70,
+        "p": 0.4,
+        "target": [
+          370,
+          627,
+          "ground"
+        ]
+      },
+      {
+        "deg": -80,
+        "p": 0.55,
+        "target": [
+          565,
+          437,
+          "ground"
+        ]
+      },
+      {
+        "deg": -50,
+        "p": 0.2,
+        "target": [
+          815,
+          307,
+          "ground"
+        ]
+      }
+    ]
+  },
+  {
+    "level": 2,
+    "route": "safe",
+    "path": [
+      {
+        "deg": -60,
+        "p": 0.7,
+        "target": [
+          387,
+          610,
+          "cling"
+        ]
+      },
+      {
+        "deg": -50,
+        "p": 0.55,
+        "target": [
+          470,
+          417,
+          "ground"
+        ]
+      },
+      {
+        "deg": -75,
+        "p": 0.25,
+        "target": [
+          705,
+          257,
+          "ground"
+        ]
+      }
+    ]
+  },
+  {
+    "level": 3,
+    "route": "safe",
+    "path": [
+      {
+        "deg": -60,
+        "p": 0.25,
+        "target": [
+          445,
+          642,
+          "ground"
+        ]
+      },
+      {
+        "deg": -70,
+        "p": 0.25,
+        "target": [
+          660,
+          320,
+          "node"
+        ]
+      },
+      {
+        "deg": -80,
+        "p": 0.25,
+        "target": [
+          0,
+          0,
+          "gate"
+        ]
+      }
+    ]
+  },
+  {
+    "level": 4,
+    "route": "safe",
+    "path": [
+      {
+        "deg": -80,
+        "p": 0.7,
+        "target": [
+          285,
+          862,
+          "ground"
+        ]
+      },
+      {
+        "deg": -85,
+        "p": 0.55,
+        "target": [
+          430,
+          838,
+          "spring"
+        ]
+      },
+      {
+        "auto": true,
+        "target": [
+          740,
+          437,
+          "ground"
+        ]
+      },
+      {
+        "deg": -80,
+        "p": 0.4,
+        "target": [
+          995,
+          277,
+          "ground"
+        ]
+      }
+    ]
+  },
+  {
+    "level": 5,
+    "route": "safe",
+    "path": [
+      {
+        "deg": -65,
+        "p": 0.55,
+        "target": [
+          490,
+          702,
+          "ground"
+        ]
+      },
+      {
+        "deg": -90,
+        "p": 0.7,
+        "target": [
+          735,
+          597,
+          "ground"
+        ]
+      },
+      {
+        "deg": -45,
+        "p": 0.4,
+        "target": [
+          1110,
+          452,
+          "ground"
+        ]
+      },
+      {
+        "deg": -45,
+        "p": 0.55,
+        "target": [
+          0,
+          0,
+          "gate"
+        ]
+      }
+    ]
+  },
+  {
+    "level": 5,
+    "route": "fast",
+    "path": [
+      {
+        "deg": -55,
+        "p": 0.85,
+        "target": [
+          735,
+          597,
+          "ground"
+        ]
+      },
+      {
+        "deg": -55,
+        "p": 0.25,
+        "target": [
+          1110,
+          452,
+          "ground"
+        ]
+      },
+      {
+        "deg": -55,
+        "p": 0.25,
+        "target": [
+          0,
+          0,
+          "gate"
+        ]
+      }
+    ]
+  }
+]

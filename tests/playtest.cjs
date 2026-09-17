@@ -200,7 +200,7 @@ let problems = 0;
 for (const li of only) {
   const L = f.LEVELS[li];
   f.go(li);
-  const route = L.route || [];
+  const route = process.env.ROUTE === 'fast' || process.argv[3] === 'fast' ? (L.fastRoute || L.route || []) : (L.route || []);
   console.log(`\n=== ${li + 1}. ${L.name}  (${L.w} x ${L.h}, ${route.length - 1} hops) ===`);
   if (route.length < 2) { console.log('  ! no route declared'); problems++; continue; }
 
