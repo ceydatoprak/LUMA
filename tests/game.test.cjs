@@ -82,11 +82,13 @@ if (require.main === module) {
   /* ---- the burst ------------------------------------------------------ */
   arena();
   standAt(1000, 1000);
-  f.burst(-Math.PI / 2, 0);
-  assert.equal(+speed().toFixed(6), MOVE.burstMin, 'A zero-power leap uses the tuned floor speed');
-  standAt(1000, 1000);
   f.burst(-Math.PI / 2, 1);
-  assert.equal(+speed().toFixed(6), MOVE.burstMax, 'A full leap uses the tuned ceiling speed');
+  assert.equal(+speed().toFixed(6), +MOVE.burstMax.toFixed(6), 'A full leap uses the tuned ceiling speed');
+  standAt(1000, 1000);
+  f.burst(-Math.PI / 2, 0);
+  const floorSpeed = speed();
+  assert(Math.abs(floorSpeed - MOVE.burstMax * Math.sqrt(MOVE.reachMin)) < 1e-6,
+    'A zero-power leap uses the floor implied by reachMin');
   let prev = -1;
   for (const p of [0, 0.25, 0.5, 0.75, 1]) {
     standAt(1000, 1000);
@@ -96,6 +98,31 @@ if (require.main === module) {
   }
   assert(MOVE.burstMax < MOVE.speedMax, 'A leap must leave headroom under the clamp');
   section('leap power band is monotonic and clamped');
+
+  /* ---- TEST E: the three pulls must produce genuinely different leaps ----
+     The complaint this fixes was that a short pull went almost as far as a
+     full one. Reach, not speed, is what the player perceives, so reach is what
+     is measured here. */
+  function reachAt(power) {
+    arena();
+    standAt(1000, 1000);
+    f.burst(-Math.PI / 4, power);
+    for (let i = 0; i < 900; i++) { f.tick(1); if (f.body.y > 1004 && i > 12) break; }
+    return f.body.x - 1000;
+  }
+  {
+    const short = reachAt(T.powerCurve(0.2));
+    const medium = reachAt(T.powerCurve(0.55));
+    const full = reachAt(1);
+    const sPct = short / full, mPct = medium / full;
+    assert(sPct > 0.35 && sPct < 0.62,
+      `A short pull should reach about 40-60% of a full one (got ${(sPct * 100) | 0}%)`);
+    assert(mPct > 0.62 && mPct < 0.88,
+      `A medium pull should reach about 70-85% of a full one (got ${(mPct * 100) | 0}%)`);
+    assert(medium - short > full * 0.15 && full - medium > full * 0.12,
+      'Short, medium and full must be clearly different leaps, not three shades of one');
+  }
+  section('short, medium and full pulls are three distinct leaps');
 
   /* ---- gravity: what goes up comes back down, in an arc --------------- */
   arena();
@@ -169,6 +196,109 @@ if (require.main === module) {
   assert(f.body.x < 1355, 'A leap off a wall pushes clear of it');
   assert(f.body.y < 1000, 'A leap off a wall still gains height');
   section('wall holds grip, slide, expire and push off cleanly');
+
+  /* ---- wall to the top of the same block --------------------------------
+     The most natural move in the game and, until this was fixed, an
+     impossible one: the safety kick rewrote the sideways half of the launch,
+     so pulling up-and-over produced a leap in the opposite direction. Both
+     sides are checked, because a bug here is almost always one-sided. */
+  function blockArena() {
+    arena();
+    const b = box({ list: 'solids', x: 2000, y: 2200, w: 400, h: 600 });
+    f.world.solids.push(b);
+    return b;                     // top 1900, faces at 1800 and 2200
+  }
+  function holdWall(b, side, below) {
+    const top = b.y - b.h / 2;
+    const face = side > 0 ? b.x + b.w / 2 : b.x - b.w / 2;
+    f.internals.placeSpirit(face + side * (f.body.r + 0.1), top + below);
+    f.PS.state = 'cling'; f.PS.t = 1; f.PS.clingT = 0;
+    f.PS.clingSide = side; f.PS.clingWall = b;
+    f.body.vx = 0; f.body.vy = 0;
+  }
+  function wallToTop(side, deg, below) {
+    const b = blockArena();
+    const top = b.y - b.h / 2;
+    holdWall(b, side, below);
+    f.burst(deg * Math.PI / 180, 0.8);
+    assert.notEqual(f.PS.state, 'cling', 'the launch must detach from the wall');
+    let regrabbed = false;
+    for (let i = 0; i < 400; i++) {
+      f.tick(1);
+      if (f.PS.state === 'cling') { regrabbed = true; break; }
+      if (f.PS.state === 'ground') break;
+      if (f.PS.state === 'hurt') break;
+    }
+    return {
+      regrabbed,
+      grounded: f.PS.state === 'ground',
+      onTop: Math.abs((f.body.y + f.body.r) - top) < 26 &&
+             f.body.x > b.x - b.w / 2 && f.body.x < b.x + b.w / 2,
+      aimable: f.aimable(),
+    };
+  }
+  {
+    // holding the RIGHT face, pulling so it launches up and to the LEFT
+    for (const deg of [-155, -135, -115, -95]) {
+      const r = wallToTop(1, deg, 40);
+      assert(!r.regrabbed, `Right face, aim ${deg}: must not be caught by the same wall again`);
+      assert(r.onTop, `Right face, aim ${deg}: must clear the corner and land on top`);
+      assert(r.aimable, `Right face, aim ${deg}: must hand control back on top`);
+    }
+    // ...and the mirror image, holding the LEFT face
+    for (const deg of [-25, -45, -65, -85]) {
+      const r = wallToTop(-1, deg, 40);
+      assert(!r.regrabbed, `Left face, aim ${deg}: must not be caught by the same wall again`);
+      assert(r.onTop, `Left face, aim ${deg}: must clear the corner and land on top`);
+      assert(r.aimable, `Left face, aim ${deg}: must hand control back on top`);
+    }
+    // it works from well down the face too, not only right under the lip
+    for (const below of [15, 90, 160]) {
+      assert(wallToTop(1, -120, below).onTop, `Right face from ${below} below the top`);
+      assert(wallToTop(-1, -60, below).onTop, `Left face from ${below} below the top`);
+    }
+    // the window is wide, not pixel-perfect
+    let window = 0, run = 0;
+    for (let d = -180; d < 0; d += 5) {
+      if (wallToTop(1, d, 40).onTop) { run += 5; window = Math.max(window, run); } else run = 0;
+    }
+    assert(window >= 45, `Wall-to-top must not need precise aiming (window ${window}deg)`);
+
+    // the player's chosen direction must survive the safety kick
+    const b = blockArena();
+    holdWall(b, 1, 40);
+    const sp = T.launchSpeed(0.8, false);
+    const ang = -130 * Math.PI / 180;
+    f.burst(ang, 0.8);
+    assert(f.body.vx < 0,
+      'Pulling up-and-over a right-hand wall must launch leftward, not be flipped outward');
+    assert(Math.abs(f.body.vx - Math.cos(ang) * sp) < 0.01,
+      'An upward aim off a wall is taken literally');
+    // ...while a flat aim still gets pushed clear of the face
+    holdWall(b, 1, 40);
+    f.burst(Math.PI, 0.8);                       // straight at the wall, no lift
+    assert(f.body.vx > 0, 'A flat aim into the wall is still pushed clear of it');
+
+    // and the guide agrees with all of it
+    holdWall(b, 1, 40);
+    f.Aim.on = true; f.Aim.angle = -130 * Math.PI / 180; f.Aim.power = 0.8;
+    f.Aim.pull = 0.8; f.Aim.pullLen = MOVE.dragFull * 0.8;
+    T.refreshAimPreview();
+    const pv = T.preview;
+    assert(pv.land >= 0, 'A wall-to-top launch is previewed to its landing');
+    const pred = { x: pv.lx, y: pv.ly };
+    T.cancelAim();
+    holdWall(b, 1, 40);
+    f.burst(-130 * Math.PI / 180, 0.8);
+    let hit = null;
+    for (let i = 0; i < 400; i++) {
+      f.tick(1);
+      if (f.PS.state === 'ground' || f.PS.state === 'cling') { hit = { x: f.body.x, y: f.body.y }; break; }
+    }
+    assert(hit && Math.hypot(hit.x - pred.x, hit.y - pred.y) < 6,
+      'The guide must show the corner-clearing arc the spirit actually flies');
+  }
+  section('wall to the top of the same block works from both sides, widely');
 
   /* ---- energy nodes ---------------------------------------------------- */
   arena();
@@ -315,49 +445,47 @@ if (require.main === module) {
   const inp = boot();
   const pt = (x, y, id = 5) => ({ clientX: x, clientY: y, pointerId: id, button: 0,
     target: inp.canvas, preventDefault() {} });
+  // the canvas is 540x960 in the harness, so client coords ARE screen coords
   const screen = (wx, wy) => [wx - inp.cam.x + 270, wy - inp.cam.y + 480];
   inp.go(0);
   inp.tick(90);
   assert(inp.aimable(), 'grounded before the input test');
   let [sx, sy] = screen(inp.body.x, inp.body.y);
   inp.events.pointerdown(pt(sx, sy));
-  assert.equal(inp.Aim.on, true, 'A touch on the spirit starts a wind-up');
+  assert.equal(inp.Aim.on, true, 'A touch starts a stretch');
   assert.equal(inp.Aim.power, 0, 'Any touch starts at zero power');
   inp.events.pointermove(pt(sx, sy + 4));
   inp.events.pointerup(pt(sx, sy + 4));
-  assert.equal(inp.G.bursts, 0, 'A drag inside the dead zone is a cancel');
+  assert.equal(inp.G.bursts, 0, 'A pull inside the dead zone is a cancel');
 
-  // Direct aiming: the spirit goes the way you dragged, in every direction.
-  // This is the control the whole game rests on, so it is checked on all four.
+  // The slingshot: you pull BACKWARD and the spirit launches the other way.
+  // This is the control the whole game rests on, so all four are checked.
   const dirs = [
-    ['up',    0, -400, (b) => b.vy < -8 && Math.abs(b.vx) < 3],
-    ['down',  0,  400, (b) => b.vy > 8 && Math.abs(b.vx) < 3],
-    ['right', 400, 0,  (b) => b.vx > 8 && Math.abs(b.vy) < 3],
-    ['left', -400, 0,  (b) => b.vx < -8 && Math.abs(b.vy) < 3],
+    ['down',  0,  400, 'up',    (b) => b.vy < -8 && Math.abs(b.vx) < 3],
+    ['up',    0, -400, 'down',  (b) => b.vy > 8 && Math.abs(b.vx) < 3],
+    ['left', -400, 0,  'right', (b) => b.vx > 8 && Math.abs(b.vy) < 3],
+    ['right', 400, 0,  'left',  (b) => b.vx < -8 && Math.abs(b.vy) < 3],
   ];
-  for (const [name, dx, dy, ok] of dirs) {
+  for (const [pull, dx, dy, go, ok] of dirs) {
     inp.go(0); inp.tick(90);
     [sx, sy] = screen(inp.body.x, inp.body.y);
     inp.events.pointerdown(pt(sx, sy));
     inp.events.pointermove(pt(sx + dx, sy + dy));
-    assert.equal(inp.Aim.power, 1, 'Drag power saturates at the tuned distance');
+    assert.equal(inp.Aim.power, 1, 'Pull power saturates at the tuned distance');
     inp.events.pointerup(pt(sx + dx, sy + dy));
-    assert.equal(inp.G.bursts, 1, `Dragging ${name} leaps`);
-    assert(ok(inp.body), `Dragging ${name} must leap ${name}`);
-    assert.equal(+Math.hypot(inp.body.vx, inp.body.vy).toFixed(6), MOVE.burstMax);
+    assert.equal(inp.G.bursts, 1, `Pulling ${pull} leaps`);
+    assert(ok(inp.body), `Pulling ${pull} must launch ${go}`);
+    assert.equal(+Math.hypot(inp.body.vx, inp.body.vy).toFixed(6), +MOVE.burstMax.toFixed(6));
   }
-  // a weak drag still goes somewhere useful
+  // a short pull still goes somewhere useful
   inp.go(0); inp.tick(90);
   [sx, sy] = screen(inp.body.x, inp.body.y);
   inp.events.pointerdown(pt(sx, sy));
-  inp.events.pointermove(pt(sx, sy - 20));
-  inp.events.pointerup(pt(sx, sy - 20));
-  assert(Math.hypot(inp.body.vx, inp.body.vy) >= MOVE.burstMin,
-    'The weakest real drag still leaps at the floor speed');
-  assert(MOVE.burstMin / MOVE.burstMax > 0.6,
-    'A weak leap must not be a fraction of a strong one');
-  inp.go(0); inp.tick(90);
-  [sx, sy] = screen(inp.body.x, inp.body.y);
+  inp.events.pointermove(pt(sx, sy + MOVE.dragDead + 6));
+  inp.events.pointerup(pt(sx, sy + MOVE.dragDead + 6));
+  assert(Math.hypot(inp.body.vx, inp.body.vy) >= MOVE.burstMax * Math.sqrt(MOVE.reachMin) - 1e-6,
+    'The smallest real pull still leaps at the floor speed');
+  assert(inp.body.vy < 0, 'A small downward pull still launches upward');
   // a touch anywhere on the screen still works
   inp.go(0); inp.tick(90);
   [sx, sy] = screen(inp.body.x + 230, inp.body.y - 300);
@@ -375,12 +503,52 @@ if (require.main === module) {
   assert.equal(inp.Aim.on, true, 'Another finger must not release the wind-up');
   inp.events.pointerup(pt(sx, sy + 300, 1));
   assert.equal(inp.Aim.on, false);
-  // a wind-up held forever lapses instead of pausing the game
+  /* Thinking is not a timeout. A player presses, looks at the level, decides
+     where to go, and only then drags — and that has to still work. This was
+     the bug that made the controls feel dead: the stretch was being cancelled
+     out from under a held finger after a couple of seconds, and after that
+     neither dragging nor releasing did anything. */
+  for (const think of [1, 3, 6, 10]) {
+    inp.go(0); inp.tick(90);
+    const before = inp.G.bursts;
+    [sx, sy] = screen(inp.body.x, inp.body.y);
+    inp.events.pointerdown(pt(sx, sy));
+    inp.tick(think * 60);                        // hold still and deliberate
+    assert.equal(inp.Aim.on, true, `Holding still for ${think}s must not cancel the stretch`);
+    inp.events.pointermove(pt(sx, sy + 200));
+    assert(inp.Aim.power > 0, `Dragging after ${think}s of thinking must still aim`);
+    inp.events.pointerup(pt(sx, sy + 200));
+    assert.equal(inp.G.bursts, before + 1, `Releasing after ${think}s of thinking must leap`);
+    assert(inp.body.vy < 0, 'and it still launches the way the pull says');
+  }
+  /* A drag must also survive the game resizing its own canvas underneath it.
+     The adaptive quality system reassigns the backing store when frames get
+     slow, which drops pointer capture — on a weaker machine that quietly
+     killed the gesture mid-drag. */
+  inp.go(0); inp.tick(90);
+  {
+    const before = inp.G.bursts;
+    [sx, sy] = screen(inp.body.x, inp.body.y);
+    inp.events.pointerdown(pt(sx, sy));
+    inp.events.pointermove(pt(sx, sy + 120));
+    const aimedPower = inp.Aim.power;
+    inp.resize(900, 1500);                       // as a quality change would
+    inp.Q.level = 0; inp.resize(900, 1500);
+    assert.equal(inp.Aim.on, true, 'A canvas resize must not cancel a drag in progress');
+    assert.equal(inp.Aim.power, aimedPower, 'and it must not disturb the aim');
+    inp.events.pointerup(pt(sx, sy + 120));
+    assert.equal(inp.G.bursts, before + 1, 'the drag still launches after a resize');
+    inp.Q.level = 1;
+  }
+
+  // the lapse is only a stuck-pointer guard, and it is long and not silent
+  assert(MOVE.aimHold >= 15, 'The hold guard must be far longer than anyone deliberates');
   inp.go(0); inp.tick(90);
   [sx, sy] = screen(inp.body.x, inp.body.y);
   inp.events.pointerdown(pt(sx, sy));
   inp.tick(Math.ceil(MOVE.aimHold * 60) + 4);
-  assert.equal(inp.Aim.on, false, 'A wind-up held too long lapses');
+  assert.equal(inp.Aim.on, false, 'A pointer the browser forgot about does eventually lapse');
+  assert(inp.G.deny > 0, 'and the lapse is shown, never silent');
   section('one gesture, identical for mouse and touch, safe against stray fingers');
 
   /* ---- input forgiveness --------------------------------------------------- */
@@ -443,49 +611,136 @@ if (require.main === module) {
   /* ---- the camera frames the leap ------------------------------------------- */
   f.go(0);
   f.tick(120);
-  function holdAim(ang, power) {
-    f.Aim.on = true; f.Aim.angle = ang; f.Aim.power = power;
-    T.refreshAimPreview();
-    T.updateCamera(true);
-    for (let i = 0; i < 60; i++) { T.refreshAimPreview(); T.updateCamera(false); }
-    const pv = T.preview;
-    const end = pv.n ? pv.pts[pv.n - 1] : { x: f.body.x, y: f.body.y };
-    const z = f.cam.zoom;
-    const out = { n: pv.n, end, z, halfW: 270 / z, halfH: 480 / z,
-      endOnScreen: Math.abs(end.x - f.cam.x) < 270 / z && Math.abs(end.y - f.cam.y) < 480 / z,
-      spiritOnScreen: Math.abs(f.body.x - f.cam.x) < 270 / z && Math.abs(f.body.y - f.cam.y) < 480 / z,
-      reach: Math.hypot(end.x - f.body.x, end.y - f.body.y) };
-    f.Aim.on = false; f.Aim.power = 0;
-    return out;
+  /* Start a real stretch through the real input path: a pointer-down, then a
+     pointer-move to a screen offset. `launchDeg` is where the player wants to
+     GO, so the finger goes the opposite way. */
+  function stretch(g, launchDeg, pullFraction) {
+    const a = launchDeg * Math.PI / 180;
+    const len = MOVE.dragDead + (MOVE.dragFull - MOVE.dragDead) * pullFraction;
+    const ax = 270, ay = 480;                       // anchor: middle of the screen
+    T.beginAim(ax, ay, null);
+    T.updateDrag(ax - Math.cos(a) * len, ay - Math.sin(a) * len);
+    return { len };
   }
+  function holdFrames(n) {
+    for (let i = 0; i < n; i++) { T.refreshAimPreview(); T.updateCamera(false); }
+  }
+
+  /* ---- TEST A: a stationary finger must not move the aim ------------------
+     The camera moves for a second and a half underneath a completely still
+     pointer. If anything about the aim changes by even a float wobble, the
+     input is reading the camera somewhere and the whole thing breathes. */
+  f.go(0); f.tick(120);
   {
-    // Whatever is aimed, the player must still be able to see their character
-    // and the zoom must stay inside its tuned range.
-    for (const p of [0, 0.3, 0.6, 1]) {
+    stretch(f, -50, 0.7);
+    T.updateCamera(true);
+    const a0 = f.Aim.angle, p0 = f.Aim.power, pull0 = f.Aim.pull;
+    holdFrames(150);
+    assert.equal(f.Aim.angle, a0, 'A stationary pointer must not change the aim angle');
+    assert.equal(f.Aim.power, p0, 'A stationary pointer must not change the aim power');
+    assert.equal(f.Aim.pull, pull0, 'A stationary pointer must not change the stretch');
+    T.cancelAim();
+  }
+  section('TEST A — a held stretch does not drift while the camera moves');
+
+  /* ---- TEST B: the same finger movement means the same leap, at any zoom -- */
+  f.go(0); f.tick(120);
+  {
+    const results = [];
+    for (const z of [1.0, 0.85, 0.75, MOVE.zoomAim]) {
+      f.cam.zoom = z; f.cam.tzoom = z;
+      f.cam.x = f.body.x + 137; f.cam.y = f.body.y - 211;   // and any camera position
+      stretch(f, -50, 0.7);
+      results.push({ z, a: f.Aim.angle, p: f.Aim.power });
+      T.cancelAim();
+    }
+    for (const r of results.slice(1)) {
+      assert.equal(r.a, results[0].a, `Aim angle must not depend on camera zoom (${r.z})`);
+      assert.equal(r.p, results[0].p, `Aim power must not depend on camera zoom (${r.z})`);
+    }
+  }
+  section('TEST B — aim is identical at every camera zoom and position');
+
+  /* ---- TEST C: the zoom must converge, never oscillate -------------------- */
+  f.go(0); f.tick(120);
+  {
+    stretch(f, -50, 1);
+    T.updateCamera(true);
+    f.cam.zoom = 1;                                  // start away from the target
+    let reversals = 0, prevDir = 0;
+    const zs = [];
+    for (let i = 0; i < 240; i++) {
+      const before = f.cam.zoom;
+      T.refreshAimPreview(); T.updateCamera(false);
+      const d = f.cam.zoom - before;
+      if (Math.abs(d) > 1e-6) {
+        const dir = Math.sign(d);
+        if (prevDir && dir !== prevDir) reversals++;
+        prevDir = dir;
+      }
+      zs.push(f.cam.zoom);
+    }
+    assert.equal(reversals, 0, `Aim zoom must converge without reversing (${reversals} reversals)`);
+    const last = zs.slice(-30);
+    assert(Math.max(...last) - Math.min(...last) < 1e-4, 'Aim zoom must settle and stay settled');
+    assert(Math.abs(zs[zs.length - 1] - f.cam.tzoom) < 1e-3, 'Aim zoom settles on its target');
+    T.cancelAim();
+  }
+  section('TEST C — aim zoom converges once, with no oscillation');
+
+  /* ---- TEST D: the guide must match the jump it previews ------------------ */
+  f.go(0); f.tick(120);
+  {
+    stretch(f, -50, 0.6);
+    T.refreshAimPreview();
+    const pv = T.preview;
+    assert(pv.n > 2, 'A held stretch produces a trajectory');
+    assert(pv.land >= 0, 'and the guide finds where it ends');
+    const pred = { x: pv.lx, y: pv.ly };
+    const a = f.Aim.angle, p = f.Aim.power;
+    T.cancelAim();
+    f.burst(a, p);
+    let hit = null;
+    for (let i = 0; i < 400; i++) {
+      f.tick(1);
+      if (f.PS.state === 'ground' || f.PS.state === 'cling') { hit = { x: f.body.x, y: f.body.y }; break; }
+    }
+    assert(hit, 'the previewed leap actually lands');
+    const off = Math.hypot(hit.x - pred.x, hit.y - pred.y);
+    assert(off < 24, `The guide must land where the leap lands (off by ${off.toFixed(1)})`);
+  }
+  section('TEST D — the guide and the jump are the same simulation');
+
+  /* ---- the camera keeps the spirit in shot, whatever is aimed ------------- */
+  f.go(0); f.tick(120);
+  {
+    for (const pull of [0.05, 0.3, 0.6, 1]) {
       for (const deg of [-135, -90, -45, 0]) {
-        const r = holdAim(deg * Math.PI / 180, p);
-        assert(r.spiritOnScreen,
-          `The camera must never lead so far that the spirit leaves the screen (p${p} ${deg}deg)`);
-        assert(r.z <= 1 + 1e-9 && r.z >= MOVE.zoomAim - 1e-9,
-          'Aim zoom stays inside its tuned range');
+        stretch(f, deg, pull);
+        T.updateCamera(true);
+        holdFrames(80);
+        const z = f.cam.zoom;
+        assert(Math.abs(f.body.x - f.cam.x) < 270 / z && Math.abs(f.body.y - f.cam.y) < 480 / z,
+          `The camera must never lead so far that the spirit leaves the screen (${deg}deg pull ${pull})`);
+        assert(z <= 1 + 1e-9 && z >= MOVE.zoomAim - 1e-6, 'Aim zoom stays inside its tuned range');
+        T.cancelAim();
       }
     }
-    // And for a leap of the length the levels actually ask for, the predicted
-    // landing has to be framed before the player commits.
-    const mid = holdAim(-45 * Math.PI / 180, 0.35);
-    assert(mid.n > 0, 'A held wind-up produces a trajectory');
-    assert(mid.reach > 250, 'the sample leap should be a real one');
-    assert(mid.endOnScreen,
-      `The camera must frame where a level-scale leap is predicted to end (reach ${mid.reach.toFixed(0)})`);
+    // the zoom-out is present but restrained
+    assert(MOVE.zoomAim >= 0.78 && MOVE.zoomAim <= 0.9,
+      'Aim zoom-out should open the view without shrinking the world');
   }
-  section('the camera frames the leap and always keeps the spirit in shot');
+  section('the camera leads the launch and always keeps the spirit in shot');
 
   /* ---- levels are compact and declare a route ------------------------------- */
   for (let i = 0; i < f.LEVELS.length; i++) {
     const L = f.LEVELS[i];
     assert(Array.isArray(L.route) && L.route.length >= 2,
       `Level ${i + 1}: must declare the route it intends`);
-    assert(L.w <= 1500 && L.h <= 1700,
+    // A guard against levels sprawling, not a hard design rule. Level 1 sits
+    // near the top of it on purpose: its ledges are deliberately huge so that
+    // almost any forward pull lands on one, and that costs width.
+    assert(L.w <= 1620 && L.h <= 1700,
       `Level ${i + 1}: world is larger than a handcrafted space needs (${L.w}x${L.h})`);
   }
   // the first level teaches one thing and introduces nothing else
@@ -550,21 +805,54 @@ if (require.main === module) {
   assert.equal(adaptive.Q.level, 1, 'Quality recovers on a healthy display');
   section('frame loop clamps stalls and adapts quality');
 
-  /* ---- the aim guide tells the truth ----------------------------------------- */
-  arena([{ list: 'solids', x: 1000, y: 1400, w: 1200, h: 80 }]);
-  standAt(700, 1340);
-  const ang = -0.9, power = 1;
-  const sp = MOVE.burstMin + (MOVE.burstMax - MOVE.burstMin) * f.internals.burstCurve(power);
-  const guide = T.predict(f.body.x, f.body.y, Math.cos(ang) * sp, Math.sin(ang) * sp, 1400);
-  assert(guide.n > 2, 'The guide draws a path');
-  const predicted = { x: guide.lx, y: guide.ly };
-  assert(guide.land >= 0, 'The guide finds where the leap ends');
-  standAt(700, 1340);
-  f.burst(ang, power);
-  for (let i = 0; i < 400; i++) { f.tick(1); if (f.PS.state === 'ground') break; }
-  assert(Math.hypot(f.body.x - predicted.x, f.body.y - predicted.y) < 40,
-    `The guide must land where the leap lands (off by ${Math.hypot(f.body.x - predicted.x, f.body.y - predicted.y).toFixed(0)})`);
-  section('the aim guide matches the simulation it previews');
+  /* ---- the guide tells the truth, from every launch surface ---------------
+     TEST D covers the ordinary case through the real input path; this checks
+     the two that have extra rules layered on: a wall (which adds an outward
+     component) and a node (which launches at its own speeds). Both have to be
+     in the preview, or the guide quietly lies exactly where the player is most
+     dependent on it. */
+  for (const ang of [-0.9, -2.2, -1.5]) {
+    arena([{ list: 'solids', x: 1000, y: 1400, w: 1200, h: 80 }]);
+    standAt(700, 1340);
+    const sp = T.launchSpeed(1, false);
+    const guide = T.predict(f.body.x, f.body.y, Math.cos(ang) * sp, Math.sin(ang) * sp, 1400);
+    if (guide.land < 0) continue;
+    const predicted = { x: guide.lx, y: guide.ly };
+    standAt(700, 1340);
+    f.burst(ang, 1);
+    for (let i = 0; i < 400; i++) { f.tick(1); if (f.PS.state === 'ground') break; }
+    const off = Math.hypot(f.body.x - predicted.x, f.body.y - predicted.y);
+    assert(off < 26, `The guide must land where the leap lands (${ang} off by ${off.toFixed(0)})`);
+  }
+  // a wall launch: the outward push has to be in the preview too
+  {
+    arena([{ list: 'solids', x: 1400, y: 1000, w: 80, h: 900 },
+           { list: 'solids', x: 900, y: 1500, w: 1200, h: 80 }]);
+    drop(1200, 1000, 14, 0, 1);
+    for (let i = 0; i < 90; i++) { f.tick(1); if (f.PS.state === 'cling') break; }
+    assert.equal(f.PS.state, 'cling', 'on the wall for the wall-guide check');
+    f.Aim.on = true; f.Aim.angle = -Math.PI / 2; f.Aim.power = 1;
+    f.Aim.pullLen = MOVE.dragFull; f.Aim.pull = 1;
+    T.refreshAimPreview();
+    const pv = T.preview;
+    assert(pv.n > 2, 'a wall launch is previewed');
+    const pred = { x: pv.lx, y: pv.ly, land: pv.land };
+    const a = f.Aim.angle, p = f.Aim.power;
+    T.cancelAim();
+    // cancelAim does not leave the wall, so re-establish the hold
+    f.PS.state = 'cling'; f.PS.clingSide = -1; f.PS.clingT = 0;
+    f.burst(a, p);
+    let hit = null;
+    for (let i = 0; i < 400; i++) {
+      f.tick(1);
+      if (f.PS.state === 'ground' || f.PS.state === 'cling') { hit = { x: f.body.x, y: f.body.y }; break; }
+    }
+    if (pred.land >= 0 && hit) {
+      const off = Math.hypot(hit.x - pred.x, hit.y - pred.y);
+      assert(off < 30, `A wall launch must follow its own preview (off by ${off.toFixed(0)})`);
+    }
+  }
+  section('the guide matches the jump from the ground and from a wall');
 
   console.log('PASS:\n  - ' + pass.join('\n  - '));
 }

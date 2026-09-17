@@ -62,15 +62,24 @@ const MOVE = {
   airDrag:      0.9975, // horizontal only; vertical is governed by gravity
 
   /* --- the burst ---------------------------------------------------------
-     The gap between a weak and a strong leap is deliberately narrow. A short
-     drag still travels somewhere useful, so a sloppy input costs distance, not
-     the run — and a full drag is a longer leap, not a different mechanic. */
-  burstMin:     11.5,   // ~70% of a full leap: never a wasted input
-  burstMax:     16.5,   // full-commitment leap
-  burstCurve:   0.2,    // 0 = linear power ramp, 1 = fully quadratic
+     These five numbers are one design, not five knobs.
+
+     Horizontal reach goes as the square of the launch speed, so the speed
+     range is chosen from the REACH range we want, not the other way round: a
+     dead-minimum pull should still carry you `reachMin` of a full leap, and
+     everything between should feel like a usable dial. With reachMin at 0.4
+     the three pulls the player can actually feel come out at roughly 40% /
+     70% / 100% of full reach.
+
+     `dragFull` is in virtual screen units — 250 of the 540-wide virtual box,
+     so a full stretch is a comfortable thumb-length swipe on any phone, and
+     short pulls have enough travel to be controllable rather than snapping
+     straight to maximum. */
+  burstMax:     16.8,   // full-commitment leap
+  reachMin:     0.34,   // a dead-minimum pull reaches this fraction of a full one
   burstTime:    0.075,  // gravity-free snap right after release
-  dragFull:     130,    // drag distance for full power
-  dragDead:     7,      // under this a release is a cancel
+  dragFull:     250,    // stretch, in virtual screen units, for full power
+  dragDead:     14,     // under this a release is a cancel, and nothing is spent
 
   /* --- ordinary surfaces: catch, do not bounce --------------------------- */
   floorDot:     0.55,   // contact normal more vertical than this is a floor
@@ -79,6 +88,10 @@ const MOVE = {
   groundDrag:   0.84,   // per step once settled on a floor
   groundStop:   0.30,   // below this the spirit is parked
   ceilingKeep:  0.55,   // glancing a ceiling costs some slide, nothing more
+  wallSlide:    0.92,   // brushing a wall keeps nearly all the motion ALONG it:
+                        // at 0.5 a graze on the way up a face cost half the
+                        // leap, which is most of why hopping onto the ledge
+                        // above a wall felt impossible
   slop:         0.05,   // separation kept after a contact, to stay quiet
 
   /* --- landing assist ------------------------------------------------------
@@ -92,6 +105,13 @@ const MOVE = {
   assistPull:   0.90,   // sideways acceleration per step while assisting
   assistMax:    5.0,    // the most sideways speed the nudge may ever add
 
+  /* --- ledge assist: the same idea, for going UP over a corner ---------- */
+  ledgeBand:    70,     // how near the top edge the inward drift applies
+  ledgeReach:   40,     // how far outside the surface it still applies
+  ledgePull:    0.85,   // inward acceleration per step while clearing a corner
+  ledgeMax:     7.0,    // the most inward speed it may ever add
+  ledgeTime:    1.20,   // how long a launch stays armed for the corner
+
   /* --- wall cling ----------------------------------------------------------
      A wall is a safe place to stop and think, not a reaction test. Contact
      kills all speed, the grip holds with no slide at all for well over a
@@ -99,7 +119,13 @@ const MOVE = {
   clingTime:    2.40,   // total hold before the wall lets go
   clingGrip:    1.50,   // seconds of full grip before the slide starts
   clingSlide:   2.0,    // downward slide speed once grip runs out
-  clingKick:    0.30,   // outward push blended into a burst off a wall
+  clingKick:    0.30,   // outward push for a FLAT launch along a face
+  clingKickMin: 1.20,   // ...and the bare separation a steeper one gets
+  clingFree:    0.55,   // aim more upward than this is taken literally, even
+                        // if it points into the wall: that is the player going
+                        // over the top of what they are holding
+  wallRegrab:   0.16,   // seconds a wall cannot re-catch you after you leave it
+  wallRegrabDist: 40,   // ...or until you are this far from its face
 
   /* --- forgiveness -------------------------------------------------------- */
   coyote:       0.13,   // aim still works just after leaving a surface
@@ -109,13 +135,21 @@ const MOVE = {
      second press. It is generous because it only ever converts a press the
      player is still holding; a tap that is released is simply dropped. */
   buffer:       0.90,
-  aimHold:      2.60,   // longest a wind-up may be held before it lapses
+  /* A guard against a stuck pointer, NOT a rule the player should ever meet.
+     It used to be 2.6s, which is less time than it takes to look at a level
+     and decide where to go: press, think, then drag, and the stretch had
+     already been cancelled underneath you. Dragging did nothing, releasing did
+     nothing, and there was no way to tell why — the game simply felt dead.
+     Holding still is the player being deliberate, and the world is frozen
+     while they do it, so there is nothing to protect against except an input
+     the browser never told us about. */
+  aimHold:      20.0,
 
   /* --- energy nodes -------------------------------------------------------- */
   nodeReach:    130,    // generous catch radius — this is a mobile target
   nodePull:     0.30,   // per frame the node draws the spirit toward itself
-  nodeBurst:    16.5,   // release speed at full power
-  nodeMin:      12.0,   // release speed at no power (a node always throws)
+  nodeBurst:    17.4,   // release speed at full power
+  nodeReachMin: 0.52,   // a node always throws, so its floor is higher
   nodeCool:     2.40,   // seconds before a spent node can be used again
 
   /* --- spirit springs ------------------------------------------------------ */
@@ -127,17 +161,19 @@ const MOVE = {
      the leap is pointed and eases out, so the destination is on screen before
      the player commits — the single biggest fairness problem in the game was
      asking for leaps toward places that could not be seen. */
-  camLead:      430,    // how far a full-power aim pulls the view forward
-  camLeadMin:   190,    // ...and how far the weakest aim does
-  camFollow:    8.0,    // view offset per unit of travel speed
-  camEase:      0.11,   // normal follow smoothing
-  camEaseAim:   0.16,   // slightly quicker while aiming, so it keeps up
-  zoomAim:      0.68,   // furthest the view will pull back to frame a leap
-  zoomFast:     0.88,   // view scale at top travel speed
-  zoomEase:     0.08,
-  camFrame:     165,    // breathing room kept around a framed leap
-  camHold:      0.60,   // the spirit never sits further out than this much
-                        // of the half-view: it stays in frame, in the rear third
+  camLead:      360,    // how far a full-power stretch leads the view
+  camLeadMin:   110,    // ...and how far the smallest one does
+  camFollow:    7.5,    // view offset per unit of travel speed
+  camEase:      0.10,   // travelling and settling
+  camEaseAim:   0.13,   // while a stretch is held
+  camEaseRest:  0.07,   // standing still: the slowest, so nothing twitches
+  camSettle:    0.55,   // seconds of eased return after arriving
+  camTravelSpeed: 2.0,  // above this the view treats the spirit as travelling
+  zoomAim:      0.80,   // furthest the view pulls back for a full stretch
+  zoomFast:     0.93,   // view scale at top travel speed
+  zoomEase:     0.06,   // ONE smoothing rate for the zoom, applied in one place
+  camHold:      0.66,   // the spirit never sits further out than this much of
+                        // the half-view: it stays in frame, toward the rear
 
   /* --- limits & failure ----------------------------------------------------- */
   speedMax:     34,     // hard clamp, for stability only
@@ -145,8 +181,29 @@ const MOVE = {
   respawnTime:  0.22,   // seconds of the reform before control returns
 };
 
-/* Power ramp: fine control low down, punch at the top. */
-const burstCurve = (p) => p * (1 - MOVE.burstCurve) + p * p * MOVE.burstCurve;
+/* ---- the feel of the stretch --------------------------------------------
+   Two curves, doing two different jobs.
+
+   `powerCurve` turns how far the elastic is stretched into how much power the
+   player has asked for. It is a smoothstep, which is what gives the pull its
+   resistance: the first part of the stretch moves power slowly, so small
+   corrections are easy to place, the middle is where most of the range lives,
+   and the last part flattens off so the maximum feels like a limit you lean
+   into rather than an edge you fall over.
+
+   `burstSpeed` turns that power into a launch speed. Reach goes as the square
+   of speed, so taking the square root here is what makes the dial read as
+   linear in distance — power 0.5 genuinely lands about halfway between the
+   shortest and longest leap, instead of nearly at the far end. */
+const smoothstep = (t) => t * t * (3 - 2 * t);
+const powerCurve = smoothstep;
+const burstSpeed = (p) =>
+  MOVE.burstMax * Math.sqrt(MOVE.reachMin + (1 - MOVE.reachMin) * clamp(p, 0, 1));
+
+/* The one place a power becomes a speed, for the ground, a wall or a node. */
+const launchSpeed = (p, fromNode) => fromNode
+  ? MOVE.nodeBurst * Math.sqrt(MOVE.nodeReachMin + (1 - MOVE.nodeReachMin) * clamp(p, 0, 1))
+  : burstSpeed(p);
 
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
@@ -656,19 +713,22 @@ const LEVELS = [
        catch floor runs under the whole level: a bad first input costs a couple
        of seconds, never a life. */
     name: 'FIRST LIGHT',
-    tip: 'Drag the way you want to go, then let go.',
-    w: 1340, h: 940,
+    tip: 'Pull back from the spirit and let go — it launches the other way.',
+    w: 1560, h: 940,
     bg: ['#141a44', '#06091c'], accent: [120, 170, 255],
-    spawn: { x: 120, y: 540 },
-    gate: { x: 1150, y: 380 },
+    spawn: { x: 130, y: 540 },
+    gate: { x: 1320, y: 350 },
     solids: [
-      { x: 670, y: 900, w: 1340, h: 240 },     // catch floor, top 780
-      { x: 200, y: 660, w: 400, h: 160 },      // home ledge, top 580
-      { x: 630, y: 590, w: 340, h: 160 },      // top 510   (gap 60, rise 70)
-      { x: 1150, y: 500, w: 380, h: 160 },     // top 420   (gap 160, rise 90)
+      { x: 780, y: 900, w: 1560, h: 240 },     // catch floor, top 780
+      // Very wide ledges on purpose. The shortest possible leap already
+      // travels a few hundred units, so a small target would mean only a
+      // narrow band of pulls landed on it — the opposite of a first lesson.
+      { x: 220, y: 660, w: 440, h: 160 },      // home ledge, top 580
+      { x: 760, y: 570, w: 480, h: 160 },      // top 490   (gap 80)
+      { x: 1320, y: 470, w: 460, h: 160 },     // top 390   (gap 90)
     ],
     route: [
-      [120, 567, 'ground'], [630, 497, 'ground'], [1150, 407, 'ground'], [0, 0, 'gate'],
+      [130, 567, 'ground'], [760, 477, 'ground'], [1320, 377, 'ground'], [0, 0, 'gate'],
     ],
   },
   {
@@ -742,19 +802,19 @@ const LEVELS = [
     w: 1000, h: 1180,
     bg: ['#2a1330', '#0a0418'], accent: [220, 120, 220],
     spawn: { x: 120, y: 900 },
-    gate: { x: 320, y: 255 },
+    gate: { x: 300, y: 310 },
     solids: [
       { x: 160, y: 1070, w: 320, h: 240 },     // start ledge, top 950
-      { x: 640, y: 790, w: 300, h: 70 },       // rest ledge, top 755
+      { x: 620, y: 790, w: 420, h: 70 },       // rest ledge, top 755
       { x: 890, y: 620, w: 120, h: 520 },      // the wall: left face at x = 830
-      { x: 320, y: 330, w: 480, h: 70 },       // gate ledge, top 295
+      { x: 300, y: 385, w: 560, h: 70 },       // gate ledge, top 350
     ],
-    nodes: [{ x: 680, y: 540 }],
+    nodes: [{ x: 700, y: 560 }],
     motes: [{ x: 640, y: 715 }],
     spikes: [{ x: 620, y: 1150, w: 620, h: 60 }],
     route: [
       [120, 937, 'ground'], [640, 742, 'ground'], [817, 600, 'cling'],
-      [680, 540, 'node'], [320, 282, 'ground'], [0, 0, 'gate'],
+      [700, 560, 'node'], [300, 337, 'ground'], [0, 0, 'gate'],
     ],
   },
   {
@@ -771,22 +831,22 @@ const LEVELS = [
     gate: { x: 300, y: 255 },
     solids: [
       { x: 180, y: 1400, w: 360, h: 240 },     // start ledge, top 1280
-      { x: 760, y: 1090, w: 120, h: 480 },     // the wall: left face at x = 700
-      { x: 280, y: 930, w: 380, h: 70 },       // bloom ledge, top 895
+      { x: 680, y: 1090, w: 120, h: 480 },     // the wall: left face at x = 620
+      { x: 315, y: 985, w: 450, h: 70 },       // bloom ledge, top 950
       { x: 300, y: 330, w: 400, h: 70 },       // gate ledge, top 295
     ],
     springs: [
-      { x: 280, y: 876, w: 200, h: 44, a: 20 },          // throws up and to the right
+      { x: 280, y: 931, w: 200, h: 44, a: 20 },          // throws up and to the right
     ],
-    nodes: [{ x: 620, y: 430 }],
-    motes: [{ x: 430, y: 855 }],
+    nodes: [{ x: 620, y: 450 }],
+    motes: [{ x: 430, y: 910 }],
     spikes: [{ x: 700, y: 1490, w: 560, h: 60 }],
     beams: [
       { x: 520, y: 1180, w: 44, h: 260, pulse: { period: 3.0, phase: 0.25, duty: 0.3 } },
     ],
     route: [
-      [120, 1267, 'ground'], [687, 1100, 'cling'], [280, 858, 'ground'],
-      [280, 863, 'spring'], [620, 430, 'node'], [300, 282, 'ground'], [0, 0, 'gate'],
+      [120, 1267, 'ground'], [607, 1100, 'cling'], [480, 913, 'ground'],
+      [280, 918, 'spring'], [620, 450, 'node'], [300, 282, 'ground'], [0, 0, 'gate'],
     ],
   },
 ];
@@ -967,14 +1027,20 @@ const CT = {
   },
 };
 
-/* What one step of motion ran into. */
+/* What one step of motion ran into.
+
+   `wall` is "a wall was touched" — physics and feedback care about that.
+   `wallHold` is "a wall you may take hold of", which is the different question
+   the player-state logic asks: the wall you just launched from is briefly not
+   one, so leaping up and over a ledge cannot be undone by the same face
+   catching you again a frame later. */
 const RES = {
-  floor: false, wall: false, ceil: false,
+  floor: false, wall: false, wallHold: false, ceil: false,
   wallNx: 0, wallE: null,
   impact: 0, hx: 0, hy: 0, nx: 0, ny: 0,
   spring: null, lethal: null,
   reset() {
-    this.floor = false; this.wall = false; this.ceil = false;
+    this.floor = false; this.wall = false; this.wallHold = false; this.ceil = false;
     this.wallNx = 0; this.wallE = null;
     this.impact = 0; this.spring = null; this.lethal = null;
   },
@@ -1028,7 +1094,7 @@ function resolveContactVel(s) {
       const vn = rvx * nx + rvy * ny;
       if (vn < 0) {
         // how much slide survives depends on what was touched
-        const keep = RES.floor ? MOVE.slideKeep : RES.ceil ? MOVE.ceilingKeep : 0.5;
+        const keep = RES.floor ? MOVE.slideKeep : RES.ceil ? MOVE.ceilingKeep : MOVE.wallSlide;
         s.vx = (rvx - nx * vn) * keep + ovx;
         s.vy = (rvy - ny * vn) * keep + ovy;
       }
@@ -1087,6 +1153,11 @@ function stepBody(s, live) {
       if (RES.spring) { i = n; break; }
     }
   }
+  // A wall this body has just launched from cannot be taken hold of again yet,
+  // so that leaping up and over a ledge is not undone by the same face
+  // catching you a frame later. It still collides — it is a wall — it just
+  // cannot be grabbed. Any other wall can.
+  RES.wallHold = RES.wall && !(s.noWallT > 0 && RES.wallE === s.noWall);
   return RES;
 }
 const VOID = { kind: 'void' };
@@ -1125,10 +1196,49 @@ function landingAssist(s) {
   s.vx += bestDir * MOVE.assistPull * k;
 }
 
+/* ---- ledge assist -------------------------------------------------------
+   The companion to the landing assist, for going UP over a corner rather than
+   down onto a ledge.
+
+   The situation it exists for: the spirit is holding the side of a block and
+   the player pulls to send it up and over the top. That aim has an inward
+   component — and the wall eats it, because every frame the contact removes
+   whatever velocity points into the surface. The spirit rises hugging the face
+   with no sideways speed at all and comes straight back down beside the block.
+   Every aim collapses to the same result, so "over the ledge" is not something
+   the player can express.
+
+   So the inward half of that launch is REMEMBERED, and handed back once the
+   spirit's feet clear the top edge and it can actually move that way. It is
+   the player's own input, paid out a moment later — not a correction invented
+   for them. It only arms on a launch that was aimed up and inward from a hold,
+   it only pays out while rising near a top that is genuinely within reach, and
+   it expires. */
+function ledgeAssist(s) {
+  if (!s.ledgeDir || s.ledgeT <= 0) return;
+  if (s.vy > -0.5) return;                      // only on the way up
+  const foot = s.y + s.r;
+  for (let i = 0; i < world.solids.length; i++) {
+    const e = world.solids[i];
+    if (e.a || e.w < 40) continue;
+    const top = e.y - e.h / 2;
+    // The feet have to be clear of the top before drifting inward means
+    // anything: any earlier and it is just pressing into the face again.
+    if (foot > top + 2 || foot < top - MOVE.ledgeBand) continue;
+    const gap = s.ledgeDir > 0 ? (e.x - e.w / 2) - s.x : s.x - (e.x + e.w / 2);
+    if (gap <= 0 || gap > MOVE.ledgeReach) continue;
+    if (s.vx * s.ledgeDir >= MOVE.ledgeMax) return;
+    s.vx += s.ledgeDir * MOVE.ledgePull * (1 - gap / MOVE.ledgeReach);
+    return;
+  }
+}
+
 /* Gravity, air drag and the speed ceiling. The burst window suspends gravity
    for a few frames so a release reads as a deliberate throw rather than
    something that begins falling the instant it leaves. */
 function integrate(s) {
+  if (s.noWallT > 0) s.noWallT = Math.max(0, s.noWallT - STEP);
+  if (s.ledgeT > 0) s.ledgeT = Math.max(0, s.ledgeT - STEP);
   if (s.burst > 0) {
     s.burst -= STEP;
   } else {
@@ -1142,7 +1252,8 @@ function integrate(s) {
 }
 
 /* --- trajectory preview (the same integrator, nothing simulated twice) --- */
-const probe = { x: 0, y: 0, vx: 0, vy: 0, r: MOVE.radius, burst: 0 };
+const probe = { x: 0, y: 0, vx: 0, vy: 0, r: MOVE.radius, burst: 0,
+  noWall: null, noWallT: 0, ledgeDir: 0, ledgeT: 0 };
 const preview = {
   pts: [], n: 0, land: -1, lx: 0, ly: 0,
   landFloor: false,          // did it end on something you can stand on?
@@ -1159,12 +1270,13 @@ function predict(x, y, vx, vy, maxDist) {
     const ox = probe.x, oy = probe.y;
     integrate(probe);
     landingAssist(probe);          // the guide must include the help the player gets
+    ledgeAssist(probe);
     const r = stepBody(probe);
     if (r.lethal) { preview.danger = true; pushDot(probe.x, probe.y); break; }
     if (r.spring) { preview.spring = true; pushDot(probe.x, probe.y); break; }
-    if (r.floor || r.wall || r.ceil) {
+    if (r.floor || r.wallHold || r.ceil) {
       preview.land = preview.n;
-      preview.landFloor = r.floor || r.wall;   // both are places control returns
+      preview.landFloor = r.floor || r.wallHold;   // both are places control returns
       preview.lx = probe.x; preview.ly = probe.y;
       pushDot(probe.x, probe.y);
       break;
@@ -1197,7 +1309,9 @@ function pushDot(x, y) {
              one place a release turns into a burst.
    ============================================================ */
 
-const body = { x: 0, y: 0, vx: 0, vy: 0, r: MOVE.radius, burst: 0 };
+const body = { x: 0, y: 0, vx: 0, vy: 0, r: MOVE.radius, burst: 0,
+  noWall: null, noWallT: 0,     // the wall we just left, and for how long
+  ledgeDir: 0, ledgeT: 0 };     // inward intent saved from a launch off a hold
 
 /* grounded · airborne · clinging · held by a node · dissolving · reforming */
 const PS = {
@@ -1208,6 +1322,7 @@ const PS = {
   facing: -Math.PI / 2,
   coyote: 0,          // grace after stepping off a surface
   clingT: 0,          // how long the current hold has lasted
+  clingWall: null,    // which surface is being held
   clingSide: 0,       // +1 the wall is to the left of us, -1 to the right
   node: null,         // the node currently holding us
   fallT: 0,           // how long we have been falling (for the landing weight)
@@ -1301,47 +1416,85 @@ const Vis = {
 const TRAIL_N = 20;
 for (let i = 0; i < TRAIL_N; i++) Vis.trail.push({ x: 0, y: 0, v: 0 });
 
-/* The wind-up. Input writes only to this; everything else reads it. */
+/* ---- the stretch ---------------------------------------------------------
+   The slingshot's state. Input writes only to this; the guide, the camera, the
+   character visuals and the launch all read it and nothing writes back.
+
+   `sx/sy` and `px/py` are VIRTUAL SCREEN units, not world units — that is the
+   whole reason the camera can move freely under a held stretch without the aim
+   shifting by a hair. See `toScreen` in section 10. */
 const Aim = {
   on: false,
-  from: '',            // which state the wind-up started in
-  anchorX: 0, anchorY: 0,
-  power: 0, angle: 0,
+  from: '',            // which state the stretch started in
+  sx: 0, sy: 0,        // where the finger went down (screen)
+  px: 0, py: 0,        // where the finger is now (screen)
+  pullLen: 0,          // raw stretch length in screen units
+  pull: 0,             // 0..1 of the usable stretch
+  power: 0,            // pull, shaped by powerCurve; what the game acts on
+  angle: 0,            // launch direction: the mirror of the pull
   held: 0,
-  clear() { this.on = false; this.power = 0; this.held = 0; },
+  clear() {
+    this.on = false; this.power = 0; this.pull = 0; this.pullLen = 0; this.held = 0;
+  },
 };
 
 /* Leaving a wall.
 
-   The rule is only ever "you cannot launch into the surface you are holding".
-   A leap aimed away from the wall is left exactly as the player aimed it; one
-   aimed along or into it is given just enough outward speed to clear the face.
+   The safety kick exists for exactly one reason: a leap aimed flat along a
+   face would otherwise scrape straight back into it. It is NOT there to decide
+   where the player goes, and it used to: aiming up and over the top of the
+   block you were holding produced a velocity with the sideways component
+   flipped — pull up-left, travel up-right — which made the most natural move
+   in the game, hopping from a wall onto the ledge above it, impossible.
 
-   The previous version added a fixed outward shove to every wall leap, which
-   meant a wall could silently fight the direction the player had chosen — the
-   worst kind of unpredictability, because the input looked like it worked. */
+   So the kick now fades out with how upward the aim is. A flat aim still gets
+   pushed clear; an aim steeper than `clingFree` is taken completely literally,
+   inward or not, because an upward aim is the player going over the top and
+   they can see exactly where that leads. The fade is smooth, so there is no
+   angle at which the control suddenly changes behaviour. */
 function applyClingKick(ang, sp, out) {
   const nx = PS.clingSide;                 // +1 = wall on our left, push right
-  let vx = Math.cos(ang) * sp, vy = Math.sin(ang) * sp;
-  const want = MOVE.clingKick * sp;
-  const outward = vx * nx;
-  if (outward < want) vx += nx * (want - outward);
+  const raw = Math.cos(ang) * sp;
+  const vy = Math.sin(ang) * sp;
+  const up = -Math.sin(ang);               // -1 straight down .. +1 straight up
+  const bite = 1 - smoothstep(clamp(up / MOVE.clingFree, 0, 1));
+  let vx = raw;
+  if (bite > 0) {
+    const want = lerp(MOVE.clingKick * sp, MOVE.clingKickMin, clamp(up, 0, 1));
+    const outward = raw * nx;
+    if (outward < want) vx = lerp(raw, raw + nx * (want - outward), bite);
+  }
   out.x = vx; out.y = vy;
   return out;
 }
 const KICK = { x: 0, y: 0 };
 
+/* Arm the ledge assist, if this launch off a hold was aimed up and over the
+   top of the thing being held. Shared by the real launch and by the preview,
+   so the dotted guide shows the same arc the player will fly. */
+function armLedgeAssist(s, ang, sp) {
+  s.ledgeDir = 0; s.ledgeT = 0;
+  const up = -Math.sin(ang);
+  if (up < MOVE.clingFree) return;                 // not an upward aim
+  const inward = -PS.clingSide;                    // away from the face we hold
+  if (Math.cos(ang) * inward <= 0) return;         // not aimed over the top
+  s.ledgeDir = inward;
+  s.ledgeT = MOVE.ledgeTime;
+}
+
 /* The one place a wind-up becomes motion. */
 function doBurst(ang, power) {
   const fromNode = PS.state === 'node' && PS.node;
-  const p = burstCurve(clamp(power, 0, 1));
-  const sp = fromNode ? lerp(MOVE.nodeMin, MOVE.nodeBurst, p)
-                      : lerp(MOVE.burstMin, MOVE.burstMax, p);
+  const p = clamp(power, 0, 1);
+  const sp = launchSpeed(p, fromNode);
   let vx = Math.cos(ang) * sp, vy = Math.sin(ang) * sp;
 
   if (PS.state === 'cling') {
     const k = applyClingKick(ang, sp, KICK);
     vx = k.x; vy = k.y;
+    // the face we are leaving cannot catch us again for a moment
+    body.noWall = PS.clingWall; body.noWallT = MOVE.wallRegrab;
+    armLedgeAssist(body, ang, sp);
   }
   body.vx = vx; body.vy = vy;
   body.burst = MOVE.burstTime;
@@ -1394,9 +1547,11 @@ const G = {
 };
 
 const cam = {
-  x: 0, y: 0, shake: 0, sx: 0, sy: 0,
+  x: 0, y: 0, tx: 0, ty: 0,
+  mode: 'rest', settleT: 0,
+  shake: 0, sx: 0, sy: 0,
   kx: 0, ky: 0,           // directional impulse from a launch or a slam
-  zoom: 1, zoomT: 1, punch: 0,
+  zoom: 1, tzoom: 1, punch: 0,
   flash: 0, flashCol: [255, 255, 255],
 };
 
@@ -1591,7 +1746,10 @@ function simStep() {
       body.y = lerp(body.y, PS.node.y, MOVE.nodePull);
     }
     Vis.step(PS.speed);
-    if (Aim.held >= MOVE.aimHold) cancelAim();
+    // if this ever fires it is a lost pointer, so say so rather than going
+    // quiet: a control that stops responding without a sign is unfixable by
+    // the player, who has no idea anything happened
+    if (Aim.held >= MOVE.aimHold) { cancelAim(); G.deny = 1; }
     updateCamera(false);
     return;
   }
@@ -1694,6 +1852,7 @@ function updateSpirit() {
   } else {
     integrate(body);
     landingAssist(body);
+    ledgeAssist(body);
   }
 
   const r = stepBody(body, true);
@@ -1727,16 +1886,18 @@ function updateSpirit() {
       Sfx.land(hard);
       PS.set('ground');
     }
+    body.ledgeDir = 0; body.ledgeT = 0;
     PS.coyote = MOVE.coyote;
     PS.clingT = 0;
     body.vx *= MOVE.groundDrag;
     if (Math.abs(body.vx) < MOVE.groundStop) body.vx = 0;
-  } else if (r.wall) {
+  } else if (r.wallHold) {
     // taking hold of a wall for the first time; the hold itself is run above
     if (PS.state !== 'cling') {
       PS.set('cling');
       PS.clingT = 0;
       PS.clingSide = RES.wallNx < 0 ? -1 : 1;
+      PS.clingWall = RES.wallE;
       body.vx = 0; body.vy = 0;
       Vis.onWall(RES.wallNx);
       FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.1, 2.4, 4, HUE.spirit.rgb,
@@ -1762,45 +1923,62 @@ function updateSpirit() {
   updateAimBuffer();
 }
 
-/* ---- camera ------------------------------------------------------------
-   It leads the spirit rather than chasing it: the faster you travel the more
-   of the world ahead you are shown, which is what lets a long leap be aimed at
-   something you cannot yet see. */
+/* ---- camera -------------------------------------------------------------
+   One system owns the camera, and it has four modes:
+
+     REST    standing or holding, nothing happening. Normal framing.
+     AIM     a stretch is being held. Lead toward the LAUNCH direction — the
+             finger is behind the spirit, the information is in front of it —
+             and ease out so more of the world ahead is visible.
+     TRAVEL  airborne. Follow with mild anticipation.
+     SETTLE  just arrived. Ease back to normal framing.
+
+   Everything the camera does is decided here and nowhere else. The target and
+   the rendered value are kept separate — gameplay writes `cam.tx/ty/tzoom`,
+   and exactly one smoothing step moves `cam.x/y/zoom` toward them — so no two
+   systems can pull the zoom in different directions on the same frame.
+
+   Crucially, nothing in here feeds back into the aim. The aim is measured in
+   screen space (see section 10) and cannot be affected by where the camera is
+   or how far it has zoomed, which is what makes the view able to move while a
+   held stretch stays perfectly still. */
 const CAM_PAD = 95;   // how far past the world edge the view may drift
 
-/* ---- camera -------------------------------------------------------------
-   The camera's job here is fairness. A leap toward something you cannot see is
-   not a challenge, it is a guess, so while the player is aiming the view
-   slides toward where the leap is pointed and eases out — the further the leap
-   would go, the more of the world ahead is shown. Once travelling, the view
-   leads the spirit rather than chasing it, which leaves the screen space in
-   front of the character where the player needs to look. */
-function updateCamera(snap) {
-  let tx = body.x, ty = body.y;
-  let zoom = 1;
+function cameraMode() {
+  if (Aim.on && Aim.pullLen > MOVE.dragDead) return 'aim';
+  if (PS.state === 'air' || PS.speed > MOVE.camTravelSpeed) return 'travel';
+  return cam.settleT > 0 ? 'settle' : 'rest';
+}
 
-  if (Aim.on && Aim.power > 0.02 && preview.n > 0) {
-    // Frame the leap: the spirit at one end, where it is predicted to end up
-    // at the other, and enough zoom to hold both with room around them. This
-    // is the whole answer to "never ask for a leap toward somewhere you cannot
-    // see" — the view is built from the actual prediction, not from a guess
-    // based on how hard the player is pulling.
-    const e = previewEnd(PVEND);
-    tx = (body.x + e.x) / 2;
-    ty = (body.y + e.y) / 2;
-    const needW = Math.abs(e.x - body.x) / 2 + MOVE.camFrame;
-    const needH = Math.abs(e.y - body.y) / 2 + MOVE.camFrame;
-    zoom = clamp(Math.min(VW / (2 * needW), VH / (2 * needH)), MOVE.zoomAim, 1);
-  } else if (Aim.on && Aim.power > 0.02) {
+function updateCamera(snap) {
+  const mode = cameraMode();
+  if (mode !== cam.mode) {
+    // leaving a moving mode starts the settle, so the return to normal framing
+    // is a deliberate ease rather than a jump
+    if ((cam.mode === 'aim' || cam.mode === 'travel') && mode !== 'aim' && mode !== 'travel') {
+      cam.settleT = MOVE.camSettle;
+    }
+    cam.mode = mode;
+  }
+  if (cam.settleT > 0) cam.settleT = Math.max(0, cam.settleT - STEP);
+
+  let tx = body.x, ty = body.y, zoom = 1, ease = MOVE.camEase;
+
+  if (mode === 'aim') {
+    // lead along the launch vector: the direction the spirit will actually go,
+    // which is the opposite of where the finger is being pulled
     const lead = lerp(MOVE.camLeadMin, MOVE.camLead, Aim.power);
     tx += Math.cos(Aim.angle) * lead;
     ty += Math.sin(Aim.angle) * lead;
     zoom = lerp(1, MOVE.zoomAim, Aim.power);
-  } else {
+    ease = MOVE.camEaseAim;
+  } else if (mode === 'travel') {
     tx += clamp(body.vx * MOVE.camFollow, -200, 200);
     ty += clamp(body.vy * MOVE.camFollow, -170, 250);
-    const sp = Math.hypot(body.vx, body.vy);
-    zoom = lerp(1, MOVE.zoomFast, clamp(sp / MOVE.burstMax, 0, 1));
+    zoom = lerp(1, MOVE.zoomFast, clamp(PS.speed / MOVE.burstMax, 0, 1));
+    ease = MOVE.camEase;
+  } else {
+    ease = mode === 'settle' ? MOVE.camEase : MOVE.camEaseRest;
   }
   ty -= 30;                        // a little more sky than floor
 
@@ -1809,9 +1987,8 @@ function updateCamera(snap) {
   // it. Leading past this point stops showing the player their character,
   // which is worse than not showing them the destination.
   const halfW = VW / (2 * zoom), halfH = VH / (2 * zoom);
-  const maxX = halfW * MOVE.camHold, maxY = halfH * MOVE.camHold;
-  tx = body.x + clamp(tx - body.x, -maxX, maxX);
-  ty = body.y + clamp(ty - body.y, -maxY, maxY);
+  tx = body.x + clamp(tx - body.x, -halfW * MOVE.camHold, halfW * MOVE.camHold);
+  ty = body.y + clamp(ty - body.y, -halfH * MOVE.camHold, halfH * MOVE.camHold);
 
   // Keep the view inside the world, allowing for the fact that zooming out
   // shows more of it. The bounds are padded rather than hard: clamping exactly
@@ -1821,14 +1998,14 @@ function updateCamera(snap) {
   tx = world.w <= hw * 2 ? world.w / 2 : clamp(tx, hw, world.w - hw);
   ty = world.h <= hh * 2 ? world.h / 2 : clamp(ty, hh, world.h - hh);
 
-  cam.zoomT = zoom;
+  cam.tx = tx; cam.ty = ty; cam.tzoom = zoom;
   if (snap) { cam.x = tx; cam.y = ty; cam.zoom = zoom; return; }
-  const ease = Aim.on ? MOVE.camEaseAim : MOVE.camEase;
   cam.x += (tx - cam.x) * ease;
   cam.y += (ty - cam.y) * ease;
-  // the zoom eases here rather than in the step, because a held aim skips the
-  // rest of the step entirely and the view still has to keep moving
-  cam.zoom += (cam.zoomT + cam.punch - cam.zoom) * MOVE.zoomEase;
+  // The single smoothing step for zoom. It lives here rather than in the world
+  // step because a held stretch skips the rest of the step entirely, and the
+  // view still has to finish settling while the player decides.
+  cam.zoom += (cam.tzoom + cam.punch - cam.zoom) * MOVE.zoomEase;
 }
 
 /* ============================================================
@@ -1836,11 +2013,17 @@ function updateCamera(snap) {
    ============================================================ */
 
 let RS = 1;
+let fitPending = false;          // a resize deferred until the drag ends
 let canvasRect = { left: 0, top: 0, width: VW, height: VH };
 
 function fit() {
   const rect = canvasRect = dom.canvas.getBoundingClientRect();
   if (rect.width < 2 || rect.height < 2) return;
+  // Reassigning the backing store mid-gesture throws away pointer capture and
+  // can interrupt a drag the player is in the middle of. Nothing here is
+  // urgent, so it waits until their hand is off the screen.
+  if (Aim.on) { fitPending = true; return; }
+  fitPending = false;
   /* Pixel budget, not a DPR multiplier. Fill rate is what kills this game on a
      phone: every frame writes a background plus a stack of additive glows. */
   const budget = Q.level < 1 ? PIXEL_BUDGET_LOW : PIXEL_BUDGET;
@@ -2269,11 +2452,13 @@ function drawSpirit(c) {
   let stretch = Vis.stretch, sang = Vis.stretchAng;
   let ox = 0, oy = 0;
   if (Aim.on && Aim.power > 0) {
-    // wind up: lean back into the pull, the way a body loads a jump
+    // Loading the shot: the spirit leans back along the pull and squashes
+    // toward it, so the stretch is felt on the character and not only in the
+    // band. It leans, it does not move — the body position never drifts.
     const a = Aim.angle + Math.PI;
-    ox = Math.cos(a) * Aim.power * 9;
-    oy = Math.sin(a) * Aim.power * 9;
-    stretch = Aim.power * 0.2;
+    ox = Math.cos(a) * Aim.power * 11;
+    oy = Math.sin(a) * Aim.power * 11;
+    stretch = Aim.power * 0.24;
     sang = a;
   }
   const sq = Vis.squash;
@@ -2415,9 +2600,7 @@ let lastPvx = NaN, lastPvy = NaN, lastPvf = -99;
 /* The velocity the current wind-up would produce, wall rules included. */
 function aimVelocity(out) {
   const fromNode = PS.state === 'node';
-  const pc = burstCurve(Aim.power);
-  const sp = fromNode ? lerp(MOVE.nodeMin, MOVE.nodeBurst, pc)
-                      : lerp(MOVE.burstMin, MOVE.burstMax, pc);
+  const sp = launchSpeed(Aim.power, fromNode);
   if (PS.state === 'cling') return applyClingKick(Aim.angle, sp, out);
   out.x = Math.cos(Aim.angle) * sp;
   out.y = Math.sin(Aim.angle) * sp;
@@ -2426,8 +2609,13 @@ function aimVelocity(out) {
 const AIMV = { x: 0, y: 0 };
 
 function refreshAimPreview() {
-  if (!Aim.on || Aim.power <= 0.02) { preview.n = 0; return; }
+  if (!Aim.on || Aim.pullLen <= MOVE.dragDead) { preview.n = 0; return; }
   const v = aimVelocity(AIMV);
+  // a preview from a hold gets the same re-grab cooldown the real leap will
+  probe.noWall = PS.state === 'cling' ? PS.clingWall : null;
+  probe.noWallT = PS.state === 'cling' ? MOVE.wallRegrab : 0;
+  probe.ledgeDir = 0; probe.ledgeT = 0;
+  if (PS.state === 'cling') armLedgeAssist(probe, Aim.angle, Math.hypot(v.x, v.y));
   const moving = world.movers.length || world.beams.length;
   if (v.x !== lastPvx || v.y !== lastPvy || (moving && frameCount - lastPvf > 3)) {
     lastPvx = v.x; lastPvy = v.y; lastPvf = frameCount;
@@ -2439,18 +2627,8 @@ function refreshAimPreview() {
   }
 }
 
-/* Where this leap is expected to end, for the camera to frame. */
-function previewEnd(out) {
-  if (preview.n > 0) {
-    const q = preview.pts[preview.n - 1];
-    out.x = q.x; out.y = q.y;
-  } else { out.x = body.x; out.y = body.y; }
-  return out;
-}
-const PVEND = { x: 0, y: 0 };
-
 function drawAim(c) {
-  if (!Aim.on || Aim.power <= 0.02) return;
+  if (!Aim.on || Aim.pullLen <= MOVE.dragDead) return;
   const fromNode = PS.state === 'node';
   const col = fromNode ? HUE.node : HUE.spirit;
   const a = Aim.angle, p = Aim.power;
@@ -2503,19 +2681,39 @@ function drawAim(c) {
     }
   }
 
-  // The aim band points the way you are going, toward the finger. Direct
-  // aiming means the line and the leap are the same direction — there is
-  // nothing to reverse in your head.
+  /* Two pieces of information, on two sides of the spirit, so the reversal is
+     never something the player has to do in their head.
+
+     BEHIND: the elastic. A tensioning line trailing back along the pull, with
+     a handle on the end. It thickens and brightens as the stretch grows, and
+     it is drawn from the stretch vector rather than from the raw pointer, so
+     it stays rock steady while the camera moves.
+
+     AHEAD:  the launch. The arc, the landing ring above, and an arrow. */
+  const back = a + Math.PI;
   const R = body.r + 14 + p * 8;
-  const hx = body.x + Math.cos(a) * (R + p * 46);
-  const hy = body.y + Math.sin(a) * (R + p * 46);
-  const g = c.createLinearGradient(body.x, body.y, hx, hy);
-  g.addColorStop(0, rgba(col.hi, 0.55));
-  g.addColorStop(1, rgba(col.rgb, 0.05));
-  c.strokeStyle = g;
-  c.lineWidth = lerp(2, 5, p);
+  const pullLen = R + 16 + p * 62;
+  const bx = body.x + Math.cos(back) * pullLen;
+  const by = body.y + Math.sin(back) * pullLen;
+  const eg = c.createLinearGradient(body.x, body.y, bx, by);
+  eg.addColorStop(0, rgba(col.hi, 0.5 + p * 0.3));
+  eg.addColorStop(1, rgba(col.rgb, 0.08));
+  c.strokeStyle = eg;
+  c.lineWidth = lerp(2.4, 6, p);       // the band thickens as it is stretched
   c.lineCap = 'round';
-  c.beginPath(); c.moveTo(body.x, body.y); c.lineTo(hx, hy); c.stroke();
+  c.beginPath(); c.moveTo(body.x, body.y); c.lineTo(bx, by); c.stroke();
+  c.fillStyle = rgba(col.hi, 0.35 + p * 0.4);
+  c.beginPath(); c.arc(bx, by, 3.5 + p * 3.5, 0, TAU); c.fill();
+
+  // the launch arrow, ahead of the spirit, growing with the stretch
+  const fx = body.x + Math.cos(a) * (R + 10 + p * 34);
+  const fy = body.y + Math.sin(a) * (R + 10 + p * 34);
+  const fg = c.createLinearGradient(body.x, body.y, fx, fy);
+  fg.addColorStop(0, rgba(col.rgb, 0.1));
+  fg.addColorStop(1, rgba(col.hi, 0.55 + p * 0.35));
+  c.strokeStyle = fg;
+  c.lineWidth = lerp(2, 4.5, p);
+  c.beginPath(); c.moveTo(body.x, body.y); c.lineTo(fx, fy); c.stroke();
 
   c.strokeStyle = rgba(col.rgb, 0.2);
   c.lineWidth = 2.4;
@@ -2711,40 +2909,58 @@ const Player = {
    and nowhere else.
    ============================================================ */
 
+/* ---- pointer -> virtual screen ------------------------------------------
+   Aiming is measured in VIRTUAL SCREEN UNITS — the fixed 540 x 960 box the
+   game is composed in — and never in world units.
+
+   This matters more than it looks. Converting the pointer through the camera
+   made the aim depend on the zoom, while the zoom depended on the aim: pull
+   harder, the view zooms out, the same finger position now maps to a different
+   world point, so the power changes, so the zoom changes again. That is the
+   breathing/pumping the camera was doing, and no amount of smoothing fixes a
+   loop — the loop has to be cut. Screen-space aim cuts it: the camera reads
+   the aim and the aim never reads the camera.
+
+   Working in a fixed virtual box also makes the gesture resolution independent:
+   the same swipe across a third of the screen is the same leap on any phone. */
 const gp = { x: 0, y: 0 };
-function toWorld(e) {
-  const vx = (e.clientX - canvasRect.left) * (VW / canvasRect.width);
-  const vy = (e.clientY - canvasRect.top) * (VH / canvasRect.height);
-  gp.x = (vx - VW / 2 - cam.sx - cam.kx) / cam.zoom + cam.x;
-  gp.y = (vy - VH / 2 - cam.sy - cam.ky) / cam.zoom + cam.y;
+function toScreen(e) {
+  gp.x = (e.clientX - canvasRect.left) * (VW / canvasRect.width);
+  gp.y = (e.clientY - canvasRect.top) * (VH / canvasRect.height);
   return gp;
 }
 
 let pointerId = null;
-const buffered = { on: false, t: 0, id: null };
+const buffered = { on: false, t: 0, id: null, sx: VW / 2, sy: VH / 2 };
 function clearBuffer() { buffered.on = false; buffered.id = null; }
 
-/* Direct aiming: you drag TOWARD where you want to go, and that is where the
-   spirit goes. Dragging up-right leaps up-right. The distance sets the power.
+/* The slingshot. You pull BACKWARD, away from where you want to go, and the
+   spirit launches along the opposite vector — like stretching something
+   elastic anchored to it. The pull is entirely screen-space: `Aim.sx/sy` is
+   where the finger went down, and everything else is derived from the offset
+   from that anchor.
 
-   The previous build pulled backwards like a slingshot, which needs explaining
-   before anyone can use it and puts your finger on the wrong side of the
-   screen — you end up covering the ground you are trying to read. */
+   `Aim.pull` is the raw stretch, 0..1 of the usable drag distance; `Aim.power`
+   is what the game uses. They are different on purpose — see powerCurve. */
 function updateDrag(px, py) {
-  const dx = px - Aim.anchorX, dy = py - Aim.anchorY;
+  const dx = px - Aim.sx, dy = py - Aim.sy;        // the pull, screen units
   const d = Math.hypot(dx, dy);
-  const cl = Math.min(d, MOVE.dragFull);
-  Aim.power = d < MOVE.dragDead ? 0 : clamp((cl - MOVE.dragDead) / (MOVE.dragFull - MOVE.dragDead), 0, 1);
-  if (d > MOVE.dragDead) Aim.angle = Math.atan2(dy, dx);   // leap the way you dragged
+  Aim.px = px; Aim.py = py;
+  Aim.pullLen = d;
+  if (d <= MOVE.dragDead) { Aim.pull = 0; Aim.power = 0; Sfx.tensionUpdate(0); return; }
+  Aim.pull = clamp((d - MOVE.dragDead) / (MOVE.dragFull - MOVE.dragDead), 0, 1);
+  Aim.power = powerCurve(Aim.pull);
+  Aim.angle = Math.atan2(-dy, -dx);                // launch is the mirror of the pull
   Sfx.tensionUpdate(Aim.power);
 }
 
-function beginAim(ax, ay, px, py, id) {
+function beginAim(sx, sy, id) {
   Aim.on = true;
   Aim.from = PS.state;
-  Aim.anchorX = ax; Aim.anchorY = ay;
+  Aim.sx = sx; Aim.sy = sy;
+  Aim.px = sx; Aim.py = sy;
   Aim.held = 0;
-  Aim.power = 0;
+  Aim.pull = 0; Aim.power = 0; Aim.pullLen = 0;
   Aim.angle = PS.state === 'cling' ? (PS.clingSide > 0 ? 0 : Math.PI) : -Math.PI / 2;
   lastPvx = NaN;
   pointerId = id;
@@ -2752,22 +2968,27 @@ function beginAim(ax, ay, px, py, id) {
     try { dom.canvas.setPointerCapture(id); } catch (err) {}
   }
   Sfx.tensionStart();
-  updateDrag(px, py);
   setHint('');
 }
 
-/* Take hold of a node: it draws the spirit in, and the world stops while the
-   player decides where to go. */
+/* Take hold of a node. It draws the spirit in AT THE MOMENT OF THE CATCH, not
+   gradually while the player aims: a character that keeps drifting under a held
+   aim makes the whole gesture feel slippery, and the catch reads better as a
+   snap with a streak behind it anyway. */
 function grabNode(n, px, py, id) {
   PS.node = n;
   PS.set('node');
   n.glow = 1;
+  FX.spark(body.x, body.y, Math.atan2(n.y - body.y, n.x - body.x), 0.3,
+           Math.hypot(n.x - body.x, n.y - body.y) / 9, 5, HUE.node.hi,
+           { life: 0.3, size: 2.2, shape: 1, len: 16, drag: 0.82 });
+  body.x = n.x; body.y = n.y;
   body.vx = 0; body.vy = 0; body.burst = 0;
   FX.shock(n.x, n.y, n.r * 2.2, n.r * 0.8, 0.3, HUE.node.rgb, 2);
   FX.spark(n.x, n.y, 0, Math.PI, 1.8, 6, HUE.node.hi, { life: 0.4, size: 2, drag: 0.9 });
   cam.punch = 0.035;
   Sfx.nodeCatch();
-  beginAim(px, py, px, py, id);
+  beginAim(px, py, id);
 }
 
 function onDown(e) {
@@ -2781,14 +3002,13 @@ function onDown(e) {
   if (PS.state === 'hurt' || PS.state === 'spawn') return;
 
   canvasRect = dom.canvas.getBoundingClientRect();
-  const p = toWorld(e);
+  const p = toScreen(e);
 
   if (canAim()) {
-    // The drag is always measured from wherever the finger landed, never from
-    // the creature. That way a press starts at zero power no matter where on
-    // the screen it happened, and "drag the way you want to go" means exactly
-    // that — the gesture is the same whether you touched the spirit or not.
-    beginAim(p.x, p.y, p.x, p.y, e.pointerId);
+    // The stretch is measured from wherever the finger went down, so a press
+    // always starts at zero power whatever it landed on, and the gesture is
+    // identical whether the player touched the spirit or anywhere else.
+    beginAim(p.x, p.y, e.pointerId);
     e.preventDefault();
     return;
   }
@@ -2800,6 +3020,7 @@ function onDown(e) {
   // node arrives within the buffer window, it is spent there instead of lost.
   if (PS.state === 'air') {
     buffered.on = true; buffered.t = 0; buffered.id = e.pointerId;
+    buffered.sx = p.x; buffered.sy = p.y;
     e.preventDefault();
     return;
   }
@@ -2812,19 +3033,23 @@ function updateAimBuffer() {
   buffered.t += STEP;
   if (G.phase !== 'play' || PS.state === 'hurt' || PS.state === 'spawn') { clearBuffer(); return; }
   if (canAim()) {
-    const id = buffered.id; clearBuffer();
-    beginAim(body.x, body.y, body.x, body.y, id);
+    const id = buffered.id, sx = buffered.sx, sy = buffered.sy;
+    clearBuffer();
+    beginAim(sx, sy, id);          // the stretch restarts from where the finger is
     return;
   }
   const n = nodeInReach();
-  if (n) { const id = buffered.id; clearBuffer(); grabNode(n, body.x, body.y, id); return; }
+  if (n) {
+    const id = buffered.id, sx = buffered.sx, sy = buffered.sy;
+    clearBuffer(); grabNode(n, sx, sy, id); return;
+  }
   if (buffered.t >= MOVE.buffer) { clearBuffer(); G.deny = 1; }
 }
 
 function onMove(e) {
   if (buffered.on && e.pointerId === buffered.id) { e.preventDefault(); return; }
   if (!Aim.on || (pointerId !== null && e.pointerId !== pointerId)) return;
-  const p = toWorld(e);
+  const p = toScreen(e);
   updateDrag(p.x, p.y);
   e.preventDefault();
 }
@@ -2832,15 +3057,25 @@ function onMove(e) {
 function onUp(e) {
   if (buffered.on && e.pointerId === buffered.id) { clearBuffer(); e.preventDefault(); return; }
   if (!Aim.on || (pointerId !== null && e.pointerId !== pointerId)) return;
+  // The dead zone is the ONLY cancel rule. Judging the release on the power
+  // value instead meant a pull just past the dead zone produced a power near
+  // zero and was silently thrown away — the player had clearly asked for a
+  // small hop and got nothing at all.
+  const launched = Aim.pullLen > MOVE.dragDead;
   const p = Aim.power, a = Aim.angle;
   const ok = canAim();
   Aim.on = false;
   pointerId = null;
   Sfx.tensionStop();
-  if (p > 0.02 && ok) doBurst(a, p);
+  if (launched && ok) doBurst(a, p);
   else if (PS.state === 'node') { PS.node.cool = 0.5; PS.node = null; PS.set('air'); }
-  Aim.power = 0;
+  Aim.power = 0; Aim.pull = 0; Aim.pullLen = 0;
+  endGesture();
   e.preventDefault();
+}
+
+function endGesture() {
+  if (fitPending) fit();
 }
 
 function cancelAim() {
@@ -2850,13 +3085,20 @@ function cancelAim() {
   clearBuffer();
   lastPvx = NaN;
   Sfx.tensionStop();
+  endGesture();
 }
 
 dom.canvas.addEventListener('pointerdown', onDown, { passive: false });
 window.addEventListener('pointermove', onMove, { passive: false });
 window.addEventListener('pointerup', onUp, { passive: false });
 window.addEventListener('pointercancel', cancelAim);
-dom.canvas.addEventListener('lostpointercapture', cancelAim);
+/* Deliberately NOT cancelling on `lostpointercapture`. Capture is a
+   convenience, and losing it does not mean the player let go — the browser
+   drops it whenever the canvas backing store is reassigned, which this game
+   does on its own whenever the adaptive quality level changes or the window is
+   resized. That turned a slow frame into a silently dead gesture. `pointerup`
+   and `pointercancel` are the events that actually mean the gesture ended, and
+   they are both handled on `window`, so they arrive with or without capture. */
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 window.addEventListener('touchmove', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });

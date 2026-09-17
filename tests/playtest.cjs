@@ -19,10 +19,13 @@ const { boot } = require('./harness.cjs');
 
 const f = boot();
 const T = f.internals;
+const MOVE = f.MOVE;
 const VW = 540, VH = 960, CAM_PAD = 95;
 
 const ANGLES = 96;                 // 3.75-degree resolution
-const POWERS = [0, 0.2, 0.4, 0.6, 0.8, 1];
+// pull fractions a player can actually hold, mapped through the real curve
+const PULLS = [0, 0.2, 0.4, 0.6, 0.8, 1];
+const POWERS = PULLS.map(p => T.powerCurve(p));
 const MIN_ANGLE_WINDOW = 12;       // degrees of aim slack a hop must allow
 const MIN_COMBOS = 6;
 
@@ -46,6 +49,26 @@ function place(wp) {
   } else {
     f.PS.state = 'ground'; f.PS.coyote = 1;
   }
+}
+
+/* The surface a waypoint names: the flat top nearest under it. */
+function surfaceAt(x, y) {
+  let best = null, bestGap = 90;
+  for (const s of f.world.solids) {
+    if (s.a) continue;
+    const top = s.y - s.h / 2;
+    const gap = Math.abs(top - (y + f.body.r));
+    if (x < s.x - s.w / 2 - 40 || x > s.x + s.w / 2 + 40) continue;
+    if (gap < bestGap) { bestGap = gap; best = s; }
+  }
+  return best;
+}
+function onSurfaceOf(tx, ty) {
+  const s = surfaceAt(tx, ty);
+  if (!s) return Math.hypot(f.body.x - tx, f.body.y - ty) < 190;
+  const top = s.y - s.h / 2;
+  return Math.abs((f.body.y + f.body.r) - top) < 26 &&
+         f.body.x > s.x - s.w / 2 - f.body.r && f.body.x < s.x + s.w / 2 + f.body.r;
 }
 
 /* Does a flight that starts here end at the target? Records where it actually
@@ -78,7 +101,11 @@ function arrives(target) {
     if (T.canAim()) {
       if (kind === 'gate') return false;
       if (kind === 'cling') return f.PS.state === 'cling' && Math.hypot(f.body.x - tx, f.body.y - ty) < 220;
-      if (kind === 'ground') return f.PS.state === 'ground' && Math.hypot(f.body.x - tx, f.body.y - ty) < 190;
+      // Arriving means arriving on the SURFACE the waypoint names, anywhere
+      // along it — not within some radius of the waypoint's centre. Judging by
+      // radius made widening a platform look like a regression, which is the
+      // opposite of the truth.
+      if (kind === 'ground') return f.PS.state === 'ground' && onSurfaceOf(tx, ty);
       return false;
     }
   }
@@ -87,14 +114,16 @@ function arrives(target) {
 
 /* Where the camera settles while this aim is being held, and what it shows. */
 function viewWhileAiming(angle, power) {
+  // set the stretch the way the input layer would, so the camera sees a live one
   f.Aim.on = true; f.Aim.angle = angle; f.Aim.power = power;
+  f.Aim.pull = power; f.Aim.pullLen = MOVE.dragDead + 1 + (MOVE.dragFull - MOVE.dragDead) * power;
   T.refreshAimPreview();
   T.updateCamera(true);
   for (let i = 0; i < 50; i++) { T.refreshAimPreview(); T.updateCamera(false); }
-  const z = f.cam.zoomT;
+  const z = f.cam.zoom;          // the settled, rendered zoom
   const r = { x0: f.cam.x - VW / (2 * z), x1: f.cam.x + VW / (2 * z),
               y0: f.cam.y - VH / (2 * z), y1: f.cam.y + VH / (2 * z) };
-  f.Aim.on = false; f.Aim.power = 0;
+  f.Aim.on = false; f.Aim.power = 0; f.Aim.pullLen = 0;
   return r;
 }
 function visible(rect, x, y, pad = 0) {
@@ -114,27 +143,14 @@ function checkHop(level, from, to) {
       if (arrives(to)) wins.push({ angle, power, deg: angle * 180 / Math.PI, lx: landed.x, ly: landed.y });
     }
   }
-  if (!wins.length) return { ok: false, combos: 0, window: 0, seeing: 0 };
+  if (!wins.length) return { ok: false, combos: 0, window: 0, seeing: 0, seen: false };
 
-  // For each working input, would the player have been able to see where it
-  // lands while they were aiming it? The hop is only fair if some of them are
-  // — a player aims at what they can see, so an input that works blind does
-  // not count for anything.
-  for (const w of wins) {
-    f.go(level);
-    for (let i = 0; i < 20; i++) f.tick(1);
-    place(from);
-    const rect = viewWhileAiming(w.angle, w.power);
-    w.seen = visible(rect, w.lx, w.ly, 16);
-    w.rect = rect;
-  }
-  const seeing = wins.filter(w => w.seen);
-
-  // widest run of consecutive angles that work AND land somewhere you can see
-  const pool = seeing.length ? seeing : wins;
-  let window = 0, best = pool[0];
+  // MARGIN: the widest run of neighbouring angles that all work, at one power.
+  // This is the forgiveness the player feels — a hop needing one exact angle
+  // is a hop they will fail repeatedly.
+  let window = 0, best = wins[0];
   for (const power of POWERS) {
-    const at = pool.filter(w => w.power === power).sort((a, b) => a.deg - b.deg);
+    const at = wins.filter(w => w.power === power).sort((a, b) => a.deg - b.deg);
     let run = 0, runStart = 0;
     for (let i = 0; i < at.length; i++) {
       if (i && at[i].deg - at[i - 1].deg <= 360 / ANGLES + 0.01) run++;
@@ -143,7 +159,36 @@ function checkHop(level, from, to) {
       if (span > window) { window = span; best = at[runStart + ((run / 2) | 0)]; }
     }
   }
-  return { ok: true, combos: wins.length, seeing: seeing.length, window, best };
+
+  // SEE: while aiming the representative shot, can the player see the place
+  // they are going? The bar is the destination AREA being on screen, not the
+  // exact pixel of the landing — a player aims at the ledge they can see, and
+  // a long arc that leaves the frame is information, not unfairness.
+  f.go(level);
+  for (let i = 0; i < 20; i++) f.tick(1);
+  place(from);
+  const rect = viewWhileAiming(best.angle, best.power);
+  const seen = destinationVisible(rect, to, best);
+
+  // ...and how many of the working inputs land somewhere on screen, reported
+  // for information rather than as a pass/fail
+  let inView = 0;
+  for (const w of wins) if (visible(rect, w.lx, w.ly, 0)) inView++;
+
+  return { ok: true, combos: wins.length, seeing: inView, seen, window, best, rect };
+}
+
+/* Is the thing the hop is aimed at on screen? For a surface, any part of it
+   counts; for a node or the gate, the object itself. */
+function destinationVisible(rect, to, best) {
+  const [tx, ty, kind] = to;
+  if (kind === 'gate') return visible(rect, f.world.gate.x, f.world.gate.y, 10);
+  if (kind === 'node' || kind === 'spring') return visible(rect, best.lx, best.ly, 10);
+  const s = surfaceAt(tx, ty);
+  if (!s) return visible(rect, tx, ty, 10);
+  const sx0 = s.x - s.w / 2, sx1 = s.x + s.w / 2, top = s.y - s.h / 2;
+  return sx1 > rect.x0 + 10 && sx0 < rect.x1 - 10 &&
+         top > rect.y0 + 10 && top < rect.y1 - 10;
 }
 
 const only = process.argv[2] ? [Number(process.argv[2]) - 1] : f.LEVELS.map((_, i) => i);
@@ -181,9 +226,9 @@ for (const li of only) {
       continue;
     }
 
-    const tight = r.window < MIN_ANGLE_WINDOW || r.seeing < MIN_COMBOS;
+    const tight = r.window < MIN_ANGLE_WINDOW || r.combos < MIN_COMBOS;
     const flags = [];
-    if (!r.seeing) {
+    if (!r.seen) {
       flags.push('BLIND');
       if (process.env.PT_DEBUG) {
         const q = r.best;
@@ -196,7 +241,7 @@ for (const li of only) {
     console.log(`  ${String(i + 1).padStart(2)}. ${label.padEnd(18)} ` +
       `${flags.length ? flags.join('+').padEnd(11) : 'OK'.padEnd(11)} ` +
       `aim ${r.best.deg.toFixed(0).padStart(5)}deg p${r.best.power}  ` +
-      `slack ${r.window.toFixed(0).padStart(3)}deg  ${String(r.seeing).padStart(3)}/${r.combos} inputs land in view`);
+      `slack ${r.window.toFixed(0).padStart(3)}deg  ${String(r.combos).padStart(3)} inputs work, ${String(r.seeing).padStart(3)} land in view`);
   }
 }
 

@@ -35,7 +35,7 @@ function boot() {
     'window.FLUX = {',
     'window.TEST = { frame, fit, predict, cancelAim, circleVsBox, killSpirit, respawn, ' +
     'restartLevel, placeSpirit, updateCamera, stepBody, integrate, nodeInReach, grabNode, ' +
-    'canAim, buffered, RES, beamLevel, doBurst, burstCurve, buildWorld, refreshAimPreview, preview }; window.FLUX = {');
+    'canAim, buffered, RES, beamLevel, doBurst, powerCurve, burstSpeed, launchSpeed, buildWorld, refreshAimPreview, preview, updateDrag, beginAim, toScreen, cameraMode, aimVelocity }; window.FLUX = {');
   vm.runInContext(source, sandbox);
   return {
     ...window.FLUX,
