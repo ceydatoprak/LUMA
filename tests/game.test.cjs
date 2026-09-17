@@ -1,4 +1,4 @@
-// Behaviour tests for WISP. Everything runs the real simulation through the
+// Behaviour tests for FLUX. Everything runs the real simulation through the
 // same entry points the player uses, so a pass here means the game works, not
 // that the code merely parses.
 //
@@ -322,18 +322,42 @@ if (require.main === module) {
   let [sx, sy] = screen(inp.body.x, inp.body.y);
   inp.events.pointerdown(pt(sx, sy));
   assert.equal(inp.Aim.on, true, 'A touch on the spirit starts a wind-up');
-  assert.equal(inp.Aim.power, 0, 'A centred touch starts at zero power');
+  assert.equal(inp.Aim.power, 0, 'Any touch starts at zero power');
   inp.events.pointermove(pt(sx, sy + 4));
   inp.events.pointerup(pt(sx, sy + 4));
   assert.equal(inp.G.bursts, 0, 'A drag inside the dead zone is a cancel');
-  // a full drag downward should leap upward
+
+  // Direct aiming: the spirit goes the way you dragged, in every direction.
+  // This is the control the whole game rests on, so it is checked on all four.
+  const dirs = [
+    ['up',    0, -400, (b) => b.vy < -8 && Math.abs(b.vx) < 3],
+    ['down',  0,  400, (b) => b.vy > 8 && Math.abs(b.vx) < 3],
+    ['right', 400, 0,  (b) => b.vx > 8 && Math.abs(b.vy) < 3],
+    ['left', -400, 0,  (b) => b.vx < -8 && Math.abs(b.vy) < 3],
+  ];
+  for (const [name, dx, dy, ok] of dirs) {
+    inp.go(0); inp.tick(90);
+    [sx, sy] = screen(inp.body.x, inp.body.y);
+    inp.events.pointerdown(pt(sx, sy));
+    inp.events.pointermove(pt(sx + dx, sy + dy));
+    assert.equal(inp.Aim.power, 1, 'Drag power saturates at the tuned distance');
+    inp.events.pointerup(pt(sx + dx, sy + dy));
+    assert.equal(inp.G.bursts, 1, `Dragging ${name} leaps`);
+    assert(ok(inp.body), `Dragging ${name} must leap ${name}`);
+    assert.equal(+Math.hypot(inp.body.vx, inp.body.vy).toFixed(6), MOVE.burstMax);
+  }
+  // a weak drag still goes somewhere useful
+  inp.go(0); inp.tick(90);
+  [sx, sy] = screen(inp.body.x, inp.body.y);
   inp.events.pointerdown(pt(sx, sy));
-  inp.events.pointermove(pt(sx, sy + 400));
-  assert.equal(inp.Aim.power, 1, 'Drag power saturates at the tuned distance');
-  inp.events.pointerup(pt(sx, sy + 400));
-  assert.equal(inp.G.bursts, 1, 'A full drag leaps');
-  assert(inp.body.vy < 0, 'Dragging down leaps up');
-  assert.equal(+Math.hypot(inp.body.vx, inp.body.vy).toFixed(6), MOVE.burstMax);
+  inp.events.pointermove(pt(sx, sy - 20));
+  inp.events.pointerup(pt(sx, sy - 20));
+  assert(Math.hypot(inp.body.vx, inp.body.vy) >= MOVE.burstMin,
+    'The weakest real drag still leaps at the floor speed');
+  assert(MOVE.burstMin / MOVE.burstMax > 0.6,
+    'A weak leap must not be a fraction of a strong one');
+  inp.go(0); inp.tick(90);
+  [sx, sy] = screen(inp.body.x, inp.body.y);
   // a touch anywhere on the screen still works
   inp.go(0); inp.tick(90);
   [sx, sy] = screen(inp.body.x + 230, inp.body.y - 300);
@@ -393,6 +417,82 @@ if (require.main === module) {
     g.world.w = 40000; g.world.h = 40000;
     g.world.gate.x = -99999; g.world.gate.y = -99999;
   }
+
+  /* ---- landing assist ------------------------------------------------------
+     Coming down a hand's width short of a ledge should not end a run. */
+  arena([{ list: 'solids', x: 1200, y: 1400, w: 500, h: 80 }]);   // left edge at 950
+  // a fall that misses the edge by a little must be caught
+  drop(950 - 22, 900, 0, 4, 1);
+  let caught = false;
+  for (let i = 0; i < 200; i++) { f.tick(1); if (f.PS.state === 'ground') { caught = true; break; } }
+  assert(caught, 'A near miss at a ledge edge is nudged onto it');
+  // a miss by much more than the assist reach is still a miss
+  arena([{ list: 'solids', x: 1200, y: 1400, w: 500, h: 80 }]);
+  drop(950 - MOVE.assistReach * 3, 900, 0, 4, 1);
+  let alsoCaught = false;
+  for (let i = 0; i < 200; i++) { f.tick(1); if (f.PS.state === 'ground') { alsoCaught = true; break; } }
+  assert(!alsoCaught, 'The assist must not reach out and grab a clear miss');
+  // and it never fires upward or while rising
+  arena([{ list: 'solids', x: 1200, y: 1400, w: 500, h: 80 }]);
+  drop(900, 1200, 0, -10, 1);
+  const vx0 = f.body.vx;
+  f.tick(1);
+  assert.equal(f.body.vx, vx0 * MOVE.airDrag, 'The assist does nothing while the spirit is rising');
+  section('landing assist catches near misses without grabbing clear ones');
+
+  /* ---- the camera frames the leap ------------------------------------------- */
+  f.go(0);
+  f.tick(120);
+  function holdAim(ang, power) {
+    f.Aim.on = true; f.Aim.angle = ang; f.Aim.power = power;
+    T.refreshAimPreview();
+    T.updateCamera(true);
+    for (let i = 0; i < 60; i++) { T.refreshAimPreview(); T.updateCamera(false); }
+    const pv = T.preview;
+    const end = pv.n ? pv.pts[pv.n - 1] : { x: f.body.x, y: f.body.y };
+    const z = f.cam.zoom;
+    const out = { n: pv.n, end, z, halfW: 270 / z, halfH: 480 / z,
+      endOnScreen: Math.abs(end.x - f.cam.x) < 270 / z && Math.abs(end.y - f.cam.y) < 480 / z,
+      spiritOnScreen: Math.abs(f.body.x - f.cam.x) < 270 / z && Math.abs(f.body.y - f.cam.y) < 480 / z,
+      reach: Math.hypot(end.x - f.body.x, end.y - f.body.y) };
+    f.Aim.on = false; f.Aim.power = 0;
+    return out;
+  }
+  {
+    // Whatever is aimed, the player must still be able to see their character
+    // and the zoom must stay inside its tuned range.
+    for (const p of [0, 0.3, 0.6, 1]) {
+      for (const deg of [-135, -90, -45, 0]) {
+        const r = holdAim(deg * Math.PI / 180, p);
+        assert(r.spiritOnScreen,
+          `The camera must never lead so far that the spirit leaves the screen (p${p} ${deg}deg)`);
+        assert(r.z <= 1 + 1e-9 && r.z >= MOVE.zoomAim - 1e-9,
+          'Aim zoom stays inside its tuned range');
+      }
+    }
+    // And for a leap of the length the levels actually ask for, the predicted
+    // landing has to be framed before the player commits.
+    const mid = holdAim(-45 * Math.PI / 180, 0.35);
+    assert(mid.n > 0, 'A held wind-up produces a trajectory');
+    assert(mid.reach > 250, 'the sample leap should be a real one');
+    assert(mid.endOnScreen,
+      `The camera must frame where a level-scale leap is predicted to end (reach ${mid.reach.toFixed(0)})`);
+  }
+  section('the camera frames the leap and always keeps the spirit in shot');
+
+  /* ---- levels are compact and declare a route ------------------------------- */
+  for (let i = 0; i < f.LEVELS.length; i++) {
+    const L = f.LEVELS[i];
+    assert(Array.isArray(L.route) && L.route.length >= 2,
+      `Level ${i + 1}: must declare the route it intends`);
+    assert(L.w <= 1500 && L.h <= 1700,
+      `Level ${i + 1}: world is larger than a handcrafted space needs (${L.w}x${L.h})`);
+  }
+  // the first level teaches one thing and introduces nothing else
+  const first = f.LEVELS[0];
+  assert(!first.nodes && !first.springs && !first.beams && !first.spikes,
+    'Level 1 must contain nothing but ground to leap between');
+  section('levels are compact, routed, and level 1 teaches one thing');
 
   /* ---- camera -------------------------------------------------------------- */
   f.go(5);

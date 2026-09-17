@@ -1,5 +1,5 @@
 /* ============================================================
-   WISP — a movement-first spirit traversal game
+   FLUX — a movement-first spirit traversal game
    ------------------------------------------------------------
    The player is a small spirit creature. It cannot walk. It moves
    in directional bursts: hold to wind up, drag to aim, release to
@@ -51,35 +51,55 @@ const MOVE = {
   /* --- body ------------------------------------------------------------- */
   radius:       13,
 
-  /* --- gravity & air ----------------------------------------------------- */
-  gravity:      0.62,   // downward acceleration per step
-  floatBand:    3.4,    // |vy| under this counts as the top of the arc
-  floatScale:   0.56,   // gravity multiplier there — a readable hang time
-  fallMax:      16.5,   // terminal velocity
-  airDrag:      0.9965, // horizontal only; vertical is governed by gravity
+  /* --- gravity & air -----------------------------------------------------
+     Low gravity and a wide float band at the top of the arc. The spirit is
+     meant to hang long enough that you can watch the arc happen and see where
+     it is going, rather than being over before you have read it. */
+  gravity:      0.46,   // downward acceleration per step
+  floatBand:    4.4,    // |vy| under this counts as the top of the arc
+  floatScale:   0.48,   // gravity multiplier there — a long, readable apex
+  fallMax:      14.0,   // terminal velocity
+  airDrag:      0.9975, // horizontal only; vertical is governed by gravity
 
-  /* --- the burst --------------------------------------------------------- */
-  burstMin:     9.5,    // a deliberate hop, never a dribble
-  burstMax:     18.5,   // full-commitment leap
-  burstCurve:   0.34,   // 0 = linear power ramp, 1 = fully quadratic
+  /* --- the burst ---------------------------------------------------------
+     The gap between a weak and a strong leap is deliberately narrow. A short
+     drag still travels somewhere useful, so a sloppy input costs distance, not
+     the run — and a full drag is a longer leap, not a different mechanic. */
+  burstMin:     11.5,   // ~70% of a full leap: never a wasted input
+  burstMax:     16.5,   // full-commitment leap
+  burstCurve:   0.2,    // 0 = linear power ramp, 1 = fully quadratic
   burstTime:    0.075,  // gravity-free snap right after release
-  dragFull:     150,    // drag distance for full power
-  dragDead:     10,     // under this a release is a cancel
+  dragFull:     130,    // drag distance for full power
+  dragDead:     7,      // under this a release is a cancel
 
   /* --- ordinary surfaces: catch, do not bounce --------------------------- */
-  floorDot:     0.62,   // contact normal more vertical than this is a floor
+  floorDot:     0.55,   // contact normal more vertical than this is a floor
   landHard:     9.0,    // impact speed that reads as a heavy landing
-  slideKeep:    0.74,   // slide kept when arriving fast
-  groundDrag:   0.86,   // per step once settled on a floor
+  slideKeep:    0.62,   // slide kept when arriving fast
+  groundDrag:   0.84,   // per step once settled on a floor
   groundStop:   0.30,   // below this the spirit is parked
   ceilingKeep:  0.55,   // glancing a ceiling costs some slide, nothing more
   slop:         0.05,   // separation kept after a contact, to stay quiet
 
-  /* --- wall cling --------------------------------------------------------- */
-  clingTime:    1.30,   // total hold before the wall lets go
-  clingGrip:    0.40,   // seconds of full grip before the slide starts
-  clingSlide:   3.2,    // downward slide speed once grip runs out
-  clingKick:    0.35,   // outward push blended into a burst off a wall
+  /* --- landing assist ------------------------------------------------------
+     A leap that comes down a hair short of a ledge is the most annoying way to
+     fail, because the player did read the situation correctly. While falling
+     near the top of a safe surface the spirit is nudged toward it — a gentle
+     acceleration, well under what the player is already doing, so it reads as
+     the character reaching for the edge and never as a snap. */
+  assistReach:  46,     // how far past the edge the nudge still applies
+  assistBand:   150,    // how far above a surface top the nudge starts
+  assistPull:   0.90,   // sideways acceleration per step while assisting
+  assistMax:    5.0,    // the most sideways speed the nudge may ever add
+
+  /* --- wall cling ----------------------------------------------------------
+     A wall is a safe place to stop and think, not a reaction test. Contact
+     kills all speed, the grip holds with no slide at all for well over a
+     second, and only then does it start to creep. */
+  clingTime:    2.40,   // total hold before the wall lets go
+  clingGrip:    1.50,   // seconds of full grip before the slide starts
+  clingSlide:   2.0,    // downward slide speed once grip runs out
+  clingKick:    0.30,   // outward push blended into a burst off a wall
 
   /* --- forgiveness -------------------------------------------------------- */
   coyote:       0.13,   // aim still works just after leaving a surface
@@ -92,15 +112,32 @@ const MOVE = {
   aimHold:      2.60,   // longest a wind-up may be held before it lapses
 
   /* --- energy nodes -------------------------------------------------------- */
-  nodeReach:    98,     // generous catch radius — this is a mobile target
+  nodeReach:    130,    // generous catch radius — this is a mobile target
   nodePull:     0.30,   // per frame the node draws the spirit toward itself
-  nodeBurst:    17.5,   // release speed at full power
-  nodeMin:      11.0,   // release speed at no power (a node always throws)
+  nodeBurst:    16.5,   // release speed at full power
+  nodeMin:      12.0,   // release speed at no power (a node always throws)
   nodeCool:     2.40,   // seconds before a spent node can be used again
 
   /* --- spirit springs ------------------------------------------------------ */
-  springSpeed:  21.5,   // launch speed along the spring's face
-  springKeep:   0.25,   // sideways motion kept through the throw
+  springSpeed:  19.5,   // launch speed along the spring's face
+  springKeep:   0.18,   // sideways motion kept through the throw
+
+  /* --- camera ---------------------------------------------------------------
+     The view leads rather than follows. While aiming it slides toward where
+     the leap is pointed and eases out, so the destination is on screen before
+     the player commits — the single biggest fairness problem in the game was
+     asking for leaps toward places that could not be seen. */
+  camLead:      430,    // how far a full-power aim pulls the view forward
+  camLeadMin:   190,    // ...and how far the weakest aim does
+  camFollow:    8.0,    // view offset per unit of travel speed
+  camEase:      0.11,   // normal follow smoothing
+  camEaseAim:   0.16,   // slightly quicker while aiming, so it keeps up
+  zoomAim:      0.68,   // furthest the view will pull back to frame a leap
+  zoomFast:     0.88,   // view scale at top travel speed
+  zoomEase:     0.08,
+  camFrame:     165,    // breathing room kept around a framed leap
+  camHold:      0.60,   // the spirit never sits further out than this much
+                        // of the half-view: it stays in frame, in the rear third
 
   /* --- limits & failure ----------------------------------------------------- */
   speedMax:     34,     // hard clamp, for stability only
@@ -612,164 +649,144 @@ function updateDust() {
 
 const LEVELS = [
   {
-    /* 1 — teach the whole verb: wind up, aim, release, land. Nothing to
-       collide with in flight, nothing to kill you but the drop. */
+    /* 1 — one job: learn that you drag the way you want to go.
+
+       Everything here is deliberately unfailable. The ledges are wide and
+       barely apart, so almost any forward drag lands on the next one, and a
+       catch floor runs under the whole level: a bad first input costs a couple
+       of seconds, never a life. */
     name: 'FIRST LIGHT',
-    tip: 'Touch and drag back, then let go to leap.',
-    w: 1560, h: 1100,
+    tip: 'Drag the way you want to go, then let go.',
+    w: 1340, h: 940,
     bg: ['#141a44', '#06091c'], accent: [120, 170, 255],
-    spawn: { x: 150, y: 450 },
-    gate: { x: 1370, y: 170 },
+    spawn: { x: 120, y: 540 },
+    gate: { x: 1150, y: 380 },
     solids: [
-      // Stepping upward as well as across: a flat level wastes a tall camera,
-      // and the whole point of the first minute is to feel the arc. The ledges
-      // sit high in the world so the drop below them reads as a real fall.
-      { x: 210, y: 700, w: 420, h: 420 },      // home ledge, top 490
-      { x: 640, y: 620, w: 260, h: 420 },      // top 410
-      { x: 1010, y: 500, w: 260, h: 420 },     // top 290
-      { x: 1370, y: 390, w: 260, h: 420 },     // top 180
-      { x: -40, y: 400, w: 80, h: 1700 },
-      { x: 1600, y: 400, w: 80, h: 1700 },
+      { x: 670, y: 900, w: 1340, h: 240 },     // catch floor, top 780
+      { x: 200, y: 660, w: 400, h: 160 },      // home ledge, top 580
+      { x: 630, y: 590, w: 340, h: 160 },      // top 510   (gap 60, rise 70)
+      { x: 1150, y: 500, w: 380, h: 160 },     // top 420   (gap 160, rise 90)
+    ],
+    route: [
+      [120, 567, 'ground'], [630, 497, 'ground'], [1150, 407, 'ground'], [0, 0, 'gate'],
     ],
   },
   {
-    /* 2 — teach the wall. The shaft is wider than one leap, so every gain in
-       height comes from touching a wall and going again. */
+    /* 2 — one wall, used once. Floor, wall and the ledge above are all in one
+       composition, and the ledge is out of reach from the floor by a clear
+       margin, so the wall is obviously the answer rather than a trick. */
     name: 'STONE SONG',
-    tip: 'Touch a wall to take hold, then aim again.',
-    w: 720, h: 1760,
+    tip: 'Fly into a wall to take hold of it, then aim again.',
+    w: 760, h: 980,
     bg: ['#102542', '#040a18'], accent: [90, 190, 255],
-    spawn: { x: 150, y: 1500 },
-    gate: { x: 360, y: 358 },
+    spawn: { x: 150, y: 700 },
+    gate: { x: 200, y: 300 },
     solids: [
-      { x: 360, y: 1660, w: 720, h: 200 },     // floor, top 1560
-      { x: -40, y: 860, w: 80, h: 2000 },      // left wall, face x = 0
-      { x: 760, y: 860, w: 80, h: 2000 },      // right wall, face x = 720
-      { x: 108, y: 1360, w: 216, h: 44 },      // top 1338
-      { x: 612, y: 1120, w: 216, h: 44 },      // top 1098
-      { x: 108, y: 878, w: 216, h: 44 },       // top 856
-      { x: 612, y: 636, w: 216, h: 44 },       // top 614
-      { x: 360, y: 420, w: 300, h: 44 },       // top 398
+      { x: 380, y: 900, w: 760, h: 240 },      // floor, top 780
+      { x: 650, y: 520, w: 120, h: 500 },      // the wall: left face at x = 590
+      { x: 200, y: 400, w: 340, h: 70 },       // upper ledge, top 365
     ],
-    motes: [{ x: 612, y: 1058 }],
+    route: [
+      [150, 767, 'ground'], [577, 600, 'cling'], [200, 352, 'ground'], [0, 0, 'gate'],
+    ],
   },
   {
-    /* 3 — teach the node. The first gap is simply too wide to cross, and the
-       two nodes hanging in it are the only way over. */
+    /* 3 — one node. The ledge above is higher than any leap can reach and the
+       node hangs in plain sight between the two, so what it is for cannot be
+       misread. The node sits clear of the ledge overhead: put it underneath
+       and every leap out of it hits the ceiling. */
     name: 'EMBERWAY',
-    tip: 'Airborne, near a glowing node: touch to be caught, then aim.',
-    w: 1860, h: 1120,
+    tip: 'Touch near a glowing node in mid-air: it will catch you.',
+    w: 800, h: 960,
     bg: ['#231640', '#08061c'], accent: [170, 130, 255],
-    spawn: { x: 150, y: 760 },
-    gate: { x: 1740, y: 540 },
+    spawn: { x: 110, y: 640 },
+    gate: { x: 230, y: 155 },
     solids: [
-      { x: 200, y: 900, w: 400, h: 240 },      // top 780
-      { x: 1360, y: 880, w: 400, h: 240 },     // top 760
-      { x: 1740, y: 700, w: 240, h: 240 },     // top 580
-      { x: -40, y: 460, w: 80, h: 1700 },
-      { x: 1900, y: 460, w: 80, h: 1700 },
+      { x: 170, y: 820, w: 340, h: 240 },      // start ledge, top 700
+      { x: 230, y: 270, w: 380, h: 70 },       // destination, top 235
     ],
-    nodes: [{ x: 640, y: 620 }, { x: 1010, y: 540 }],
-    motes: [{ x: 1360, y: 700 }],
-    spikes: [{ x: 780, y: 1090, w: 900, h: 60 }],
+    nodes: [{ x: 590, y: 470 }],
+    route: [
+      [110, 687, 'ground'], [590, 470, 'node'], [230, 222, 'ground'], [0, 0, 'gate'],
+    ],
   },
   {
-    /* 4 — teach the spring. Two of them, one flat and one on its side, so the
-       idea of "it throws you along its face" lands before it is combined. */
+    /* 4 — one spring, tilted so its arrow means something: it throws up and
+       across onto a wide ledge you can see from the ground. The ledge is out
+       of reach from the floor, so the bloom is the only way up, and nothing
+       dangerous is anywhere near the arc. */
     name: 'BLOOMFALL',
-    tip: 'Springs throw you along the way they face.',
-    w: 1160, h: 1780,
+    tip: 'A bloom throws you the way its arrow points.',
+    w: 1150, h: 1080,
     bg: ['#0d2c34', '#040f18'], accent: [90, 220, 190],
-    spawn: { x: 170, y: 1500 },
-    gate: { x: 580, y: 388 },
+    spawn: { x: 130, y: 840 },
+    gate: { x: 830, y: 390 },
     solids: [
-      { x: 580, y: 1680, w: 1160, h: 200 },    // floor, top 1580
-      { x: -40, y: 880, w: 80, h: 2000 },
-      { x: 1200, y: 880, w: 80, h: 2000 },
-      { x: 900, y: 1240, w: 250, h: 44 },      // top 1218
-      { x: 240, y: 940, w: 260, h: 44 },       // top 918
-      { x: 580, y: 450, w: 320, h: 44 },       // top 428
+      { x: 575, y: 1000, w: 1150, h: 240 },    // floor, top 880
+      { x: 830, y: 465, w: 400, h: 70 },       // destination, top 430
     ],
     springs: [
-      { x: 620, y: 1546, w: 170, h: 36 },                 // faces up
-      { x: 1132, y: 700, w: 170, h: 36, a: -90 },         // on the right wall, faces left
+      { x: 330, y: 856, w: 200, h: 44, a: 17 },          // throws up and to the right
     ],
-    nodes: [{ x: 880, y: 640 }],
-    motes: [{ x: 240, y: 880 }],
-    spikes: [{ x: 580, y: 1558, w: 300, h: 44 }],
+    route: [
+      [130, 867, 'ground'], [330, 843, 'spring'], [830, 417, 'ground'], [0, 0, 'gate'],
+    ],
   },
   {
-    /* 5 — the first place all three verbs have to be used together, with
-       something that can actually kill you between them.
-
-       The right-hand pillar is deliberately broken in two: a continuous wall is
-       a ladder, and a ladder makes every node in the level pointless. The gap
-       between the segments is wider than a standing leap can rise, so height
-       up there has to be bought from a spring or a node. */
+    /* 5 — the first real challenge: wall, then node, with a rest ledge and a
+       checkpoint between them so the second half is never retried from the
+       very start. The spikes sit under the opening gap where they can be seen
+       from the spawn, never under anything you are asked to jump to. */
     name: 'THE NARROWS',
-    tip: 'Beams are only dangerous while they are lit.',
-    w: 1500, h: 1600,
+    tip: 'Wall, then node. The mote on the way is a checkpoint.',
+    w: 1000, h: 1180,
     bg: ['#2a1330', '#0a0418'], accent: [220, 120, 220],
-    spawn: { x: 150, y: 1320 },
-    gate: { x: 1360, y: 388 },
+    spawn: { x: 120, y: 900 },
+    gate: { x: 320, y: 255 },
     solids: [
-      { x: 200, y: 1460, w: 400, h: 200 },     // home ledge, top 1360
-      { x: -40, y: 800, w: 80, h: 1900 },      // left wall, face x = 0
-      { x: 1540, y: 1340, w: 80, h: 400 },     // right pillar, lower segment
-      { x: 1540, y: 520, w: 80, h: 400 },      // right pillar, upper segment
-      { x: 700, y: 1220, w: 220, h: 44 },      // top 1198
-      { x: 1180, y: 1330, w: 260, h: 44 },     // spring ledge, top 1308
-      { x: 640, y: 760, w: 260, h: 44 },       // top 738
-      { x: 1360, y: 450, w: 280, h: 44 },      // gate ledge, top 428
+      { x: 160, y: 1070, w: 320, h: 240 },     // start ledge, top 950
+      { x: 640, y: 790, w: 300, h: 70 },       // rest ledge, top 755
+      { x: 890, y: 620, w: 120, h: 520 },      // the wall: left face at x = 830
+      { x: 320, y: 330, w: 480, h: 70 },       // gate ledge, top 295
     ],
-    springs: [
-      { x: 1180, y: 1286, w: 160, h: 36 },                // faces up
-    ],
-    nodes: [{ x: 1180, y: 850 }, { x: 1000, y: 560 }],
-    motes: [{ x: 700, y: 1160 }, { x: 640, y: 700 }],
-    spikes: [{ x: 700, y: 1570, w: 900, h: 60 }],
-    beams: [
-      { x: 900, y: 1090, w: 44, h: 300, pulse: { period: 2.6, phase: 0, duty: 0.38 } },
-      { x: 820, y: 460, w: 44, h: 320, pulse: { period: 2.2, phase: 0.45, duty: 0.4 } },
+    nodes: [{ x: 680, y: 540 }],
+    motes: [{ x: 640, y: 715 }],
+    spikes: [{ x: 620, y: 1150, w: 620, h: 60 }],
+    route: [
+      [120, 937, 'ground'], [640, 742, 'ground'], [817, 600, 'cling'],
+      [680, 540, 'node'], [320, 282, 'ground'], [0, 0, 'gate'],
     ],
   },
   {
-    /* 6 — a real climb. Nothing new is introduced; the level is only asking
-       for the chain, in order: leap, cling, leap, be thrown, be caught,
-       redirect, redirect.
-
-       There are no boundary walls. The tower is a string of islands over a
-       void, and the one pillar in it exists because the second ledge is out of
-       reach from the first without taking hold of something on the way. */
+    /* 6 — the flow level. Nothing new; it asks for the chain, in order: leap,
+       take the wall, leap off it, be thrown by the bloom, be caught by the
+       node, redirect home. The wall is deliberately on the far side of where
+       you are going next, because a hold pushes you off the way it faces —
+       so the wall itself turns you back toward the climb. */
     name: 'SKYWARD',
     tip: 'Leap, cling, be thrown, be caught. Keep the chain going.',
-    w: 1300, h: 2300,
+    w: 1120, h: 1520,
     bg: ['#191646', '#05061a'], accent: [140, 150, 255],
-    spawn: { x: 160, y: 2040 },
-    gate: { x: 560, y: 338 },
+    spawn: { x: 120, y: 1240 },
+    gate: { x: 300, y: 255 },
     solids: [
-      { x: 500, y: 2200, w: 1000, h: 200 },    // floor, top 2100
-      { x: 400, y: 1880, w: 280, h: 44 },      // top 1858
-      // The pillar is to the RIGHT of where you are going next on purpose: you
-      // arrive on its left face, and a hold always pushes you off the way it
-      // faces, so the wall itself turns you back toward the climb.
-      { x: 820, y: 1620, w: 90, h: 440 },      // left face at x = 775
-      { x: 380, y: 1420, w: 340, h: 44 },      // spring ledge, top 1398
-      { x: 980, y: 880, w: 240, h: 44 },       // top 858
-      { x: 560, y: 400, w: 300, h: 44 },       // gate ledge, top 378
+      { x: 180, y: 1400, w: 360, h: 240 },     // start ledge, top 1280
+      { x: 760, y: 1090, w: 120, h: 480 },     // the wall: left face at x = 700
+      { x: 280, y: 930, w: 380, h: 70 },       // bloom ledge, top 895
+      { x: 300, y: 330, w: 400, h: 70 },       // gate ledge, top 295
     ],
     springs: [
-      { x: 380, y: 1376, w: 170, h: 36 },                 // faces up
+      { x: 280, y: 876, w: 200, h: 44, a: 20 },          // throws up and to the right
     ],
-    nodes: [
-      { x: 380, y: 960 }, { x: 760, y: 800 }, { x: 820, y: 560 },
-    ],
-    motes: [{ x: 520, y: 1360 }, { x: 980, y: 820 }],
-    spikes: [{ x: 760, y: 2074, w: 340, h: 52 }],
+    nodes: [{ x: 620, y: 430 }],
+    motes: [{ x: 430, y: 855 }],
+    spikes: [{ x: 700, y: 1490, w: 560, h: 60 }],
     beams: [
-      { x: 600, y: 1760, w: 44, h: 300, pulse: { period: 2.4, phase: 0.2, duty: 0.34 } },
-      { x: 560, y: 1020, w: 44, h: 260, pulse: { period: 2.8, phase: 0.6, duty: 0.32 },
-        motion: { type: 'osc', dx: 200, period: 4.4 } },
+      { x: 520, y: 1180, w: 44, h: 260, pulse: { period: 3.0, phase: 0.25, duty: 0.3 } },
+    ],
+    route: [
+      [120, 1267, 'ground'], [687, 1100, 'cling'], [280, 858, 'ground'],
+      [280, 863, 'spring'], [620, 430, 'node'], [300, 282, 'ground'], [0, 0, 'gate'],
     ],
   },
 ];
@@ -1074,6 +1091,40 @@ function stepBody(s, live) {
 }
 const VOID = { kind: 'void' };
 
+/* ---- landing assist -----------------------------------------------------
+   Coming down a hand's width short of a ledge is the least satisfying way to
+   fail: the player read the situation correctly and the game said no anyway.
+   While falling near the height of a surface top, the spirit is accelerated
+   gently toward the nearest edge it is about to miss.
+
+   It is an acceleration, not a correction: it is small next to the speed the
+   player already has, it only ever acts sideways, and it stops the moment the
+   spirit is over the surface. So it removes near-misses without ever looking
+   like the character was moved for you. */
+function landingAssist(s) {
+  if (s.vy < 1.2) return;                       // only on the way down
+  const foot = s.y + s.r;
+  let bestDir = 0, bestGap = MOVE.assistReach;
+  for (let i = 0; i < world.solids.length; i++) {
+    const e = world.solids[i];
+    if (e.a || e.w < 60) continue;              // flat, standable tops only
+    const top = e.y - e.h / 2;
+    if (foot > top + 12 || foot < top - MOVE.assistBand) continue;
+    const gapL = (e.x - e.w / 2) - s.x;         // >0: surface is to our right
+    const gapR = s.x - (e.x + e.w / 2);         // >0: surface is to our left
+    if (gapL > 0 && gapL < bestGap) { bestGap = gapL; bestDir = 1; }
+    else if (gapR > 0 && gapR < bestGap) { bestGap = gapR; bestDir = -1; }
+  }
+  if (!bestDir) return;
+  // The pull fades in as the gap closes, so it is strongest when the miss is
+  // smallest, and it is capped: the spirit may drift toward the ledge, never
+  // be flung at it. Past the cap the player is already moving that way on
+  // their own and the assist has nothing to add.
+  if (s.vx * bestDir >= MOVE.assistMax) return;
+  const k = 1 - bestGap / MOVE.assistReach;
+  s.vx += bestDir * MOVE.assistPull * k;
+}
+
 /* Gravity, air drag and the speed ceiling. The burst window suspends gravity
    for a few frames so a release reads as a deliberate throw rather than
    something that begins falling the instant it leaves. */
@@ -1092,21 +1143,28 @@ function integrate(s) {
 
 /* --- trajectory preview (the same integrator, nothing simulated twice) --- */
 const probe = { x: 0, y: 0, vx: 0, vy: 0, r: MOVE.radius, burst: 0 };
-const preview = { pts: [], n: 0, land: -1, lx: 0, ly: 0, danger: false, spring: false };
+const preview = {
+  pts: [], n: 0, land: -1, lx: 0, ly: 0,
+  landFloor: false,          // did it end on something you can stand on?
+  danger: false, spring: false,
+};
 
 function predict(x, y, vx, vy, maxDist) {
   probe.x = x; probe.y = y; probe.vx = vx; probe.vy = vy;
   probe.burst = MOVE.burstTime;
-  preview.n = 0; preview.land = -1; preview.danger = false; preview.spring = false;
+  preview.n = 0; preview.land = -1; preview.landFloor = false;
+  preview.danger = false; preview.spring = false;
   let travelled = 0, sinceDot = 1e9;
   for (let i = 0; i < 150; i++) {
     const ox = probe.x, oy = probe.y;
     integrate(probe);
+    landingAssist(probe);          // the guide must include the help the player gets
     const r = stepBody(probe);
     if (r.lethal) { preview.danger = true; pushDot(probe.x, probe.y); break; }
     if (r.spring) { preview.spring = true; pushDot(probe.x, probe.y); break; }
     if (r.floor || r.wall || r.ceil) {
       preview.land = preview.n;
+      preview.landFloor = r.floor || r.wall;   // both are places control returns
       preview.lx = probe.x; preview.ly = probe.y;
       pushDot(probe.x, probe.y);
       break;
@@ -1253,18 +1311,37 @@ const Aim = {
   clear() { this.on = false; this.power = 0; this.held = 0; },
 };
 
+/* Leaving a wall.
+
+   The rule is only ever "you cannot launch into the surface you are holding".
+   A leap aimed away from the wall is left exactly as the player aimed it; one
+   aimed along or into it is given just enough outward speed to clear the face.
+
+   The previous version added a fixed outward shove to every wall leap, which
+   meant a wall could silently fight the direction the player had chosen — the
+   worst kind of unpredictability, because the input looked like it worked. */
+function applyClingKick(ang, sp, out) {
+  const nx = PS.clingSide;                 // +1 = wall on our left, push right
+  let vx = Math.cos(ang) * sp, vy = Math.sin(ang) * sp;
+  const want = MOVE.clingKick * sp;
+  const outward = vx * nx;
+  if (outward < want) vx += nx * (want - outward);
+  out.x = vx; out.y = vy;
+  return out;
+}
+const KICK = { x: 0, y: 0 };
+
 /* The one place a wind-up becomes motion. */
 function doBurst(ang, power) {
   const fromNode = PS.state === 'node' && PS.node;
   const p = burstCurve(clamp(power, 0, 1));
-  let sp = fromNode ? lerp(MOVE.nodeMin, MOVE.nodeBurst, p)
-                    : lerp(MOVE.burstMin, MOVE.burstMax, p);
+  const sp = fromNode ? lerp(MOVE.nodeMin, MOVE.nodeBurst, p)
+                      : lerp(MOVE.burstMin, MOVE.burstMax, p);
   let vx = Math.cos(ang) * sp, vy = Math.sin(ang) * sp;
 
   if (PS.state === 'cling') {
-    // a wall always gives a little push outward, so a burst straight up the
-    // face still clears the surface instead of scraping back into it
-    vx += PS.clingSide * MOVE.burstMax * MOVE.clingKick;
+    const k = applyClingKick(ang, sp, KICK);
+    vx = k.x; vy = k.y;
   }
   body.vx = vx; body.vy = vy;
   body.burst = MOVE.burstTime;
@@ -1319,7 +1396,7 @@ const G = {
 const cam = {
   x: 0, y: 0, shake: 0, sx: 0, sy: 0,
   kx: 0, ky: 0,           // directional impulse from a launch or a slam
-  zoom: 1, zoomT: 1,
+  zoom: 1, zoomT: 1, punch: 0,
   flash: 0, flashCol: [255, 255, 255],
 };
 
@@ -1470,7 +1547,7 @@ function reachGate() {
   const g = world.gate;
   FX.implode(g.x, g.y, 92, 11, HUE.gate.hi, 0.5);
   FX.shock(g.x, g.y, g.r, g.r + 130, 0.7, HUE.gate.rgb, 4);
-  cam.zoomT = 1.05; cam.flash = 0.3; cam.flashCol = HUE.gate.hi;
+  cam.punch = 0.05; cam.flash = 0.3; cam.flashCol = HUE.gate.hi;
   Aim.clear(); clearBuffer();
   Sfx.gate(); Sfx.tensionStop();
   setHint('');
@@ -1508,6 +1585,7 @@ function simStep() {
   // is already held by the ground, a wall or a node whenever it is allowed.
   if (Aim.on) {
     Aim.held += STEP;
+    refreshAimPreview();
     if (PS.state === 'node' && PS.node) {
       body.x = lerp(body.x, PS.node.x, MOVE.nodePull);
       body.y = lerp(body.y, PS.node.y, MOVE.nodePull);
@@ -1543,8 +1621,8 @@ function simStep() {
   cam.kx *= 0.82; cam.ky *= 0.82;
   if (Math.abs(cam.kx) < 0.02) cam.kx = 0;
   if (Math.abs(cam.ky) < 0.02) cam.ky = 0;
-  cam.zoom += (cam.zoomT - cam.zoom) * 0.09;
-  cam.zoomT += (1 - cam.zoomT) * 0.05;
+  cam.punch *= 0.90;
+  if (Math.abs(cam.punch) < 0.002) cam.punch = 0;
   cam.flash *= 0.8;
   if (G.fadeIn > 0) G.fadeIn = Math.max(0, G.fadeIn - STEP);
   if (G.deny > 0) G.deny = Math.max(0, G.deny - STEP * 2.4);
@@ -1615,6 +1693,7 @@ function updateSpirit() {
     }
   } else {
     integrate(body);
+    landingAssist(body);
   }
 
   const r = stepBody(body, true);
@@ -1689,19 +1768,67 @@ function updateSpirit() {
    something you cannot yet see. */
 const CAM_PAD = 95;   // how far past the world edge the view may drift
 
+/* ---- camera -------------------------------------------------------------
+   The camera's job here is fairness. A leap toward something you cannot see is
+   not a challenge, it is a guess, so while the player is aiming the view
+   slides toward where the leap is pointed and eases out — the further the leap
+   would go, the more of the world ahead is shown. Once travelling, the view
+   leads the spirit rather than chasing it, which leaves the screen space in
+   front of the character where the player needs to look. */
 function updateCamera(snap) {
-  let tx = body.x + clamp(body.vx * 7.5, -150, 150);
-  let ty = body.y + clamp(body.vy * 8, -150, 220) - 30;
-  // The bounds are padded rather than hard. Clamping exactly to the world put
-  // the spirit against the very edge of the screen whenever it took hold of a
-  // boundary wall — with its ears, its aim ring and half its guide clipped off,
-  // at precisely the moment the player needs to aim.
-  const hw = VW / 2 - CAM_PAD, hh = VH / 2 - CAM_PAD;
-  tx = world.w <= VW ? world.w / 2 : clamp(tx, hw, world.w - hw);
-  ty = world.h <= VH ? world.h / 2 : clamp(ty, hh, world.h - hh);
-  if (snap) { cam.x = tx; cam.y = ty; return; }
-  cam.x += (tx - cam.x) * 0.10;
-  cam.y += (ty - cam.y) * 0.10;
+  let tx = body.x, ty = body.y;
+  let zoom = 1;
+
+  if (Aim.on && Aim.power > 0.02 && preview.n > 0) {
+    // Frame the leap: the spirit at one end, where it is predicted to end up
+    // at the other, and enough zoom to hold both with room around them. This
+    // is the whole answer to "never ask for a leap toward somewhere you cannot
+    // see" — the view is built from the actual prediction, not from a guess
+    // based on how hard the player is pulling.
+    const e = previewEnd(PVEND);
+    tx = (body.x + e.x) / 2;
+    ty = (body.y + e.y) / 2;
+    const needW = Math.abs(e.x - body.x) / 2 + MOVE.camFrame;
+    const needH = Math.abs(e.y - body.y) / 2 + MOVE.camFrame;
+    zoom = clamp(Math.min(VW / (2 * needW), VH / (2 * needH)), MOVE.zoomAim, 1);
+  } else if (Aim.on && Aim.power > 0.02) {
+    const lead = lerp(MOVE.camLeadMin, MOVE.camLead, Aim.power);
+    tx += Math.cos(Aim.angle) * lead;
+    ty += Math.sin(Aim.angle) * lead;
+    zoom = lerp(1, MOVE.zoomAim, Aim.power);
+  } else {
+    tx += clamp(body.vx * MOVE.camFollow, -200, 200);
+    ty += clamp(body.vy * MOVE.camFollow, -170, 250);
+    const sp = Math.hypot(body.vx, body.vy);
+    zoom = lerp(1, MOVE.zoomFast, clamp(sp / MOVE.burstMax, 0, 1));
+  }
+  ty -= 30;                        // a little more sky than floor
+
+  // However far the view wants to lead, the spirit has to stay comfortably on
+  // screen — it sits in the rear portion of the frame, never off the edge of
+  // it. Leading past this point stops showing the player their character,
+  // which is worse than not showing them the destination.
+  const halfW = VW / (2 * zoom), halfH = VH / (2 * zoom);
+  const maxX = halfW * MOVE.camHold, maxY = halfH * MOVE.camHold;
+  tx = body.x + clamp(tx - body.x, -maxX, maxX);
+  ty = body.y + clamp(ty - body.y, -maxY, maxY);
+
+  // Keep the view inside the world, allowing for the fact that zooming out
+  // shows more of it. The bounds are padded rather than hard: clamping exactly
+  // to the world put the spirit against the very edge of the screen whenever
+  // it took hold of a boundary wall, with its aim ring half cut off.
+  const hw = halfW - CAM_PAD, hh = halfH - CAM_PAD;
+  tx = world.w <= hw * 2 ? world.w / 2 : clamp(tx, hw, world.w - hw);
+  ty = world.h <= hh * 2 ? world.h / 2 : clamp(ty, hh, world.h - hh);
+
+  cam.zoomT = zoom;
+  if (snap) { cam.x = tx; cam.y = ty; cam.zoom = zoom; return; }
+  const ease = Aim.on ? MOVE.camEaseAim : MOVE.camEase;
+  cam.x += (tx - cam.x) * ease;
+  cam.y += (ty - cam.y) * ease;
+  // the zoom eases here rather than in the step, because a held aim skips the
+  // rest of the step entirely and the view still has to keep moving
+  cam.zoom += (cam.zoomT + cam.punch - cam.zoom) * MOVE.zoomEase;
 }
 
 /* ============================================================
@@ -1771,7 +1898,9 @@ function drawBackground(c) {
 function inView(e, pad) {
   pad = pad || 80;
   const reach = (e.br || e.r || 30) + pad;
-  return Math.abs(e.x - cam.x) < VW / 2 + reach && Math.abs(e.y - cam.y) < VH / 2 + reach;
+  // zooming out shows more world, so the cull has to widen with it
+  return Math.abs(e.x - cam.x) < VW / (2 * cam.zoom) + reach &&
+         Math.abs(e.y - cam.y) < VH / (2 * cam.zoom) + reach;
 }
 
 /* ---- ordinary surface: stone the spirit can rest on ---------------------
@@ -1783,8 +1912,9 @@ function drawSolid(c, e) {
   let hw = e.w / 2, hh = e.h / 2;
   let ox = 0, oy = 0, topReal = true;
   if (!e.a && (e.w > VW || e.h > VH)) {
-    const x0 = Math.max(e.x - hw, cam.x - VW), x1 = Math.min(e.x + hw, cam.x + VW);
-    const y0 = Math.max(e.y - hh, cam.y - VH), y1 = Math.min(e.y + hh, cam.y + VH);
+    const vw = VW / cam.zoom, vh = VH / cam.zoom;
+    const x0 = Math.max(e.x - hw, cam.x - vw), x1 = Math.min(e.x + hw, cam.x + vw);
+    const y0 = Math.max(e.y - hh, cam.y - vh), y1 = Math.min(e.y + hh, cam.y + vh);
     if (x1 <= x0 || y1 <= y0) return;
     topReal = y0 <= e.y - hh + 0.5;
     ox = (x0 + x1) / 2 - e.x; oy = (y0 + y1) / 2 - e.y;
@@ -1873,13 +2003,27 @@ function drawSpring(c, s) {
     c.quadraticCurveTo(x + lean * 0.5, -hh - 10 - open * 16, x + lean, -hh - 16 - open * 26);
     c.stroke();
   }
+  // A stream of motes drifting along the launch direction. The arrow says
+  // which way; this says it again, continuously, without the player having to
+  // read anything — the direction is legible from across the level.
+  const flow = (Vis.pulse * 0.55 + s.seed) % 1;
+  for (let i = 0; i < 4; i++) {
+    const u = (flow + i / 4) % 1;
+    const d = -hh - 8 - u * 92;
+    const fade = Math.sin(u * Math.PI);
+    c.fillStyle = rgba(col.hi, 0.5 * fade * (0.5 + fire * 0.5));
+    c.beginPath();
+    c.arc((i % 2 ? 1 : -1) * 14 * (1 - u * 0.6), d, 2.6 * (1 - u * 0.4), 0, TAU);
+    c.fill();
+  }
+
   // the arrow: this is the promise the object makes
-  c.strokeStyle = rgba(col.hi, 0.5 + fire * 0.5);
+  c.strokeStyle = rgba(col.hi, 0.55 + fire * 0.45);
   c.lineWidth = 3;
   const tip = -hh - 34 - open * 16;
   c.beginPath();
-  c.moveTo(0, tip + 16); c.lineTo(0, tip);
-  c.moveTo(-7, tip + 8); c.lineTo(0, tip); c.lineTo(7, tip + 8);
+  c.moveTo(0, tip + 20); c.lineTo(0, tip);
+  c.moveTo(-8, tip + 9); c.lineTo(0, tip); c.lineTo(8, tip + 9);
   c.stroke();
   c.globalCompositeOperation = 'source-over';
   c.restore();
@@ -2262,31 +2406,56 @@ function drawSpirit(c) {
   c.restore();
 }
 
-/* ---- the wind-up guide -------------------------------------------------- */
+/* ---- the wind-up guide --------------------------------------------------
+   The preview is refreshed by the simulation rather than by the renderer,
+   because the camera needs it too: what the view has to frame is not "some
+   distance along the aim" but the place this leap actually ends up. */
 let lastPvx = NaN, lastPvy = NaN, lastPvf = -99;
+
+/* The velocity the current wind-up would produce, wall rules included. */
+function aimVelocity(out) {
+  const fromNode = PS.state === 'node';
+  const pc = burstCurve(Aim.power);
+  const sp = fromNode ? lerp(MOVE.nodeMin, MOVE.nodeBurst, pc)
+                      : lerp(MOVE.burstMin, MOVE.burstMax, pc);
+  if (PS.state === 'cling') return applyClingKick(Aim.angle, sp, out);
+  out.x = Math.cos(Aim.angle) * sp;
+  out.y = Math.sin(Aim.angle) * sp;
+  return out;
+}
+const AIMV = { x: 0, y: 0 };
+
+function refreshAimPreview() {
+  if (!Aim.on || Aim.power <= 0.02) { preview.n = 0; return; }
+  const v = aimVelocity(AIMV);
+  const moving = world.movers.length || world.beams.length;
+  if (v.x !== lastPvx || v.y !== lastPvy || (moving && frameCount - lastPvf > 3)) {
+    lastPvx = v.x; lastPvy = v.y; lastPvf = frameCount;
+    // Long enough to reach the end of most arcs. In a gravity game the arc IS
+    // the information — hiding where you come down turns aiming into guesswork
+    // — so the guide runs to the landing and fades out rather than being cut
+    // short. It still stops at the first thing it meets, never the whole route.
+    predict(body.x, body.y, v.x, v.y, lerp(520, 1000, Aim.power));
+  }
+}
+
+/* Where this leap is expected to end, for the camera to frame. */
+function previewEnd(out) {
+  if (preview.n > 0) {
+    const q = preview.pts[preview.n - 1];
+    out.x = q.x; out.y = q.y;
+  } else { out.x = body.x; out.y = body.y; }
+  return out;
+}
+const PVEND = { x: 0, y: 0 };
 
 function drawAim(c) {
   if (!Aim.on || Aim.power <= 0.02) return;
   const fromNode = PS.state === 'node';
   const col = fromNode ? HUE.node : HUE.spirit;
   const a = Aim.angle, p = Aim.power;
-
-  const pc = burstCurve(p);
-  const sp = fromNode ? lerp(MOVE.nodeMin, MOVE.nodeBurst, pc)
-                      : lerp(MOVE.burstMin, MOVE.burstMax, pc);
-  let vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
-  if (PS.state === 'cling') vx += PS.clingSide * MOVE.burstMax * MOVE.clingKick;
-
-  const moving = world.movers.length || world.beams.length;
-  if (vx !== lastPvx || vy !== lastPvy || (moving && frameCount - lastPvf > 3)) {
-    lastPvx = vx; lastPvy = vy; lastPvf = frameCount;
-    // Long enough to reach the end of most arcs. In a gravity game the arc IS
-    // the information — hiding where you come down turns aiming into guesswork
-    // — so the guide runs to the landing and fades out rather than being cut
-    // short. It still stops at the first thing it meets, never the whole route.
-    predict(body.x, body.y, vx, vy, lerp(460, 960, p));
-  }
   const pv = preview;
+  if (!pv.n) return;
 
   c.globalCompositeOperation = 'lighter';
   for (let i = 0; i < pv.n; i++) {
@@ -2297,36 +2466,56 @@ function drawAim(c) {
     c.beginPath(); c.arc(q.x, q.y, lerp(4.2, 1.5, u), 0, TAU); c.fill();
   }
 
-  // where it ends: a ring you can land on, or a warning you cannot
+  /* Where it ends. This is the whole point of the guide: the player must be
+     able to answer "if I let go now, where do I come down?" without having to
+     try it. A safe arrival gets a landing ring with a small pad marked under
+     it; a lethal one gets a cross; a spring gets the spring's own colour so it
+     reads as "you will be thrown from here", not "you will stop here". */
   if (pv.n > 0) {
     const q = pv.pts[pv.n - 1];
+    const bl = 0.6 + 0.4 * Math.sin(Vis.pulse * 5);
     if (pv.danger) {
-      const bl = 0.55 + 0.45 * Math.sin(Vis.pulse * 12);
-      c.strokeStyle = rgba(DANGER, 0.5 + bl * 0.4);
-      c.lineWidth = 2;
-      c.beginPath(); c.arc(q.x, q.y, 9, 0, TAU); c.stroke();
+      c.strokeStyle = rgba(DANGER, 0.55 + bl * 0.4);
+      c.lineWidth = 2.4;
+      c.beginPath(); c.arc(q.x, q.y, 11, 0, TAU); c.stroke();
       c.beginPath();
-      c.moveTo(q.x - 4, q.y - 4); c.lineTo(q.x + 4, q.y + 4);
-      c.moveTo(q.x + 4, q.y - 4); c.lineTo(q.x - 4, q.y + 4);
+      c.moveTo(q.x - 5, q.y - 5); c.lineTo(q.x + 5, q.y + 5);
+      c.moveTo(q.x + 5, q.y - 5); c.lineTo(q.x - 5, q.y + 5);
       c.stroke();
-    } else if (pv.land >= 0 || pv.spring) {
-      c.strokeStyle = rgba(pv.spring ? HUE.spring.hi : col.hi, 0.55);
-      c.lineWidth = 2;
-      c.beginPath(); c.arc(q.x, q.y, 8, 0, TAU); c.stroke();
+    } else if (pv.spring) {
+      c.strokeStyle = rgba(HUE.spring.hi, 0.5 + bl * 0.3);
+      c.lineWidth = 2.4;
+      c.beginPath(); c.arc(q.x, q.y, 12, 0, TAU); c.stroke();
+    } else if (pv.land >= 0) {
+      const safe = pv.landFloor;
+      const lc = safe ? HUE.spirit.hi : [200, 220, 255];
+      c.strokeStyle = rgba(lc, 0.45 + bl * 0.3);
+      c.lineWidth = 2.4;
+      c.beginPath(); c.arc(q.x, q.y, 11, 0, TAU); c.stroke();
+      if (safe) {
+        // a flat pad under the ring: "this is a surface you can stand on"
+        c.strokeStyle = rgba(lc, 0.5);
+        c.lineWidth = 2.6;
+        c.beginPath();
+        c.moveTo(q.x - 15, q.y + body.r + 1); c.lineTo(q.x + 15, q.y + body.r + 1);
+        c.stroke();
+      }
     }
   }
 
-  // the wind-up band, drawn from the pull point back to the creature
+  // The aim band points the way you are going, toward the finger. Direct
+  // aiming means the line and the leap are the same direction — there is
+  // nothing to reverse in your head.
   const R = body.r + 14 + p * 8;
-  const hx = body.x - Math.cos(a) * (R + p * 40);
-  const hy = body.y - Math.sin(a) * (R + p * 40);
-  const g = c.createLinearGradient(hx, hy, body.x, body.y);
-  g.addColorStop(0, rgba(col.rgb, 0));
-  g.addColorStop(1, rgba(col.hi, 0.5));
+  const hx = body.x + Math.cos(a) * (R + p * 46);
+  const hy = body.y + Math.sin(a) * (R + p * 46);
+  const g = c.createLinearGradient(body.x, body.y, hx, hy);
+  g.addColorStop(0, rgba(col.hi, 0.55));
+  g.addColorStop(1, rgba(col.rgb, 0.05));
   c.strokeStyle = g;
-  c.lineWidth = lerp(1.6, 4.5, p);
+  c.lineWidth = lerp(2, 5, p);
   c.lineCap = 'round';
-  c.beginPath(); c.moveTo(hx, hy); c.lineTo(body.x, body.y); c.stroke();
+  c.beginPath(); c.moveTo(body.x, body.y); c.lineTo(hx, hy); c.stroke();
 
   c.strokeStyle = rgba(col.rgb, 0.2);
   c.lineWidth = 2.4;
@@ -2535,12 +2724,18 @@ let pointerId = null;
 const buffered = { on: false, t: 0, id: null };
 function clearBuffer() { buffered.on = false; buffered.id = null; }
 
+/* Direct aiming: you drag TOWARD where you want to go, and that is where the
+   spirit goes. Dragging up-right leaps up-right. The distance sets the power.
+
+   The previous build pulled backwards like a slingshot, which needs explaining
+   before anyone can use it and puts your finger on the wrong side of the
+   screen — you end up covering the ground you are trying to read. */
 function updateDrag(px, py) {
-  let dx = Aim.anchorX - px, dy = Aim.anchorY - py;
+  const dx = px - Aim.anchorX, dy = py - Aim.anchorY;
   const d = Math.hypot(dx, dy);
   const cl = Math.min(d, MOVE.dragFull);
   Aim.power = d < MOVE.dragDead ? 0 : clamp((cl - MOVE.dragDead) / (MOVE.dragFull - MOVE.dragDead), 0, 1);
-  if (d > 0.001) Aim.angle = Math.atan2(dy, dx);   // leap away from the pull
+  if (d > MOVE.dragDead) Aim.angle = Math.atan2(dy, dx);   // leap the way you dragged
   Sfx.tensionUpdate(Aim.power);
 }
 
@@ -2570,7 +2765,7 @@ function grabNode(n, px, py, id) {
   body.vx = 0; body.vy = 0; body.burst = 0;
   FX.shock(n.x, n.y, n.r * 2.2, n.r * 0.8, 0.3, HUE.node.rgb, 2);
   FX.spark(n.x, n.y, 0, Math.PI, 1.8, 6, HUE.node.hi, { life: 0.4, size: 2, drag: 0.9 });
-  cam.zoomT = 1.035;
+  cam.punch = 0.035;
   Sfx.nodeCatch();
   beginAim(px, py, px, py, id);
 }
@@ -2589,11 +2784,11 @@ function onDown(e) {
   const p = toWorld(e);
 
   if (canAim()) {
-    // A press close to the creature pulls from the creature, so an off-centre
-    // tap cannot spawn instant power; a press further away pulls from the
-    // finger, which is what lets the drag start anywhere on a phone.
-    const near = Math.hypot(p.x - body.x, p.y - body.y) < 120;
-    beginAim(near ? body.x : p.x, near ? body.y : p.y, p.x, p.y, e.pointerId);
+    // The drag is always measured from wherever the finger landed, never from
+    // the creature. That way a press starts at zero power no matter where on
+    // the screen it happened, and "drag the way you want to go" means exactly
+    // that — the gesture is the same whether you touched the spirit or not.
+    beginAim(p.x, p.y, p.x, p.y, e.pointerId);
     e.preventDefault();
     return;
   }
@@ -2642,7 +2837,6 @@ function onUp(e) {
   Aim.on = false;
   pointerId = null;
   Sfx.tensionStop();
-  cam.zoomT = 1;
   if (p > 0.02 && ok) doBurst(a, p);
   else if (PS.state === 'node') { PS.node.cool = 0.5; PS.node = null; PS.set('air'); }
   Aim.power = 0;
@@ -2655,7 +2849,6 @@ function cancelAim() {
   pointerId = null;
   clearBuffer();
   lastPvx = NaN;
-  cam.zoomT = 1;
   Sfx.tensionStop();
 }
 
@@ -2676,7 +2869,7 @@ function applyMute(v) {
   Sfx.setMuted(v);
   dom.sound.classList.toggle('muted', v);
   dom.sound.setAttribute('aria-pressed', String(!v));
-  try { localStorage.setItem('wisp.muted', v ? '1' : '0'); } catch (err) {}
+  try { localStorage.setItem('flux.muted', v ? '1' : '0'); } catch (err) {}
 }
 dom.sound.addEventListener('click', (e) => {
   e.stopPropagation(); Sfx.unlock(); applyMute(!muted); if (!muted) Sfx.ui();
@@ -2685,9 +2878,9 @@ dom.endRestart.addEventListener('click', () => { Sfx.unlock(); Sfx.ui(); restart
 
 const DEV = (() => {
   try {
-    if (/[?&]dev=1/.test(location.search)) { localStorage.setItem('wisp.dev', '1'); return true; }
-    if (/[?&]dev=0/.test(location.search)) { localStorage.removeItem('wisp.dev'); return false; }
-    return localStorage.getItem('wisp.dev') === '1';
+    if (/[?&]dev=1/.test(location.search)) { localStorage.setItem('flux.dev', '1'); return true; }
+    if (/[?&]dev=0/.test(location.search)) { localStorage.removeItem('flux.dev'); return false; }
+    return localStorage.getItem('flux.dev') === '1';
   } catch (err) { return /[?&]dev=1/.test(location.search); }
 })();
 
@@ -2772,7 +2965,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { fit(); frameId = requestAnimationFrame(frame); }
 });
 
-try { if (localStorage.getItem('wisp.muted') === '1') applyMute(true); } catch (err) {}
+try { if (localStorage.getItem('flux.muted') === '1') applyMute(true); } catch (err) {}
 if (DEV) { fpsOn = true; dom.fps.classList.remove('hidden'); }
 
 startLevel(0);
@@ -2780,7 +2973,7 @@ fit();
 frameId = requestAnimationFrame(frame);
 
 /* ---- debug / automation surface ---- */
-window.WISP = {
+window.FLUX = {
   G, body, PS, Vis, Aim, world, LEVELS, MOVE, Q, Player, cam,
   go: (i) => startLevel(clamp(i | 0, 0, LEVELS.length - 1)),
   burst: (ang, power) => { if (canAim()) doBurst(ang, clamp(power, 0, 1)); },
@@ -2797,6 +2990,6 @@ window.WISP = {
     return { frameMs: +ms.toFixed(3), budgetPct: +(ms / 16.67 * 100).toFixed(1) };
   },
 };
-window.FLUX = window.WISP;     // the old console name still works
+
 
 })();

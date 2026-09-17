@@ -32,13 +32,13 @@ function boot() {
   };
   vm.createContext(sandbox);
   const source = readFileSync(require.resolve('../game.js'), 'utf8').replace(
-    'window.WISP = {',
+    'window.FLUX = {',
     'window.TEST = { frame, fit, predict, cancelAim, circleVsBox, killSpirit, respawn, ' +
     'restartLevel, placeSpirit, updateCamera, stepBody, integrate, nodeInReach, grabNode, ' +
-    'canAim, buffered, RES, beamLevel, doBurst, burstCurve, buildWorld }; window.WISP = {');
+    'canAim, buffered, RES, beamLevel, doBurst, burstCurve, buildWorld, refreshAimPreview, preview }; window.FLUX = {');
   vm.runInContext(source, sandbox);
   return {
-    ...window.WISP,
+    ...window.FLUX,
     internals: window.TEST,
     events, document, canvas: nodes.get('game'),
     resize: (width, height) => { rect = { ...rect, width, height }; window.TEST.fit(); },
