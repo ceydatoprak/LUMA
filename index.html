@@ -5,23 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#05060f" />
 <meta name="color-scheme" content="dark" />
-<meta name="description" content="FLUX — a neon physics puzzle prototype. Drag, aim, release." />
+<meta name="description" content="WISP — guide a small spirit through the ruins with directional leaps, wall holds and energy nodes." />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
-<title>FLUX</title>
+<title>WISP</title>
 <link rel="stylesheet" href="style.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><radialGradient id='g'><stop offset='0' stop-color='%23ffffff'/><stop offset='.45' stop-color='%23b07cff'/><stop offset='1' stop-color='%234a1d9e'/></radialGradient></defs><rect width='32' height='32' rx='8' fill='%23090c1c'/><circle cx='16' cy='16' r='9' fill='url(%23g)'/><circle cx='16' cy='16' r='12' fill='none' stroke='%232ee6ff' stroke-opacity='.55' stroke-width='1.2'/></svg>" />
 </head>
 <body>
   <div id="app">
     <div class="deskmark" aria-hidden="true">
-      <span class="dm-name">FLUX</span>
-      <span class="dm-sub">Physics puzzle · vertical slice</span>
-      <span class="dm-keys">Near a gold spark · hold · aim forward · release</span>
+      <span class="dm-name">WISP</span>
+      <span class="dm-sub">Spirit traversal · vertical slice</span>
+      <span class="dm-keys">Hold · drag back · release to leap · R restarts</span>
     </div>
 
     <div id="stage">
-      <canvas id="game" width="540" height="960" aria-label="FLUX playfield"></canvas>
+      <canvas id="game" width="540" height="960" aria-label="WISP playfield"></canvas>
 
       <div id="ui">
         <header id="hud">
@@ -30,13 +30,13 @@
               <span class="hud-key">LEVEL</span>
               <span id="levelNum">01</span>
               <span class="hud-sep">/</span>
-              <span class="hud-tot">10</span>
+              <span class="hud-tot">6</span>
               <span id="levelName">SPECTRUM</span>
             </div>
             <div id="progress"><i id="progressFill"></i></div>
           </div>
           <div class="hud-side">
-            <div id="shots" title="Launches used">
+            <div id="shots" title="Leaps taken">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20 L20 4 M20 4 h-6 M20 4 v6"/></svg>
               <span id="shotCount">0</span>
             </div>
@@ -82,10 +82,10 @@
             <span class="spark s2"></span>
             <span class="spark s3"></span>
           </div>
-          <h1>FLUX</h1>
+          <h1>WISP</h1>
           <p class="end-sub">Prototype Complete</p>
           <div class="end-stats">
-            <div><span id="endShots">0</span><em>launches</em></div>
+            <div><span id="endShots">0</span><em>leaps</em></div>
             <div><span id="endTime">0:00</span><em>runtime</em></div>
           </div>
           <button id="endRestart" type="button">Replay</button>

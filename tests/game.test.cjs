@@ -1,405 +1,472 @@
-// Real game physics in a minimal DOM/canvas shell; no browser dependencies.
-const { readFileSync } = require('node:fs');
-const vm = require('node:vm');
+// Behaviour tests for WISP. Everything runs the real simulation through the
+// same entry points the player uses, so a pass here means the game works, not
+// that the code merely parses.
+//
+//   node tests/game.test.cjs
 const assert = require('node:assert/strict');
+const { boot } = require('./harness.cjs');
 
-function boot() {
-  const events = {}, nodes = new Map();
-  let rect = { left: 0, top: 0, width: 540, height: 960 };
-  const noop = () => {};
-  const gradient = { addColorStop: noop };
-  const context = new Proxy({}, { get: (o, k) => o[k] ?? (k.startsWith('create') ? () => gradient : noop) });
-  const node = () => ({ width: 540, height: 960, style: {}, classList: { add: noop, remove: noop, toggle: noop },
-    getContext: () => context, getBoundingClientRect: () => rect, setAttribute: noop, contains: () => false,
-    addEventListener: (key, fn) => { events[key] = fn; } });
-  const document = { hidden: false, getElementById: id => {
-    if (!nodes.has(id)) nodes.set(id, node());
-    return nodes.get(id);
-  }, querySelector: () => node(), createElement: node, addEventListener: (k, f) => { events[k] = f; } };
-  const window = { devicePixelRatio: 3, addEventListener: (k, f) => { events[k] = f; } };
-  const sandbox = { window, document, location: { search: '' },
-    localStorage: { getItem: () => null, setItem: noop }, performance, setTimeout: noop,
-    requestAnimationFrame: () => 1, cancelAnimationFrame: noop, console };
-  vm.createContext(sandbox);
-  const source = readFileSync(require.resolve('../game.js'), 'utf8').replace('window.FLUX = {',
-    'window.TEST = { BASH, updateBashProjectiles, frame, fit, predict, checkTriggers, cancelAim, circleVsBox, resetOrb, restartLevel, cam, getPaintTime: () => lastPaint, setPaintTime: t => { lastPaint = t; } }; window.FLUX = {');
-  vm.runInContext(source, sandbox);
-  return { ...window.FLUX, internals: window.TEST, events, document, canvas: nodes.get('game'),
-    resize: (width, height) => { rect = { ...rect, width, height }; window.TEST.fit(); } };
-}
+const pass = [];
+function section(name) { pass.push(name); }
 
 if (require.main === module) {
   const f = boot();
+  const T = f.internals;
+  const { MOVE } = f;
+  const speed = () => Math.hypot(f.body.vx, f.body.vy);
+
+  /* ---- levels are sane and survivable on arrival --------------------- */
   for (let i = 0; i < f.LEVELS.length; i++) {
     f.go(i);
+    const L = f.LEVELS[i];
     for (const e of f.world.solids) {
-      const overlaps = e.round ? Math.hypot(f.orb.x - e.x, f.orb.y - e.y) < f.orb.r + e.r :
-        f.internals.circleVsBox(f.orb.x, f.orb.y, f.orb.r, e);
-      assert(!overlaps,
-        `Level ${i + 1}: spawn intersects ${e.kind}`);
+      assert(!T.circleVsBox(f.body.x, f.body.y, f.body.r, e),
+        `Level ${i + 1}: spawn is inside a surface`);
     }
-    f.tick(60);
-    assert.equal(f.G.phase, 'play', `Level ${i + 1}: unsafe idle spawn`);
-    assert(Number.isFinite(f.orb.x) && Number.isFinite(f.orb.y));
+    assert(L.w > 0 && L.h > 0, `Level ${i + 1}: needs a world size`);
+    assert(f.world.gate, `Level ${i + 1}: needs a gate`);
+    f.tick(180);
+    assert.equal(f.G.phase, 'play', `Level ${i + 1}: spawn is not survivable`);
+    assert(Number.isFinite(f.body.x) && Number.isFinite(f.body.y),
+      `Level ${i + 1}: simulation produced a non-finite position`);
+    assert(f.aimable(), `Level ${i + 1}: the spirit never regains control at spawn`);
+
+    // Every checkpoint has to be a place you can actually restart from. A mote
+    // above a spring, for instance, turns each respawn into a trampoline and
+    // the player never gets control back.
+    for (let m = 0; m < f.world.motes.length; m++) {
+      f.go(i);
+      const mote = f.world.motes[m];
+      f.G.spawnX = mote.x; f.G.spawnY = mote.y - 26;
+      f.internals.respawn();
+      let ok = false;
+      for (let s = 0; s < 260; s++) {
+        f.tick(1);
+        if (f.G.phase !== 'play') break;
+        if (f.aimable()) { ok = true; break; }
+      }
+      assert(ok, `Level ${i + 1} mote ${m + 1}: respawning there never returns control`);
+      assert.notEqual(f.PS.state, 'hurt', `Level ${i + 1} mote ${m + 1}: respawning there is fatal`);
+    }
   }
+  section('six levels spawn safe, and every checkpoint is a usable restart');
+
+  /* ---- an open-field arena, for measuring movement on its own --------- */
+  function arena(extra) {
+    f.go(0);
+    for (const k of ['solids', 'springs', 'nodes', 'motes', 'lethal', 'beams', 'movers']) {
+      f.world[k].length = 0;
+    }
+    f.world.w = 40000; f.world.h = 40000;
+    f.world.gate.x = -99999; f.world.gate.y = -99999;
+    for (const e of (extra || [])) f.world[e.list].push(box(e));
+  }
+  function box(o) {
+    const e = { kind: o.kind || 'solid', x: o.x, y: o.y, w: o.w, h: o.h,
+      a: (o.a || 0) * Math.PI / 180, vx: 0, vy: 0, av: 0, gfx: {}, seed: 0, fire: 0 };
+    e.ca = Math.cos(e.a); e.sa = Math.sin(e.a);
+    e.br = Math.hypot(o.w, o.h) / 2;
+    return e;
+  }
+  function drop(x, y, vx, vy, steps) {
+    f.internals.placeSpirit(x, y);
+    f.PS.state = 'air'; f.PS.t = 1;
+    f.body.vx = vx; f.body.vy = vy; f.body.burst = 0;
+    for (let i = 0; i < steps; i++) { f.tick(1); if (f.G.phase !== 'play') break; }
+  }
+  function standAt(x, y) {
+    f.internals.placeSpirit(x, y);
+    f.PS.state = 'ground'; f.PS.t = 1; f.PS.coyote = 1;
+  }
+
+  /* ---- the burst ------------------------------------------------------ */
+  arena();
+  standAt(1000, 1000);
+  f.burst(-Math.PI / 2, 0);
+  assert.equal(+speed().toFixed(6), MOVE.burstMin, 'A zero-power leap uses the tuned floor speed');
+  standAt(1000, 1000);
+  f.burst(-Math.PI / 2, 1);
+  assert.equal(+speed().toFixed(6), MOVE.burstMax, 'A full leap uses the tuned ceiling speed');
+  let prev = -1;
+  for (const p of [0, 0.25, 0.5, 0.75, 1]) {
+    standAt(1000, 1000);
+    f.burst(-Math.PI / 2, p);
+    assert(speed() > prev, 'Leap speed must rise with power');
+    prev = speed();
+  }
+  assert(MOVE.burstMax < MOVE.speedMax, 'A leap must leave headroom under the clamp');
+  section('leap power band is monotonic and clamped');
+
+  /* ---- gravity: what goes up comes back down, in an arc --------------- */
+  arena();
+  standAt(1000, 1000);
+  f.burst(-Math.PI / 2, 1);
+  let apex = 1000, air = 0;
+  for (let i = 0; i < 400; i++) {
+    f.tick(1); air += 1 / 60;
+    apex = Math.min(apex, f.body.y);
+    if (f.body.y > 1000 && i > 20) break;
+  }
+  const rise = 1000 - apex;
+  assert(rise > 250 && rise < 450, `A full leap should rise a readable amount (got ${rise.toFixed(0)})`);
+  assert(air > 0.9 && air < 2.0, `A full leap should hang for about a second (got ${air.toFixed(2)}s)`);
+  // and it must actually come down
+  assert(f.body.y > 1000, 'Gravity must bring the spirit back');
+  // terminal velocity holds
+  drop(1000, 0, 0, 0, 600);
+  assert(f.body.vy <= MOVE.fallMax + 1e-9, 'Falling is capped at terminal velocity');
+  section('gravity produces a readable arc and a capped fall');
+
+  /* ---- ordinary surfaces catch, they do not bounce -------------------- */
+  arena([{ list: 'solids', x: 1000, y: 1400, w: 900, h: 80 }]);
+  drop(1000, 600, 0, 0, 240);
+  assert.equal(f.PS.state, 'ground', 'A fall onto a floor ends grounded');
+  assert.equal(f.body.vy <= 1, true, 'A floor must not throw the spirit back up');
+  assert(f.body.y > 1300 && f.body.y < 1360, 'The spirit rests on the surface it landed on');
+  // it must never rebound, however hard it arrives
+  let maxRebound = 0;
+  for (const v of [6, 14, 20, MOVE.fallMax]) {
+    arena([{ list: 'solids', x: 1000, y: 1400, w: 900, h: 80 }]);
+    drop(1000, 1000, 0, v, 6);
+    for (let i = 0; i < 60; i++) { f.tick(1); maxRebound = Math.min(maxRebound, f.body.vy); }
+  }
+  assert(maxRebound > -1.2, `No ordinary surface may bounce the spirit (worst rebound ${maxRebound.toFixed(2)})`);
+  // arriving sideways keeps some slide, then settles
+  arena([{ list: 'solids', x: 1000, y: 1400, w: 1400, h: 80 }]);
+  drop(700, 1300, 12, 4, 4);
+  const slideStart = f.body.x;
+  f.tick(120);
+  assert(f.body.x > slideStart + 12, 'Landing with sideways speed produces a slide');
+  assert.equal(f.body.vx, 0, 'A slide settles to a stop');
+  section('floors catch and slide instead of bouncing');
+
+  /* ---- walls: take hold, then let go ---------------------------------- */
+  arena([{ list: 'solids', x: 1400, y: 1000, w: 80, h: 900 }]);   // face at x = 1360
+  function flyIntoWall() {
+    arena([{ list: 'solids', x: 1400, y: 1000, w: 80, h: 900 }]);
+    drop(1200, 1000, 14, 0, 1);
+    for (let i = 0; i < 90; i++) { f.tick(1); if (f.PS.state === 'cling') return true; }
+    return false;
+  }
+  assert(flyIntoWall(), 'Meeting a wall in flight takes hold of it');
+  assert(f.aimable(), 'A wall hold hands control back immediately');
+  assert.equal(f.PS.clingSide, -1, 'The hold knows which side the wall is on');
+  // full grip first, then a slow readable slide
+  const yGrip = f.body.y;
+  for (let i = 0; i < Math.floor(MOVE.clingGrip * 60) - 2; i++) f.tick(1);
+  assert(Math.abs(f.body.y - yGrip) < 2,
+    `The first part of a hold does not slide (drifted ${(f.body.y - yGrip).toFixed(2)})`);
+  f.tick(24);
+  assert(f.body.y > yGrip + 2, 'A hold slides once the grip runs out');
+  assert(f.body.vy <= MOVE.clingSlide + 0.01, 'The slide is slow enough to read');
+  // and the hold expires rather than lasting forever
+  for (let i = 0; i < 200; i++) { f.tick(1); if (f.PS.state !== 'cling') break; }
+  assert.notEqual(f.PS.state, 'cling', 'A wall hold must expire');
+  // a leap off a wall clears the wall
+  assert(flyIntoWall());
+  f.burst(-Math.PI / 2, 1);                       // straight up, along the face
+  f.tick(20);
+  assert(f.body.x < 1355, 'A leap off a wall pushes clear of it');
+  assert(f.body.y < 1000, 'A leap off a wall still gains height');
+  section('wall holds grip, slide, expire and push off cleanly');
+
+  /* ---- energy nodes ---------------------------------------------------- */
+  arena();
+  f.world.nodes.push({ kind: 'node', x: 1000, y: 700, r: 26, cool: 0, glow: 0, spin: 0,
+    br: 26, gfx: {}, seed: 0, vx: 0, vy: 0, av: 0 });
+  const nd = f.world.nodes[0];
+  drop(1000, 300, 0, 2, 1);                       // fall past it from above
+  let sawReach = false;
+  for (let i = 0; i < 200; i++) { f.tick(1); if (T.nodeInReach()) { sawReach = true; break; } }
+  assert(sawReach, 'Flying past a node puts it in reach');
+  T.grabNode(nd, f.body.x, f.body.y, null);
+  assert.equal(f.PS.state, 'node', 'Taking a node holds the spirit');
+  assert.equal(speed(), 0, 'A node arrests the spirit completely');
+  assert(f.aimable(), 'A held spirit may aim');
+  // the world is frozen while the wind-up is held
+  const frozen = { t: f.G.t, x: f.body.x };
+  f.tick(20);
+  assert.equal(f.G.t, frozen.t, 'A wind-up freezes the world');
+  // and it is drawn into the node while held
+  assert(Math.hypot(f.body.x - nd.x, f.body.y - nd.y) < 4, 'A node draws the spirit in');
+  f.Aim.on = false;
+  f.burst(-Math.PI / 2, 1);
+  assert.equal(+speed().toFixed(6), MOVE.nodeBurst, 'A node releases at its own speed');
+  assert(nd.cool > 0, 'A spent node goes dark');
+  assert.equal(T.nodeInReach(), null, 'A dark node cannot catch you again');
+  for (let i = 0; i < Math.ceil(MOVE.nodeCool * 60) + 2; i++) f.tick(1);
+  assert.equal(nd.cool, 0, 'A node recharges');
+  // no infinite redirects: a node cannot be taken while grounded
+  arena([{ list: 'solids', x: 1000, y: 1400, w: 900, h: 80 }]);
+  f.world.nodes.push({ kind: 'node', x: 1000, y: 1340, r: 26, cool: 0, glow: 0, spin: 0,
+    br: 26, gfx: {}, seed: 0, vx: 0, vy: 0, av: 0 });
+  drop(1000, 1000, 0, 0, 200);
+  assert.equal(f.PS.state, 'ground');
+  assert.equal(T.nodeInReach(), null, 'Nodes only catch a spirit that is airborne');
+  section('nodes catch, freeze, throw, recharge and cannot be spammed');
+
+  /* ---- spirit springs --------------------------------------------------- */
+  arena([{ list: 'solids', x: 1000, y: 1400, w: 900, h: 80 }]);
+  f.world.springs.push(box({ kind: 'spring', x: 1000, y: 1340, w: 170, h: 36 }));
+  drop(1000, 900, 0, 6, 1);
+  let springApex = 9999, fired = false, fireY = 0;
+  for (let i = 0; i < 300; i++) {
+    f.tick(1);
+    if (!fired && f.world.springs[0].fire > 0.9) { fired = true; fireY = f.body.y; }
+    if (fired) springApex = Math.min(springApex, f.body.y);
+    if (fired && f.PS.state === 'ground' && i > 30) break;
+  }
+  assert(fired, 'A spring fires when the spirit reaches it');
+  const lift = fireY - springApex;
+  assert(lift > 300, `A spring throws the spirit far above its face (got ${lift.toFixed(0)})`);
+  assert(lift > 250 + MOVE.burstMax * 8, 'A spring must give more height than a standing leap');
+  // direction follows the spring's face, not the approach
+  arena();
+  f.world.springs.push(box({ kind: 'spring', x: 1400, y: 1000, w: 170, h: 36, a: -90 }));
+  drop(1300, 1000, 12, 0, 12);
+  assert(f.body.vx < -10, 'A sideways spring throws sideways, whatever the approach');
+  assert(Math.abs(f.body.vy) < 6, 'A sideways spring does not throw you upward');
+  section('springs throw along their own face, predictably');
+
+  /* ---- collision stability ---------------------------------------------- */
+  // Neighbouring approaches into a corner must not diverge: a one-unit change
+  // in where you start may only produce about a one-unit change in where you
+  // end up. This is the property that makes a rebound worth aiming.
+  const ex = [], ey = [];
+  for (let d = -2; d <= 2; d++) {
+    arena([{ list: 'solids', x: 1000, y: 1400, w: 900, h: 80 },
+           { list: 'solids', x: 1400, y: 1000, w: 80, h: 900 }]);
+    drop(1000 + d, 1000, 12, 12, 40);
+    ex.push(f.body.x); ey.push(f.body.y);
+  }
+  const spreadX = Math.max(...ex) - Math.min(...ex);
+  const spreadY = Math.max(...ey) - Math.min(...ey);
+  assert(spreadX < 12 && spreadY < 4,
+    `A corner must resolve consistently (4 units of input became ${spreadX.toFixed(1)} x ${spreadY.toFixed(1)})`);
+  // thin geometry must not be tunnelled, even at the clamp
+  for (const v of [MOVE.fallMax, MOVE.speedMax]) {
+    arena([{ list: 'solids', x: 1000, y: 1200, w: 700, h: 14 }]);
+    drop(1000, 600, 0, v, 30);
+    assert(f.body.y < 1200, `${v} units/step tunnelled through thin geometry`);
+  }
+  // a narrow channel must not vibrate
+  arena([{ list: 'solids', x: 968, y: 1000, w: 60, h: 900 },
+         { list: 'solids', x: 1032, y: 1000, w: 60, h: 900 }]);
+  drop(1000, 400, 0.8, 8, 1);
+  let flips = 0, lastVx = f.body.vx;
+  for (let i = 0; i < 200; i++) {
+    f.tick(1);
+    if (f.body.vx * lastVx < 0) flips++;
+    lastVx = f.body.vx;
+  }
+  assert(flips <= 4, `A narrow channel must not make the spirit vibrate (${flips} reversals)`);
+  section('corners are deterministic, thin walls hold, channels stay quiet');
+
+  /* ---- failure and checkpoints ------------------------------------------ */
+  f.go(4);                                  // a level with motes
+  const mote = f.world.motes[0];
+  const start = { x: f.G.spawnX, y: f.G.spawnY };
+  f.internals.placeSpirit(mote.x, mote.y + 4);
+  f.PS.state = 'air'; f.PS.t = 1;                 // past the reform, in flight
+  f.tick(2);
+  assert(mote.got, 'Touching a mote claims it');
+  assert.notEqual(f.G.spawnY, start.y, 'A claimed mote becomes the respawn point');
+  T.killSpirit('hazard');
+  assert.equal(f.PS.state, 'hurt', 'A hazard dissolves the spirit');
+  let respawnSteps = 0;
+  for (let i = 0; i < 200; i++) { f.tick(1); respawnSteps++; if (f.PS.state !== 'hurt') break; }
+  assert(respawnSteps / 60 < 0.5, `Respawn must be fast (took ${(respawnSteps / 60).toFixed(2)}s)`);
+  assert(Math.abs(f.body.x - mote.x) < 2, 'Respawn puts the spirit back at the last mote');
+  for (let i = 0; i < 90; i++) f.tick(1);
+  assert(f.aimable(), 'Control returns shortly after a respawn');
+  // leaving the world in any direction is fatal
+  for (const [dx, dy] of [[0, 9999], [-9999, 0], [9999, 0]]) {
+    f.go(0);
+    f.tick(60);
+    f.body.x = f.LEVELS[0].spawn.x + dx; f.body.y = f.LEVELS[0].spawn.y + dy;
+    f.tick(2);
+    assert.equal(f.PS.state, 'hurt', 'Leaving the world dissolves the spirit');
+  }
+  section('death is fast, checkpoints hold, the void is a boundary');
+
+  /* ---- hazards ----------------------------------------------------------- */
+  f.go(5);                                  // has beams
+  const beam = f.world.beams[0];
+  let litSeen = false, darkSeen = false;
+  for (let i = 0; i < 400; i++) { f.tick(1); if (beam.k > 0.9) litSeen = true; if (beam.k <= 0) darkSeen = true; }
+  assert(litSeen && darkSeen, 'A pulsing beam must actually cycle');
+  f.go(5);
+  const beam2 = f.world.beams[0];             // go() rebuilds: re-fetch it
+  f.tick(30);
+  // park the spirit inside the beam and wait for it to light
+  let killedWhileLit = false, survivedWhileDark = false;
+  for (let i = 0; i < 400; i++) {
+    f.internals.placeSpirit(beam2.x, beam2.y);
+    f.PS.state = 'air'; f.PS.t = 1;
+    f.tick(1);                                // this is the tick that sets k
+    if (f.PS.state === 'hurt') { if (beam2.k > 0.35) killedWhileLit = true; break; }
+    if (beam2.k <= 0) survivedWhileDark = true;
+  }
+  assert(killedWhileLit, 'A lit beam kills');
+  assert(survivedWhileDark, 'A dark beam is safe to stand in');
+  section('beams cycle and kill only while lit');
+
+  /* ---- input: one gesture, mouse and touch identical ---------------------- */
+  const inp = boot();
+  const pt = (x, y, id = 5) => ({ clientX: x, clientY: y, pointerId: id, button: 0,
+    target: inp.canvas, preventDefault() {} });
+  const screen = (wx, wy) => [wx - inp.cam.x + 270, wy - inp.cam.y + 480];
+  inp.go(0);
+  inp.tick(90);
+  assert(inp.aimable(), 'grounded before the input test');
+  let [sx, sy] = screen(inp.body.x, inp.body.y);
+  inp.events.pointerdown(pt(sx, sy));
+  assert.equal(inp.Aim.on, true, 'A touch on the spirit starts a wind-up');
+  assert.equal(inp.Aim.power, 0, 'A centred touch starts at zero power');
+  inp.events.pointermove(pt(sx, sy + 4));
+  inp.events.pointerup(pt(sx, sy + 4));
+  assert.equal(inp.G.bursts, 0, 'A drag inside the dead zone is a cancel');
+  // a full drag downward should leap upward
+  inp.events.pointerdown(pt(sx, sy));
+  inp.events.pointermove(pt(sx, sy + 400));
+  assert.equal(inp.Aim.power, 1, 'Drag power saturates at the tuned distance');
+  inp.events.pointerup(pt(sx, sy + 400));
+  assert.equal(inp.G.bursts, 1, 'A full drag leaps');
+  assert(inp.body.vy < 0, 'Dragging down leaps up');
+  assert.equal(+Math.hypot(inp.body.vx, inp.body.vy).toFixed(6), MOVE.burstMax);
+  // a touch anywhere on the screen still works
+  inp.go(0); inp.tick(90);
+  [sx, sy] = screen(inp.body.x + 230, inp.body.y - 300);
+  inp.events.pointerdown(pt(sx, sy));
+  assert.equal(inp.Aim.on, true, 'A touch far from the spirit still starts a wind-up');
+  inp.events.pointercancel();
+  assert.equal(inp.Aim.on, false, 'A cancelled pointer cancels the wind-up');
+  assert.equal(inp.G.bursts, 0, 'A cancelled wind-up does not leap');
+  // a second finger cannot hijack a wind-up
+  inp.go(0); inp.tick(90);
+  [sx, sy] = screen(inp.body.x, inp.body.y);
+  inp.events.pointerdown(pt(sx, sy, 1));
+  inp.events.pointermove(pt(sx, sy + 300, 1));
+  inp.events.pointerup(pt(sx, sy + 300, 2));
+  assert.equal(inp.Aim.on, true, 'Another finger must not release the wind-up');
+  inp.events.pointerup(pt(sx, sy + 300, 1));
+  assert.equal(inp.Aim.on, false);
+  // a wind-up held forever lapses instead of pausing the game
+  inp.go(0); inp.tick(90);
+  [sx, sy] = screen(inp.body.x, inp.body.y);
+  inp.events.pointerdown(pt(sx, sy));
+  inp.tick(Math.ceil(MOVE.aimHold * 60) + 4);
+  assert.equal(inp.Aim.on, false, 'A wind-up held too long lapses');
+  section('one gesture, identical for mouse and touch, safe against stray fingers');
+
+  /* ---- input forgiveness --------------------------------------------------- */
+  const fg = boot();
+  const pt2 = (x, y, id = 9) => ({ clientX: x, clientY: y, pointerId: id, button: 0,
+    target: fg.canvas, preventDefault() {} });
+  // pressing just before landing is spent on landing, not thrown away
+  fg.go(0); fg.tick(90);
+  fg.burst(-Math.PI / 2, 1);
+  fg.tick(60);
+  assert.equal(fg.state(), 'air');
+  const before = fg.G.bursts;
+  fg.events.pointerdown(pt2(270, 480));
+  assert.equal(fg.Aim.on, false, 'An early press does not act immediately');
+  assert(fg.internals.buffered.on, 'An early press is held');
+  for (let i = 0; i < 240 && !fg.Aim.on; i++) fg.tick(1);
+  assert.equal(fg.Aim.on, true, 'A held press becomes a wind-up when control returns');
+  assert.equal(fg.G.bursts, before, 'Buffering does not leap on its own');
+  fg.internals.cancelAim();
+  // coyote time: aiming still works just after walking off an edge
+  arenaOn(fg);
+  fg.internals.placeSpirit(1000, 1000);
+  fg.PS.state = 'ground'; fg.PS.coyote = MOVE.coyote; fg.PS.t = 1;
+  fg.tick(2);
+  assert.equal(fg.state(), 'air', 'stepping into empty air');
+  assert(fg.aimable(), 'Coyote time lets a leap happen just after leaving a surface');
+  fg.tick(Math.ceil(MOVE.coyote * 60) + 4);
+  assert(!fg.aimable(), 'Coyote time runs out');
+  section('early presses are buffered and leaving an edge is forgiven');
+
+  function arenaOn(g) {
+    g.go(0);
+    for (const k of ['solids', 'springs', 'nodes', 'motes', 'lethal', 'beams', 'movers']) g.world[k].length = 0;
+    g.world.w = 40000; g.world.h = 40000;
+    g.world.gate.x = -99999; g.world.gate.y = -99999;
+  }
+
+  /* ---- camera -------------------------------------------------------------- */
+  f.go(5);
+  f.tick(40);
+  assert(Math.abs(f.cam.x - f.body.x) < 400 && Math.abs(f.cam.y - f.body.y) < 500,
+    'The camera stays with the spirit');
+  // and never drifts further than the padding past the world edge
+  const padX = 270 - 95, padY = 480 - 95;
+  for (let i = 0; i < 400; i++) {
+    f.tick(1);
+    assert(f.cam.x >= padX - 1 && f.cam.x <= f.world.w - padX + 1,
+      'Camera stays within the padded world horizontally');
+    assert(f.cam.y >= padY - 1 && f.cam.y <= f.world.h - padY + 1,
+      'Camera stays within the padded world vertically');
+  }
+  section('the camera follows and never leaves the world');
+
+  /* ---- progression, restart, scaling ---------------------------------------- */
+  f.go(2);
+  const spawn2 = { x: f.body.x, y: f.body.y };
+  f.burst(0, 1); f.tick(40);
+  f.internals.restartLevel(true);
+  assert.equal(f.G.levelIndex, 2, 'Restart keeps the level');
+  assert.equal(f.G.bursts, 0, 'Restart resets the leap count');
+  assert(Math.abs(f.body.x - spawn2.x) < 2, 'Restart returns the spirit to the start');
+  f.go(0);
+  f.tick(60);                                    // past the reform, in control
+  f.body.x = f.world.gate.x; f.body.y = f.world.gate.y;
+  f.tick(2);
+  assert.equal(f.G.phase, 'win', 'Reaching the gate wins');
+  for (let i = 0; i < 300 && f.G.levelIndex === 0; i++) f.tick(1);
+  assert.equal(f.G.levelIndex, 1, 'A win advances to the next level');
+
   f.resize(1800, 3200);
   assert(f.canvas.width * f.canvas.height <= 1100000, 'Desktop pixel budget');
   f.Q.level = 0; f.resize(1800, 3200);
   assert(f.canvas.width * f.canvas.height <= 700000, 'Reduced pixel budget');
   f.resize(390, 693);
   assert(f.canvas.width * f.canvas.height <= 700000, 'Mobile pixel budget');
+  f.Q.level = 1;
+  section('progression, restart and every pixel budget hold');
 
-  f.go(3); f.G.aiming = true; f.G.power = 1;
-  f.events.pointercancel();
-  assert.equal(f.G.shots, 0, 'Cancelled touch must not launch');
-  assert.equal(f.G.aiming, false);
-  f.internals.frame(1000); f.internals.frame(1017);
-  const t = f.G.t;
-  f.document.hidden = true; f.events.visibilitychange(); f.internals.frame(5000);
-  assert.equal(f.G.t, t, 'Hidden tab must not advance physics');
-  f.document.hidden = false; f.events.visibilitychange(); f.internals.frame(10000);
-  assert.equal(f.G.t, t, 'Resume must not catch up hidden time');
-
+  /* ---- frame loop: no catch-up, no drift ------------------------------------ */
+  const lp = boot();
+  lp.internals.frame(1000); lp.internals.frame(1017);
+  const t0 = lp.G.t;
+  lp.document.hidden = true; lp.events.visibilitychange(); lp.internals.frame(5000);
+  assert.equal(lp.G.t, t0, 'A hidden tab must not advance the simulation');
+  lp.document.hidden = false; lp.events.visibilitychange(); lp.internals.frame(10000);
+  assert.equal(lp.G.t, t0, 'Resuming must not replay the hidden time');
   const adaptive = boot();
   for (let i = 0; i < 100; i++) adaptive.internals.frame(1000 + i * 34);
-  assert.equal(adaptive.Q.level, 0, 'Slow frames should reduce quality');
-  assert(adaptive.canvas.width * adaptive.canvas.height <= 700000, 'Quality changes resize immediately');
+  assert.equal(adaptive.Q.level, 0, 'Slow frames reduce decoration quality');
   for (let i = 0; i < 650; i++) adaptive.internals.frame(4400 + i * (1000 / 60));
-  assert.equal(adaptive.Q.level, 1, 'Quality should recover on a healthy 60 Hz display');
-  adaptive.G.phase = 'done'; adaptive.G.transDir = -1; adaptive.G.transT = 0;
-  for (let i = 0; i < 80; i++) adaptive.internals.frame(16000 + i * (1000 / 60));
-  assert.equal(adaptive.G.transDir, 0, 'End curtain finishes before simulation sleeps');
-  const endTime = adaptive.G.t;
-  adaptive.internals.frame(18000);
-  assert.equal(adaptive.G.t, endTime, 'Completed game stops simulation');
+  assert.equal(adaptive.Q.level, 1, 'Quality recovers on a healthy display');
+  section('frame loop clamps stalls and adapts quality');
 
-  f.go(4); f.G.shots = f.G.shotLimit;
-  f.orb.x = f.world.portal.x; f.orb.y = f.world.portal.y;
-  f.orb.color = f.world.portal.color; f.orb.vx = 0; f.orb.vy = 0;
-  f.tick(1);
-  assert.equal(f.G.phase, 'win', 'A win on the last shot must not become a failure');
-  const solutions = require('./solutions.json');
-  const catcher = boot();
-  const pointer = (x, y, id = 1) => ({ clientX: x, clientY: y, pointerId: id, button: 0,
-    target: catcher.canvas, preventDefault() {} });
-  catcher.shoot(0, 0.8);
-  const flyingSpeed = catcher.orb.vx;
-  const cx = catcher.orb.x, cy = catcher.orb.y;
-  const bash = catcher.internals.BASH;
-  const spark = { x: cx + 40, y: cy, vx: -2.6, vy: 0, r: 8,
-    life: 7, cooldown: 0, reflected: false, color: null };
-  catcher.events.pointerdown(pointer(cx, cy));
-  assert.equal(catcher.G.aiming, false, 'Free mid-air grabbing requires a target now');
-  bash.projectiles.push(spark);
-  catcher.events.pointerdown(pointer(cx + 200, cy));
-  assert.equal(catcher.G.aiming, false, 'Distant touches must not catch a flying orb');
-  catcher.events.pointerdown(pointer(cx + 20, cy));
-  assert.equal(catcher.G.aiming, true, 'A nearby projectile enables Bash');
-  assert.equal(catcher.G.power, 0, 'An off-centre catch must not create launch power');
-  const frozenTime = catcher.G.t;
-  catcher.tick(10);
-  assert.equal(catcher.G.t, frozenTime, 'Bash aiming freezes the entire world');
-  assert.equal(spark.x, cx + 40, 'The target projectile also freezes');
-  assert.equal(catcher.orb.x, cx, 'A held orb freezes in flight');
-  assert.equal(catcher.orb.y, cy);
-  catcher.events.pointermove(pointer(cx + 20, cy + 100));
-  catcher.events.pointerup(pointer(cx + 20, cy + 100, 2));
-  assert.equal(catcher.G.aiming, true, 'Another finger must not release the catch');
-  catcher.events.pointerup(pointer(cx + 20, cy + 100));
-  assert.equal(catcher.G.shots, 1, 'Bash chains do not spend normal launches');
-  assert.equal(catcher.orb.vy, bash.speed, 'Bash aims toward the drag, not away');
-  assert.equal(spark.vy, -bash.speed, 'The projectile flies in the opposite direction');
-  assert.equal(spark.reflected, true);
-  spark.cooldown = 0;
-  catcher.events.pointerdown(pointer(cx + 20, cy));
-  const resumeVy = catcher.orb.vy;
-  catcher.events.pointercancel();
-  assert.equal(catcher.orb.vy, resumeVy, 'Cancelled catch preserves flight velocity');
-  assert.equal(catcher.G.shots, 1);
-  catcher.events.pointerdown(pointer(cx, cy));
-  catcher.tick(121);
-  assert.equal(catcher.G.aiming, false, 'The two-second aim window must expire');
-  catcher.go(3); catcher.G.shots = catcher.G.shotLimit;
-  catcher.orb.vx = flyingSpeed;
-  catcher.events.pointerdown(pointer(catcher.orb.x, catcher.orb.y));
-  assert.equal(catcher.G.aiming, false, 'No target means no free grab at zero launches');
-  bash.projectiles.push({ ...spark, x: catcher.orb.x + 40, y: catcher.orb.y, life: 7, cooldown: 0 });
-  catcher.events.pointerdown(pointer(catcher.orb.x, catcher.orb.y));
-  assert.equal(catcher.G.aiming, true, 'Bash remains available on the last normal launch');
-  catcher.events.pointercancel();
-  catcher.go(2);
-  bash.emitters.length = 0;
-  const ice = catcher.world.ice[0];
-  bash.projectiles.push({ ...spark, x: ice.x, y: ice.y + 50, vx: 0, vy: -18,
-    reflected: true, color: 'cyan', life: 4 });
-  for (let i = 0; i < 3; i++) catcher.internals.updateBashProjectiles();
-  assert.equal(catcher.world.ice.length, 0, 'A reflected projectile shatters ice');
-  catcher.go(0);
-  assert.equal(bash.projectiles.length, 0, 'Restart clears old projectiles');
-  assert.equal(bash.target, null);
-  const danger = boot();
-  danger.go(0);
-  const spike = danger.world.livewalls.find(e => e.spikes);
-  const tooth = spike.outline[1];
-  danger.orb.x = spike.x + tooth.x;
-  danger.orb.y = spike.y + tooth.y - danger.orb.r + 1;
-  danger.tick(1);
-  assert.equal(danger.G.phase, 'fail', 'Touching a spike tip must kill, even at rest');
-  danger.go(0);
-  const bar = danger.world.livewalls.find(e => !e.spikes);
-  danger.orb.x = bar.x; danger.orb.y = bar.y + bar.h / 2 + danger.orb.r + 4;
-  danger.orb.vy = -20;
-  danger.tick(1);
-  assert.equal(danger.G.phase, 'fail', 'A fast shot into a red bar must kill');
-  danger.go(0);
-  const guide = danger.internals.predict(bar.x, bar.y + 100, 0, -15, 2);
-  assert.equal(guide.hazard, true, 'Aim preview must warn about lethal bars');
-  /* ---- movement system -------------------------------------------------
-     The launch, the speed bands, the contact response and the input
-     forgiveness are one system, so they are exercised as one. */
-  const mv = boot();
-  const { MOVE, PS } = mv;
-  const speed = () => Math.hypot(mv.orb.vx, mv.orb.vy);
-  const settle = (limit = 900) => {
-    for (let i = 0; i < limit; i++) { mv.tick(1); if (speed() === 0 || mv.G.phase !== 'play') break; }
-  };
+  /* ---- the aim guide tells the truth ----------------------------------------- */
+  arena([{ list: 'solids', x: 1000, y: 1400, w: 1200, h: 80 }]);
+  standAt(700, 1340);
+  const ang = -0.9, power = 1;
+  const sp = MOVE.burstMin + (MOVE.burstMax - MOVE.burstMin) * f.internals.burstCurve(power);
+  const guide = T.predict(f.body.x, f.body.y, Math.cos(ang) * sp, Math.sin(ang) * sp, 1400);
+  assert(guide.n > 2, 'The guide draws a path');
+  const predicted = { x: guide.lx, y: guide.ly };
+  assert(guide.land >= 0, 'The guide finds where the leap ends');
+  standAt(700, 1340);
+  f.burst(ang, power);
+  for (let i = 0; i < 400; i++) { f.tick(1); if (f.PS.state === 'ground') break; }
+  assert(Math.hypot(f.body.x - predicted.x, f.body.y - predicted.y) < 40,
+    `The guide must land where the leap lands (off by ${Math.hypot(f.body.x - predicted.x, f.body.y - predicted.y).toFixed(0)})`);
+  section('the aim guide matches the simulation it previews');
 
-  // --- launch strength ---
-  mv.go(0);
-  mv.shoot(0, 0);
-  assert.equal(+speed().toFixed(6), MOVE.launchMin, 'Minimum launch uses the tuned floor speed');
-  mv.go(0); mv.shoot(0, 1);
-  assert.equal(+speed().toFixed(6), MOVE.launchMax, 'Full launch uses the tuned ceiling speed');
-  assert(MOVE.launchMax < MOVE.speedMax, 'A launch must leave headroom under the clamp');
-  let prev = 0;
-  for (const p of [0, 0.25, 0.5, 0.75, 1]) {
-    mv.go(0); mv.shoot(0, p);
-    assert(speed() >= prev, 'Launch speed must rise monotonically with power');
-    prev = speed();
-  }
-
-  // --- speed clamp ---
-  mv.go(0);
-  mv.orb.vx = 500; mv.orb.vy = 500; mv.orb.dash = 0;
-  mv.tick(1);
-  assert(speed() <= MOVE.speedMax + 1e-9, 'Velocity is clamped for stability');
-
-  // --- dash window, then momentum, then a decisive stop ---
-  mv.go(0);
-  mv.world.solids.length = 0; mv.world.hazards.length = 0; mv.world.voids.length = 0;
-  mv.world.portal.x = -9999; mv.world.portal.y = -9999;
-  mv.orb.x = 270; mv.orb.y = 480; mv.G.shotLimit = 0;
-  mv.shoot(0, 1);
-  const launched = speed();
-  mv.tick(1);
-  assert.equal(+speed().toFixed(6), +launched.toFixed(6), 'The dash window holds launch speed');
-  settle();
-  assert.equal(speed(), 0, 'A launch always reaches a true stop');
-  assert(PS.state === 'rest', 'A stopped character is in the rest band');
-
-  // --- speed bands agree with the tuning table ---
-  mv.go(0);
-  for (const [v, band] of [[0, 'rest'], [2, 'settle'], [8, 'flow'], [25, 'dash']]) {
-    mv.orb.vx = v; mv.orb.vy = 0; mv.orb.dash = 0;
-    mv.tick(1);
-    assert.equal(PS.state, band, `${v} units/step is the ${band} band`);
-  }
-
-  // --- corner determinism: neighbouring approaches must not scatter ---
-  const exits = [];
-  for (let d = -2; d <= 2; d++) {
-    mv.go(0);
-    mv.orb.x = 200 + d; mv.orb.y = 600; mv.orb.vx = -14; mv.orb.vy = 14; mv.orb.dash = 0;
-    for (let i = 0; i < 40; i++) mv.tick(1);
-    exits.push(Math.atan2(mv.orb.vy, mv.orb.vx) * 180 / Math.PI);
-  }
-  assert(Math.max(...exits) - Math.min(...exits) < 1,
-    `A corner must resolve the same way for neighbouring approaches (spread ${(Math.max(...exits) - Math.min(...exits)).toFixed(1)}deg)`);
-
-  // --- angled surfaces redirect predictably and keep flow ---
-  mv.go(0);
-  const slope = mv.world.solids.find(e => e.a !== 0 && !e.deadly) || mv.world.solids[0];
-  let lastOut = -Infinity;
-  for (const inc of [20, 40, 60]) {
-    mv.go(0);
-    mv.world.solids.length = 0;
-    mv.world.solids.push({ kind: 'wall', x: 270, y: 800, w: 900, h: 40, a: 0, ca: 1, sa: 0,
-      br: Math.hypot(900, 40) / 2, solid: true, dead: false, vx: 0, vy: 0, av: 0 });
-    mv.world.hazards.length = 0; mv.world.voids.length = 0; mv.world.portal.x = -9999;
-    const a = inc * Math.PI / 180;
-    mv.orb.x = 120; mv.orb.y = 600; mv.orb.vx = Math.sin(a) * 22; mv.orb.vy = Math.cos(a) * 22; mv.orb.dash = 0;
-    for (let i = 0; i < 40; i++) { mv.tick(1); if (mv.orb.vy < 0) break; }
-    assert(mv.orb.vy < 0, `A ${inc}deg impact must rebound off the surface`);
-    const out = Math.atan2(mv.orb.vx, -mv.orb.vy) * 180 / Math.PI;
-    assert(out > lastOut, 'A shallower approach must leave shallower than a steeper one');
-    assert(Math.hypot(mv.orb.vx, mv.orb.vy) > 22 * 0.5, 'A rebound must keep most of its energy');
-    lastOut = out;
-  }
-
-  // --- no tunnelling at the clamp, and no resting overlap ---
-  for (const v of [MOVE.speedFlow, MOVE.speedDash, MOVE.speedMax]) {
-    mv.go(0);
-    mv.world.solids.length = 0;
-    mv.world.solids.push({ kind: 'wall', x: 270, y: 480, w: 500, h: 14, a: 0, ca: 1, sa: 0,
-      br: Math.hypot(500, 14) / 2, solid: true, dead: false, vx: 0, vy: 0, av: 0 });
-    mv.world.hazards.length = 0; mv.world.voids.length = 0; mv.world.portal.x = -9999;
-    mv.orb.x = 270; mv.orb.y = 900; mv.orb.vx = 0; mv.orb.vy = -v; mv.orb.dash = 0;
-    for (let i = 0; i < 20; i++) mv.tick(1);
-    assert(mv.orb.y > 480 + 7 + mv.orb.r - 1, `${v} units/step must not tunnel through thin geometry`);
-  }
-
-  // --- settling against a surface must not chatter ---
-  mv.go(0);
-  mv.world.solids.length = 0;
-  mv.world.solids.push({ kind: 'wall', x: 270, y: 700, w: 500, h: 24, a: 0, ca: 1, sa: 0,
-    br: Math.hypot(500, 24) / 2, solid: true, dead: false, vx: 0, vy: 0, av: 0 });
-  mv.world.hazards.length = 0; mv.world.voids.length = 0; mv.world.portal.x = -9999;
-  mv.orb.x = 270; mv.orb.y = 500; mv.orb.vx = 0; mv.orb.vy = 7; mv.orb.dash = 0;
-  let reversals = 0, lastVy = 7;
-  for (let i = 0; i < 600; i++) {
-    mv.tick(1);
-    if (mv.orb.vy * lastVy < 0) reversals++;
-    lastVy = mv.orb.vy;
-    if (speed() === 0) break;
-  }
-  assert(reversals <= 2, `Settling must not micro-bounce (got ${reversals} reversals)`);
-  assert.equal(speed(), 0, 'A body resting on a surface comes to a true stop');
-
-  // --- pointer drag: mouse and touch take the identical path ---
-  const drag = boot();
-  const pt = (x, y, id = 7) => ({ clientX: x, clientY: y, pointerId: id, button: 0,
-    target: drag.canvas, preventDefault() {} });
-  drag.go(0);
-  const sx = drag.orb.x, sy = drag.orb.y;
-  drag.events.pointerdown(pt(sx, sy));
-  assert.equal(drag.G.aiming, true, 'A touch on a resting character starts an aim');
-  assert.equal(drag.G.power, 0, 'A centred touch starts at zero power');
-  drag.events.pointermove(pt(sx, sy + 4));
-  drag.events.pointerup(pt(sx, sy + 4));
-  assert.equal(drag.G.shots, 0, 'A drag shorter than the dead zone is a cancel, not a launch');
-  drag.events.pointerdown(pt(sx, sy));
-  drag.events.pointermove(pt(sx, sy + 400));       // far past the full-power distance
-  assert.equal(drag.G.power, 1, 'Drag power saturates at the tuned distance');
-  drag.events.pointerup(pt(sx, sy + 400));
-  assert.equal(drag.G.shots, 1, 'A full drag launches');
-  assert(drag.orb.vy < 0, 'The character launches away from the pull');
-  assert.equal(+Math.hypot(drag.orb.vx, drag.orb.vy).toFixed(6), MOVE.launchMax,
-    'A saturated drag launches at full speed');
-
-  // a touch far from the character still aims — the target is never too small
-  drag.go(0);
-  drag.events.pointerdown(pt(drag.orb.x + 240, drag.orb.y - 300));
-  assert.equal(drag.G.aiming, true, 'A touch anywhere on the field can start an aim');
-  drag.events.pointercancel();
-
-  // --- early touches are buffered, not thrown away ---
-  const buf = boot();
-  buf.go(0);
-  buf.orb.vx = MOVE.catchSpeed - 1; buf.orb.vy = 0; buf.orb.dash = 0;
-  buf.events.pointerdown(pt(buf.orb.x, buf.orb.y, 9));
-  assert.equal(buf.G.aiming, false, 'A touch on a moving character does not aim immediately');
-  assert.equal(buf.G.shots, 0);
-  for (let i = 0; i < 200 && !buf.G.aiming; i++) buf.tick(1);
-  assert.equal(buf.G.aiming, true, 'A buffered touch becomes an aim once control returns');
-  buf.events.pointercancel();
-  // ...but only from the forgiving band, never from a committed dash
-  buf.go(0);
-  buf.orb.vx = MOVE.catchSpeed + 6; buf.orb.vy = 0; buf.orb.dash = 0;
-  buf.events.pointerdown(pt(buf.orb.x, buf.orb.y, 9));
-  for (let i = 0; i < 200; i++) buf.tick(1);
-  assert.equal(buf.G.aiming, false, 'A committed dash cannot be caught by an early touch');
-  // lifting the finger abandons the buffer
-  buf.go(0);
-  buf.orb.vx = MOVE.catchSpeed - 1; buf.orb.dash = 0;
-  buf.events.pointerdown(pt(buf.orb.x, buf.orb.y, 9));
-  buf.events.pointerup(pt(buf.orb.x, buf.orb.y, 9));
-  for (let i = 0; i < 200; i++) buf.tick(1);
-  assert.equal(buf.G.aiming, false, 'A lifted finger does not fire a buffered aim');
-
-  // --- special objects still respond to the new movement ---
-  const obj = boot();
-  obj.go(5);                                   // level 6 carries a bumper
-  const bumper = obj.world.bumpers[0];
-  obj.orb.x = bumper.x; obj.orb.y = bumper.y + bumper.r + obj.orb.r + 2;
-  obj.orb.vx = 0; obj.orb.vy = -12; obj.orb.dash = 0;
-  obj.tick(1);
-  assert(obj.orb.vy > 0, 'A bumper reverses the character');
-  assert(Math.hypot(obj.orb.vx, obj.orb.vy) <= MOVE.bumperMax + 1e-9, 'Bumper output is clamped');
-  assert(Math.hypot(obj.orb.vx, obj.orb.vy) > 12, 'A bumper adds energy');
-
-  obj.go(2);                                   // level 3 carries ice
-  const iceBlock = obj.world.ice[0];
-  const hp0 = iceBlock.hp;
-  obj.orb.x = iceBlock.x; obj.orb.y = iceBlock.y + iceBlock.h / 2 + obj.orb.r + 2;
-  obj.orb.vx = 0; obj.orb.vy = -14; obj.orb.dash = 0;
-  obj.tick(1);
-  assert(iceBlock.hp < hp0 || iceBlock.dead, 'A solid hit still damages ice');
-
-  obj.go(4);                                   // level 5 carries a colour gate
-  const gate = obj.world.gates[0];
-  obj.orb.color = gate.color === 'cyan' ? 'orange' : 'cyan';
-  obj.orb.x = gate.x; obj.orb.y = gate.y + gate.h / 2 + obj.orb.r + 2;
-  obj.orb.vx = 0; obj.orb.vy = -14; obj.orb.dash = 0;
-  obj.tick(1);
-  assert(obj.orb.vy > 0, 'A gate still rejects the wrong signature');
-  obj.orb.color = gate.color;
-  obj.orb.x = gate.x; obj.orb.y = gate.y + gate.h / 2 + obj.orb.r + 2;
-  obj.orb.vx = 0; obj.orb.vy = -14; obj.orb.dash = 0;
-  obj.tick(1);
-  assert(obj.orb.vy < 0, 'A gate still opens to its own signature');
-
-  obj.go(3);                                   // level 4 carries a pulsing hazard
-  const hz = obj.world.hazards[0];
-  for (let i = 0; i < 600 && obj.G.phase === 'play'; i++) {
-    obj.orb.x = hz.x; obj.orb.y = hz.y; obj.orb.vx = 0; obj.orb.vy = 0;
-    obj.tick(1);
-  }
-  assert.equal(obj.G.phase, 'fail', 'A live hazard still kills');
-
-  // --- restart and progression ---
-  const flow = boot();
-  flow.go(6);
-  const spawn = { x: flow.orb.x, y: flow.orb.y };
-  flow.shoot(1, 1);
-  flow.tick(30);
-  flow.internals.restartLevel(true);
-  assert.equal(flow.G.levelIndex, 6, 'Restart keeps the level');
-  assert.equal(flow.G.shots, 0, 'Restart refills the launch budget');
-  assert.equal(flow.orb.x, spawn.x, 'Restart returns the character to its spawn');
-  assert.equal(Math.hypot(flow.orb.vx, flow.orb.vy), 0, 'Restart parks the character');
-  assert.equal(flow.PS.state, 'rest', 'Restart returns the character to the rest band');
-  flow.go(0);
-  flow.orb.x = flow.world.portal.x; flow.orb.y = flow.world.portal.y;
-  flow.orb.color = flow.world.portal.color; flow.orb.vx = 0; flow.orb.vy = 0;
-  flow.tick(1);
-  assert.equal(flow.G.phase, 'win', 'Reaching a matching portal still wins');
-  for (let i = 0; i < 200 && flow.G.levelIndex === 0; i++) flow.tick(1);
-  assert.equal(flow.G.levelIndex, 1, 'A win still advances to the next level');
-
-  // --- aim preview stays a preview ---
-  const aim = boot();
-  aim.go(4);
-  const soft = aim.internals.predict(aim.orb.x, aim.orb.y, 0, -MOVE.launchMin, 2, 190);
-  const hard = aim.internals.predict(aim.orb.x, aim.orb.y, 0, -MOVE.launchMax, 2, 330);
-  assert(soft.n > 0 && hard.n > 0, 'The aim guide produces a path');
-  assert(hard.n < 40, 'The aim guide never draws the whole level');
-
-  for (let i = 0; i < solutions.length; i++) {
-    f.go(i);
-    for (const [angle, power] of solutions[i]) {
-      assert(f.ready(), `Level ${i + 1}: route must use legal launches`);
-      f.shoot(angle, power);
-      for (let step = 0; step < 360; step++) {
-        f.tick(1);
-        if (f.G.phase !== 'play' || Math.hypot(f.orb.vx, f.orb.vy) === 0) break;
-      }
-    }
-    assert.equal(f.G.phase, 'win', `Level ${i + 1}: verified route must win`);
-    assert(!f.G.shotLimit || f.G.shots <= f.G.shotLimit, `Level ${i + 1}: shot budget`);
-  }
-  console.log('PASS: 10 safe spawns and winning routes, launch band, speed bands, corner determinism, ' +
-    'angled rebounds, tunnelling, settling, pointer drag, buffered touch, bumper/ice/gate/hazard/portal, ' +
-    'restart and progression, aim preview, pixel budgets, adaptive quality recovery, touch cancellation, ' +
-    'tab suspension, end curtain, final-shot win.');
+  console.log('PASS:\n  - ' + pass.join('\n  - '));
 }
+
 module.exports = { boot };

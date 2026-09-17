@@ -1,98 +1,187 @@
-// Design aid: find and replay legal shot sequences through the real integrator.
-// Run with `node tests/solve-levels.cjs [one-based level]`.
-const { boot } = require('./game.test.cjs');
+// Design aid and gate-keeper: searches for a route through every level using
+// the real simulation, so a level can never ship unreachable.
+//
+//   node tests/solve-levels.cjs            all levels
+//   node tests/solve-levels.cjs 3          just level 3
+//   SOLVER_BEAM=48 node tests/solve-levels.cjs   widen the search
+//
+// A "move" is one wind-up: an angle and a power, taken either from a surface
+// or from an energy node. The search runs the game forward from each move
+// until the spirit can act again, then scores how much closer to the gate it
+// got. That is exactly the loop a player is in, so a route the solver finds is
+// a route a player can walk.
+const { boot } = require('./harness.cjs');
+
 const f = boot();
-const goals = [
-  [['color', 'cyan', 490, 700], ['pos', 420, 460], ['exit']],
-  [['color', 'orange', 445, 700], ['pos', 270, 425], ['exit']],
-  [['ice', 270, 555], ['pos', 270, 440], ['exit']],
-  [['color', 'cyan', 490, 700], ['pos', 270, 455], ['exit']],
-  [['color', 'cyan', 490, 700], ['pos', 270, 420], ['color', 'orange', 490, 290], ['exit']],
-  [['pos', 270, 420], ['color', 'cyan', 50, 392], ['exit']],
-  [['ice', 160, 595], ['color', 'lime', 490, 380], ['exit']],
-  [['color', 'lime', 490, 700], ['crystal', 270, 540], ['pos', 270, 420], ['exit']],
-  [['ice', 250, 655], ['color', 'cyan', 50, 460], ['pos', 375, 250], ['exit']],
-  [['color', 'cyan', 50, 790], ['ice', 250, 675], ['pos', 270, 280], ['color', 'orange', 490, 200], ['exit']],
-];
+const T = f.internals;
+
+const ANGLES = 30;                       // directions tried per decision
+const POWERS = [0.4, 0.7, 1];
+const BEAM = Number(process.env.SOLVER_BEAM) || 36;
+const MAX_MOVES = Number(process.env.SOLVER_MOVES) || 12;
+
 function snapshot() {
-  const entities = new Map();
-  const copy = e => { if (!entities.has(e)) entities.set(e, { ...e }); return entities.get(e); };
-  const world = {};
-  for (const [k, v] of Object.entries(f.world)) world[k] = Array.isArray(v) && v[0]?.kind ? v.map(copy) : v;
-  world.portal = { ...f.world.portal };
-  return { orb: { ...f.orb }, world, G: { ...f.G }, paintTime: f.internals.getPaintTime() };
+  return {
+    body: { ...f.body },
+    PS: { ...f.PS, nodeIndex: f.PS.node ? f.world.nodes.indexOf(f.PS.node) : -1 },
+    G: { t: f.G.t, phase: f.G.phase, phaseT: f.G.phaseT,
+         spawnX: f.G.spawnX, spawnY: f.G.spawnY, bursts: f.G.bursts },
+    nodes: f.world.nodes.map(n => n.cool),
+    motes: f.world.motes.map(m => m.got),
+    movers: f.world.movers.map(m => ({ x: m.x, y: m.y, a: m.a, ca: m.ca, sa: m.sa })),
+  };
 }
 function restore(s) {
-  Object.assign(f.orb, s.orb); Object.assign(f.G, s.G);
-  f.internals.setPaintTime(s.paintTime);
-  const entities = new Map();
-  const copy = e => { if (!entities.has(e)) entities.set(e, { ...e }); return entities.get(e); };
-  for (const [k, v] of Object.entries(s.world)) f.world[k] = Array.isArray(v) ? v.map(e => e?.kind ? copy(e) : e) : v;
-  f.world.portal = { ...s.world.portal };
+  Object.assign(f.body, s.body);
+  Object.assign(f.PS, s.PS);
+  f.PS.node = s.PS.nodeIndex >= 0 ? f.world.nodes[s.PS.nodeIndex] : null;
+  Object.assign(f.G, s.G);
+  f.world.nodes.forEach((n, i) => { n.cool = s.nodes[i]; });
+  f.world.motes.forEach((m, i) => { m.got = s.motes[i]; });
+  f.world.movers.forEach((m, i) => { Object.assign(m, s.movers[i]); });
+  f.Aim.on = false;
 }
-function reached(g) {
-  if (g[0] === 'color') return f.orb.color === g[1];
-  if (g[0] === 'ice') return !f.world.ice.length;
-  if (g[0] === 'crystal') return !f.world.crystals.length;
-  if (g[0] === 'pos') return Math.hypot(f.orb.x - g[1], f.orb.y - g[2]) < 65;
-  return f.G.phase === 'win';
+
+const AIMABLE = 'aimable', NODE = 'node', DEAD = 'dead', WON = 'won', STUCK = 'stuck';
+
+/* Run the world forward until the player would next have a decision to make. */
+function advance(limit = 420) {
+  for (let i = 0; i < limit; i++) {
+    f.tick(1);
+    if (f.G.phase === 'win' || f.G.phase === 'trans') return WON;
+    if (f.PS.state === 'hurt' || f.PS.state === 'spawn') return DEAD;
+    if (T.canAim()) return AIMABLE;
+    if (T.nodeInReach()) return NODE;
+  }
+  return STUCK;
 }
-function target(g) {
-  if (g[0] === 'exit') return [f.world.portal.x, f.world.portal.y];
-  return g.slice(-2);
+
+function dist() {
+  const g = f.world.gate;
+  return Math.hypot(f.body.x - g.x, f.body.y - g.y);
 }
+
+/* A state is worth keeping if it is closer to the gate than anything else with
+   a similar footprint; the key coarsens position so the beam does not fill up
+   with a hundred variations of the same ledge. */
+function key() {
+  return [Math.round(f.body.x / 40), Math.round(f.body.y / 40), f.PS.state,
+          f.world.motes.filter(m => m.got).length].join(':');
+}
+
 function solve(level) {
   f.go(level);
-  const plan = goals[level];
-  let beam = [{ state: snapshot(), path: [], stage: 0, score: 0 }];
-  for (let depth = 0; depth < (f.LEVELS[level].shots || 10); depth++) {
-    const candidates = new Map();
+  for (let i = 0; i < 40; i++) f.tick(1);          // let the spawn settle
+  let beam = [{ state: snapshot(), path: [], score: -dist() }];
+
+  for (let depth = 0; depth < MAX_MOVES; depth++) {
+    const found = new Map();
     for (const b of beam) {
-      restore(b.state);
-      const [tx, ty] = target(plan[b.stage]);
-      const direct = Math.atan2(ty - f.orb.y, tx - f.orb.x);
-      const angles = [direct];
-      for (let a = 0; a < 72; a++) angles.push(a * Math.PI / 36);
-      for (const angle of angles) for (const power of [0.3, 0.6, 1]) {
-        restore(b.state);
-        f.shoot(angle, power);
-        let stage = b.stage;
-        for (let step = 0; step < 360; step++) {
-          f.tick(1);
-          while (stage < plan.length && reached(plan[stage])) stage++;
-          if (f.G.phase !== 'play' || Math.hypot(f.orb.vx, f.orb.vy) === 0) break;
+      for (let ai = 0; ai < ANGLES; ai++) {
+        const angle = -Math.PI + (ai * TAU_STEP);
+        for (const power of POWERS) {
+          restore(b.state);
+          // a decision is only ever taken from a state that allows one
+          if (!T.canAim()) {
+            const n = T.nodeInReach();
+            if (!n) continue;
+            T.grabNode(n, f.body.x, f.body.y, null);
+            f.Aim.on = false;                       // the solver aims instantly
+          }
+          f.burst(angle, power);
+          const path = [...b.path, [angle, power]];
+
+          // fly until something happens, taking every node offered on the way
+          let out = advance();
+          let guard = 0;
+          while (out === NODE && guard++ < 6) {
+            const n = T.nodeInReach();
+            if (!n) break;
+            T.grabNode(n, f.body.x, f.body.y, null);
+            f.Aim.on = false;
+            break;                                   // a node IS a decision point
+          }
+          if (f.G.phase === 'win' || f.G.phase === 'trans') return path;
+          if (out === DEAD || out === STUCK) continue;
+
+          const score = -dist() + f.world.motes.filter(m => m.got).length * 400;
+          const k = key();
+          const prev = found.get(k);
+          if (!prev || prev.score < score) found.set(k, { state: snapshot(), path, score });
         }
-        const path = [...b.path, [angle, power]];
-        if (f.G.phase === 'win') return path;
-        if (f.G.phase !== 'play' || !f.ready()) continue;
-        const [x, y] = target(plan[Math.min(stage, plan.length - 1)]);
-        const score = stage * 1500 - Math.hypot(f.orb.x - x, f.orb.y - y) +
-          (2 - (f.world.ice[0]?.hp || 0)) * 90;
-        const key = [stage, Math.round(f.orb.x / 25), Math.round(f.orb.y / 25), f.orb.color,
-          f.world.ice[0]?.hp, Math.floor(f.G.t % 5)].join(':');
-        if (!candidates.has(key) || candidates.get(key).score < score)
-          candidates.set(key, { state: snapshot(), path, stage, score });
       }
     }
-    beam = [...candidates.values()].sort((a, b) => b.score - a.score).slice(0, Number(process.env.SOLVER_BEAM) || 32);
-    console.log(`L${level + 1} shot ${depth + 1}: ${beam.length} candidates, stage ${beam[0]?.stage}`);
+    beam = [...found.values()].sort((a, b) => b.score - a.score).slice(0, BEAM);
+    const best = beam[0];
+    console.log(`L${level + 1} move ${depth + 1}: ${beam.length} candidates, best gap ${best ? (-best.score).toFixed(0) : 'n/a'}`);
     if (!beam.length) break;
   }
   return null;
 }
-for (const level of process.argv[2] ? [Number(process.argv[2]) - 1] : goals.map((_, i) => i)) {
-  const solution = solve(level);
-  if (solution) {
-    f.go(level);
-    for (const [angle, power] of solution) {
-      f.shoot(angle, power);
-      for (let step = 0; step < 360; step++) {
-        f.tick(1);
-        if (f.G.phase !== 'play' || Math.hypot(f.orb.vx, f.orb.vy) === 0) break;
-      }
+const TAU_STEP = (Math.PI * 2) / ANGLES;
+
+/* Replay a found route through a clean level, and report which mechanics it
+   actually used. A level that places nodes or springs the best route ignores
+   is a level that does not teach what it thinks it teaches, so this is a
+   design check, not just a correctness one. */
+function verify(level, route) {
+  f.go(level);
+  for (let i = 0; i < 40; i++) f.tick(1);
+  const used = { cling: 0, node: 0, spring: 0, mote: 0, won: false };
+  let wasCling = false;
+  for (const [angle, power] of route) {
+    if (!T.canAim()) {
+      const n = T.nodeInReach();
+      if (!n) break;
+      T.grabNode(n, f.body.x, f.body.y, null);
+      f.Aim.on = false;
+      used.node++;
     }
-    if (f.G.phase !== 'win') throw new Error(`Level ${level + 1}: solution failed replay`);
+    if (!T.canAim()) break;
+    f.burst(angle, power);
+    for (let i = 0; i < 420; i++) {
+      const fired = f.world.springs.filter(s => s.fire > 0.9).length;
+      f.tick(1);
+      if (f.world.springs.filter(s => s.fire > 0.9).length > fired) used.spring++;
+      const c = f.PS.state === 'cling';
+      if (c && !wasCling) used.cling++;
+      wasCling = c;
+      if (f.G.phase !== 'play') break;
+      if (T.canAim() || T.nodeInReach()) break;
+    }
+    if (f.G.phase !== 'play') break;
   }
-  console.log(JSON.stringify({ level: level + 1, solution }));
-  if (!solution) process.exitCode = 1;
+  used.mote = f.world.motes.filter(m => m.got).length;
+  used.won = f.G.phase === 'win' || f.G.phase === 'trans';
+  return used;
 }
+
+const only = process.argv[2] ? [Number(process.argv[2]) - 1] : f.LEVELS.map((_, i) => i);
+const out = [];
+const report = [];
+let failed = false;
+for (const level of only) {
+  const route = solve(level);
+  if (!route) { failed = true; report.push({ level: level + 1, route: null }); continue; }
+  const used = verify(level, route);
+  if (!used.won) { console.log(`L${level + 1}: route failed replay`); failed = true; }
+  out[level] = route;
+  report.push({ level: level + 1, name: f.LEVELS[level].name, moves: route.length, ...used });
+}
+
+console.log('\n  lvl  name           moves  cling  node  spring  mote   result');
+for (const r of report) {
+  if (!r.name) { console.log(`  ${String(r.level).padStart(3)}  UNSOLVED`); continue; }
+  console.log(`  ${String(r.level).padStart(3)}  ${r.name.padEnd(13)} ${String(r.moves).padStart(5)}  ` +
+    `${String(r.cling).padStart(5)} ${String(r.node).padStart(5)} ${String(r.spring).padStart(7)} ` +
+    `${String(r.mote).padStart(5)}   ${r.won ? 'WIN' : 'FAIL'}`);
+}
+// a level that offers a mechanic the best route never touches is a design bug
+for (const r of report) {
+  if (!r.name) continue;
+  const L = f.LEVELS[r.level - 1];
+  if ((L.nodes || []).length && !r.node) console.log(`  ! L${r.level} places nodes the route ignores`);
+  if ((L.springs || []).length && !r.spring) console.log(`  ! L${r.level} places springs the route ignores`);
+}
+if (failed) process.exitCode = 1;
+module.exports = { out, report };
