@@ -27,21 +27,83 @@ const CFG = {
   orbR: 15,
   maxDrag: 168,        // pull distance for full power
   minDrag: 12,         // below this a release is treated as a cancel
-  minLaunch: 3.4,      // speed units / step
-  maxLaunch: 17.4,
-  maxSpeed: 27,
-  damping: 0.9886,     // velocity retained per step
-  brakeSpeed: 3.6,     // extra braking below this speed
-  stopSpeed: 0.42,
-  readySpeed: 2.0,     // below this, aiming may also start away from the orb
-  restitution: 0.735,
-  tangent: 0.965,
-  grabRadius: 132,
-  airGrabRadius: 76,   // forgiving touch target for catching a flying orb
+  grabRadius: 132,     // "close enough to the character" for a centred pull
+  airGrabRadius: 96,   // forgiving touch target for catching a flying character
   paintSpeed: 1.6,     // min contact speed to take a wall colour
   iceSpeed: 5.5,       // min contact speed to damage ice
   paintCooldown: 0.12, // seconds between colour transfers
 };
+
+/* ---------------------------------------------------------------------------
+   MOVEMENT TUNING
+   ---------------------------------------------------------------------------
+   The single source of truth for how the character moves. Nothing outside this
+   table may invent a speed threshold, a damping factor or a restitution value:
+   if a rule needs a number, it is named here.
+
+   All speeds are in playfield units per fixed 1/60 s step. A useful reference:
+   the playfield is 540 x 960 units, so 10 units/step crosses the short side in
+   about nine tenths of a second.
+
+   The feel this describes is deliberately *not* realistic. Drag is almost
+   absent while the character is genuinely travelling — a leap carries, and
+   chained rebounds keep their energy — and then rises steeply once it drops
+   into the settle band, so the character lands and comes to rest decisively
+   instead of creeping to a halt. Restitution works the same way round: hard
+   impacts rebound hard, and contacts softer than `bounceStick` are fully
+   inelastic, which is what kills micro-bouncing and surface vibration.
+--------------------------------------------------------------------------- */
+const MOVE = {
+  /* --- launch ---------------------------------------------------------- */
+  launchMin:   4.2,     // a deliberate nudge, never a dribble
+  launchMax:   19.5,    // full-commitment leap
+  launchCurve: 0.42,    // 0 = linear power ramp, 1 = fully quadratic
+  dashTime:    0.13,    // seconds of drag-free burst straight after a launch
+
+  /* --- speed bands ------------------------------------------------------
+     Every state decision in the game reads these and only these. */
+  speedStop:   0.40,    // below this the character is parked outright
+  speedRest:   1.30,    // settled: idle bob, ready ring, no trail
+  speedSettle: 3.60,    // still drifting but controllable -> aiming allowed
+  speedFlow:   11.0,    // ordinary travel
+  speedDash:   17.0,    // committed dash: strongest trail and glow
+  speedMax:    30.0,    // hard clamp, for physics stability only
+
+  /* --- drag, per band (velocity retained per step) ---------------------- */
+  dragFlow:    0.9930,  // at or above speedFlow — momentum is preserved
+  dragSettle:  0.9800,  // in the settle band — bleeds off with intent
+  dragRest:    0.9300,  // near standstill — parks instead of creeping
+
+  /* --- surface response ------------------------------------------------- */
+  bounceStick: 1.15,    // normal speed below this: inelastic, no micro-bounce
+  bounceMin:   0.32,    // restitution just above the stick threshold
+  bounceMax:   0.84,    // restitution at bounceRamp and beyond
+  bounceRamp:  9.0,     // normal speed at which bounceMax is reached
+  slide:       0.988,   // tangential retention — grazing a wall keeps flow
+  slop:        0.06,    // extra separation so a resting contact stays quiet
+  bumperMax:   26.0,    // ceiling on bumper output
+
+  /* --- impact feedback --------------------------------------------------- */
+  hitQuiet:    1.20,    // impacts below this produce no burst and no sound
+  hitCool:     0.05,    // seconds between impact sounds (no machine-gunning)
+
+  /* --- input forgiveness -------------------------------------------------
+     A touch that lands a fraction of a second too early is the player being
+     eager, not the player being wrong. Below `catchSpeed` an early touch is
+     held and spent the instant control returns, rather than being thrown away
+     with a refusal. Above it the character is genuinely committed and the
+     touch is refused, so this can never become a free mid-air dash.
+
+     `catchSpeed` is chosen so that a character at that speed reaches the
+     settle band inside `aimBuffer` — the two numbers have to agree, or a
+     buffered touch expires with a refusal instead of being spent. */
+  catchSpeed:  6.0,     // fast enough to buffer a touch, not to act on one
+  aimBuffer:   0.60,    // seconds an early touch is held for
+};
+
+/* Power ramp: fine control at the low end, punch at the top. */
+const launchPower = (p) => p * (1 - MOVE.launchCurve) + p * p * MOVE.launchCurve;
+const launchSpeed = (p) => lerp(MOVE.launchMin, MOVE.launchMax, launchPower(clamp(p, 0, 1)));
 
 const FIELD = { x0: 15, y0: 93, x1: 525, y1: 941 };
 const FAIL_HOLD = 0.45;      // seconds from failure to a live orb again
@@ -935,7 +997,9 @@ function releaseBash() {
   if (!p || G.phase !== 'play' || !orb.alive) { cancelAim(); return; }
   const dx = Math.cos(BASH.angle), dy = Math.sin(BASH.angle);
   orb.vx = dx * BASH.speed; orb.vy = dy * BASH.speed;
-  orb.flash = 1; orb.trailN = 0;
+  orb.dash = MOVE.dashTime;
+  PS.facing = BASH.angle;
+  Vis.onLaunch(BASH.angle, 0.8);
   p.vx = -dx * BASH.speed; p.vy = -dy * BASH.speed;
   p.reflected = true; p.color = orb.color; p.cooldown = .3; p.life = 4;
   FX.shock(orb.x, orb.y, 12, 80, .35, [255, 214, 112], 3);
@@ -1211,57 +1275,132 @@ function isPassable(e, color) {
   return false;
 }
 
-function resolveBox(s, e, record) {
-  const hit = circleVsBox(s.x, s.y, s.r, e);
-  if (!hit) return;
-  s.x += hit.nx * hit.pen;
-  s.y += hit.ny * hit.pen;
-  let ovx = e.vx || 0, ovy = e.vy || 0;
-  if (e.av) {
-    const rx = s.x - e.x, ry = s.y - e.y;
-    ovx += -e.av * ry; ovy += e.av * rx;
-  }
-  let rvx = s.vx - ovx, rvy = s.vy - ovy;
-  const vn = rvx * hit.nx + rvy * hit.ny;
-  if (vn < 0) {
-    const nvx = hit.nx * vn, nvy = hit.ny * vn;
-    const tvx = rvx - nvx, tvy = rvy - nvy;
-    rvx = tvx * CFG.tangent - nvx * CFG.restitution;
-    rvy = tvy * CFG.tangent - nvy * CFG.restitution;
-    s.vx = rvx + ovx; s.vy = rvy + ovy;
-    const hx = s.x - hit.nx * s.r, hy = s.y - hit.ny * s.r;
-    if (-vn > RES.impact) {
-      RES.impact = -vn; RES.nx = hit.nx; RES.ny = hit.ny;
-      RES.hx = hx; RES.hy = hy;
+/* --- contact accumulator -------------------------------------------------
+   Every surface touched during one substep lands here. Position is corrected
+   the moment a contact is found, so the body is never left overlapping, but
+   the *velocity* response is deferred and applied once, against the combined
+   normal of everything that was actually being driven into.
+
+   That single change is what makes corners behave. Resolving each wall in turn
+   reflected the body twice in the same instant — the second reflection undid
+   the first, so the outgoing angle depended on the order of the solids list
+   and a one-pixel difference in approach could send the character anywhere. A
+   corner now produces one reflection off the corner, which is both stable and
+   predictable, and a wedge produces a slide rather than a vibration. */
+const CT = {
+  n: 0,                       // contacts recorded (capped at the array size)
+  closing: 0,                 // how many were being driven into
+  nx: 0, ny: 0, wsum: 0,      // penetration-weighted combined normal
+  ovx: 0, ovy: 0,             // weighted surface velocity of those contacts
+  cnx: new Float64Array(6), cny: new Float64Array(6),
+  cvx: new Float64Array(6), cvy: new Float64Array(6),
+  reset() {
+    this.n = 0; this.closing = 0;
+    this.nx = 0; this.ny = 0; this.wsum = 0;
+    this.ovx = 0; this.ovy = 0;
+  },
+  add(nx, ny, pen, ovx, ovy, closing) {
+    if (this.n < 6) {
+      const i = this.n++;
+      this.cnx[i] = nx; this.cny[i] = ny;
+      this.cvx[i] = ovx; this.cvy[i] = ovy;
     }
-    RES.wall = true;
-    if (record) HITS.add(e, -vn, hx, hy);
-  }
+    if (!closing) return;
+    const w = pen > 0.05 ? pen : 0.05;
+    this.nx += nx * w; this.ny += ny * w;
+    this.ovx += ovx * w; this.ovy += ovy * w;
+    this.wsum += w;
+    this.closing++;
+  },
+};
+
+/* Impacts below the stick threshold do not rebound at all: a body settling
+   against a floor stops dead instead of chattering. Above it, restitution
+   climbs with the impact so a real slam still rings off the wall. */
+function restitutionFor(speed) {
+  if (speed < MOVE.bounceStick) return 0;
+  const k = clamp((speed - MOVE.bounceStick) / (MOVE.bounceRamp - MOVE.bounceStick), 0, 1);
+  return lerp(MOVE.bounceMin, MOVE.bounceMax, k);
 }
 
-/* A round solid (crystal): same restitution response as a wall, circle maths.
+/* The surface velocity of a contact point, including any spin. */
+const SV = { x: 0, y: 0 };
+function surfaceVel(e, px, py) {
+  SV.x = e.vx || 0; SV.y = e.vy || 0;
+  if (e.av) { SV.x += -e.av * (py - e.y); SV.y += e.av * (px - e.x); }
+  return SV;
+}
+
+function collectBox(s, e, record) {
+  const hit = circleVsBox(s.x, s.y, s.r, e);
+  if (!hit) return;
+  s.x += hit.nx * (hit.pen + MOVE.slop);
+  s.y += hit.ny * (hit.pen + MOVE.slop);
+  const sv = surfaceVel(e, s.x, s.y);
+  const vn = (s.vx - sv.x) * hit.nx + (s.vy - sv.y) * hit.ny;
+  CT.add(hit.nx, hit.ny, hit.pen, sv.x, sv.y, vn < 0);
+  if (vn >= 0) return;                       // resting or already separating
+  const hx = s.x - hit.nx * s.r, hy = s.y - hit.ny * s.r;
+  if (-vn > RES.impact) {
+    RES.impact = -vn; RES.nx = hit.nx; RES.ny = hit.ny;
+    RES.hx = hx; RES.hy = hy;
+  }
+  RES.wall = true;
+  if (record) HITS.add(e, -vn, hx, hy);
+}
+
+/* A round solid (crystal): same response as a wall, circle maths.
    Box entities carry w/h, round ones carry r — the solids loop dispatches on
    `e.round` so both can share one list. */
-function resolveRound(s, e, record) {
+function collectRound(s, e, record) {
   const dx = s.x - e.x, dy = s.y - e.y;
   const rr = s.r + e.r;
   const d2 = dx * dx + dy * dy;
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.0001;
   const nx = dx / d, ny = dy / d;
-  s.x = e.x + nx * rr; s.y = e.y + ny * rr;
-  const vn = s.vx * nx + s.vy * ny;
-  if (vn < 0) {
-    const nvx = nx * vn, nvy = ny * vn;
-    const tvx = s.vx - nvx, tvy = s.vy - nvy;
-    s.vx = tvx * CFG.tangent - nvx * CFG.restitution;
-    s.vy = tvy * CFG.tangent - nvy * CFG.restitution;
-    const hx = e.x + nx * e.r, hy = e.y + ny * e.r;
-    if (-vn > RES.impact) {
-      RES.impact = -vn; RES.nx = nx; RES.ny = ny; RES.hx = hx; RES.hy = hy;
+  const pen = rr - d;
+  s.x = e.x + nx * (rr + MOVE.slop); s.y = e.y + ny * (rr + MOVE.slop);
+  const sv = surfaceVel(e, s.x, s.y);
+  const vn = (s.vx - sv.x) * nx + (s.vy - sv.y) * ny;
+  CT.add(nx, ny, pen, sv.x, sv.y, vn < 0);
+  if (vn >= 0) return;
+  const hx = e.x + nx * e.r, hy = e.y + ny * e.r;
+  if (-vn > RES.impact) {
+    RES.impact = -vn; RES.nx = nx; RES.ny = ny; RES.hx = hx; RES.hy = hy;
+  }
+  RES.wall = true;
+  if (record) HITS.add(e, -vn, hx, hy);
+}
+
+/* One velocity response for the whole substep. */
+function resolveContactVel(s) {
+  if (CT.closing && CT.wsum > 0) {
+    const len = Math.hypot(CT.nx, CT.ny);
+    // A near-zero combined normal means the contacts oppose each other: the
+    // body is wedged. There is no sensible direction to rebound in, so it is
+    // left to the slide pass below, which simply removes the trapped motion.
+    if (len > CT.wsum * 0.2) {
+      const nx = CT.nx / len, ny = CT.ny / len;
+      const ovx = CT.ovx / CT.wsum, ovy = CT.ovy / CT.wsum;
+      const rvx = s.vx - ovx, rvy = s.vy - ovy;
+      const vn = rvx * nx + rvy * ny;
+      if (vn < 0) {
+        const rest = restitutionFor(-vn);
+        const nvx = nx * vn, nvy = ny * vn;
+        s.vx = (rvx - nvx) * MOVE.slide - nvx * rest + ovx;
+        s.vy = (rvy - nvy) * MOVE.slide - nvy * rest + ovy;
+      }
     }
-    RES.wall = true;
-    if (record) HITS.add(e, -vn, hx, hy);
+  }
+  // Never end a substep still travelling into a surface that is being touched.
+  // For a single contact the rebound above has already handled it, so this is
+  // a no-op; for a corner or a wedge it is what stops the body burrowing into
+  // one wall because the other one pushed it there.
+  for (let i = 0; i < CT.n; i++) {
+    const nx = CT.cnx[i], ny = CT.cny[i];
+    const vn = (s.vx - CT.cvx[i]) * nx + (s.vy - CT.cvy[i]) * ny;
+    if (vn < 0) { s.vx -= nx * vn; s.vy -= ny * vn; }
   }
 }
 
@@ -1272,9 +1411,9 @@ function resolveBumper(s, b) {
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.0001;
   const nx = dx / d, ny = dy / d;
-  s.x = b.x + nx * rr; s.y = b.y + ny * rr;
+  s.x = b.x + nx * (rr + MOVE.slop); s.y = b.y + ny * (rr + MOVE.slop);
   const vn = s.vx * nx + s.vy * ny;
-  const out = Math.min(CFG.maxSpeed, b.power + Math.max(0, -vn) * 0.45);
+  const out = Math.min(MOVE.bumperMax, b.power + Math.max(0, -vn) * 0.45);
   const tvx = s.vx - nx * vn, tvy = s.vy - ny * vn;
   s.vx = tvx * 0.5 + nx * out;
   s.vy = tvy * 0.5 + ny * out;
@@ -1283,17 +1422,23 @@ function resolveBumper(s, b) {
   RES.nx = nx; RES.ny = ny;
 }
 
+/* Substep length is bounded by a fraction of the body radius, so a fast pass
+   can never skip past thin geometry, and the substep count is capped so a
+   pathological velocity cannot turn one frame into an unbounded loop. */
+const SUBSTEP_MAX = 10;
+
 function stepBody(s, useBumpers, record) {
   RES.impact = 0; RES.wall = false; RES.bumper = null;
   RES.deadly = false;
   if (record) HITS.n = 0;
   const sp = Math.hypot(s.vx, s.vy);
-  const n = Math.min(9, Math.max(1, Math.ceil(sp / (s.r * 0.5))));
+  const n = Math.min(SUBSTEP_MAX, Math.max(1, Math.ceil(sp / (s.r * 0.42))));
   const solids = world.solids;
   for (let i = 0; i < n; i++) {
     // velocity is re-read every substep: after a bounce the remainder of the
     // step continues along the new direction instead of ploughing on
     s.x += s.vx / n; s.y += s.vy / n;
+    CT.reset();
     for (let k = 0; k < solids.length; k++) {
       const e = solids[k];
       if (e.dead || isPassable(e, orb.color)) continue;
@@ -1306,8 +1451,9 @@ function stepBody(s, useBumpers, record) {
         }
         continue;
       }
-      if (e.round) resolveRound(s, e, record); else resolveBox(s, e, record);
+      if (e.round) collectRound(s, e, record); else collectBox(s, e, record);
     }
+    if (CT.n) resolveContactVel(s);
     if (useBumpers) {
       for (let k = 0; k < world.bumpers.length; k++) resolveBumper(s, world.bumpers[k]);
       if (RES.bumper) break;
@@ -1316,28 +1462,53 @@ function stepBody(s, useBumpers, record) {
   return RES;
 }
 
-function applyDamping(s) {
-  s.vx *= CFG.damping; s.vy *= CFG.damping;
-  const sp = Math.hypot(s.vx, s.vy);
-  if (sp > CFG.maxSpeed) { const f = CFG.maxSpeed / sp; s.vx *= f; s.vy *= f; }
-  else if (sp < CFG.brakeSpeed) {
-    const f = lerp(0.9, 1, sp / CFG.brakeSpeed);
-    s.vx *= f; s.vy *= f;
-    if (sp < CFG.stopSpeed) { s.vx = 0; s.vy = 0; }
+/* Drag by band. Almost nothing is taken off a body that is genuinely moving —
+   that is what lets a leap carry and rebounds chain — and then it rises
+   steeply through the settle band so the character parks with intent instead
+   of drifting for another second and a half. */
+function dragAt(sp) {
+  if (sp >= MOVE.speedFlow) return MOVE.dragFlow;
+  if (sp >= MOVE.speedSettle) {
+    return lerp(MOVE.dragSettle, MOVE.dragFlow,
+                (sp - MOVE.speedSettle) / (MOVE.speedFlow - MOVE.speedSettle));
   }
+  return lerp(MOVE.dragRest, MOVE.dragSettle,
+              clamp((sp - MOVE.speedStop) / (MOVE.speedSettle - MOVE.speedStop), 0, 1));
+}
+
+function applyDamping(s) {
+  let sp = Math.hypot(s.vx, s.vy);
+  if (sp === 0) return;
+  if (sp > MOVE.speedMax) { const f = MOVE.speedMax / sp; s.vx *= f; s.vy *= f; sp = MOVE.speedMax; }
+  // A launch is a burst of energy, not a push: for a moment after release the
+  // character holds its speed outright, which is what makes the dash read as
+  // deliberate rather than as something that started decaying immediately.
+  if (s.dash > 0) { s.dash -= STEP; return; }
+  const d = dragAt(sp);
+  s.vx *= d; s.vy *= d;
+  if (sp * d < MOVE.speedStop) { s.vx = 0; s.vy = 0; }
 }
 
 /* --- trajectory prediction (shares the exact same integrator) --- */
-const probe = { x: 0, y: 0, vx: 0, vy: 0, r: CFG.orbR };
-const preview = { pts: [], n: 0, blocked: false, hazard: false };
-function predict(x, y, vx, vy, maxBounce) {
+const probe = { x: 0, y: 0, vx: 0, vy: 0, r: CFG.orbR, dash: 0 };
+const preview = {
+  pts: [], n: 0, blocked: false, hazard: false,
+  bounce: -1,                    // index of the dot nearest the first rebound
+  bx: 0, by: 0, bnx: 0, bny: 0,  // where that rebound happens, and its normal
+};
+
+/* The guide is a fixed *length* of path, not a fixed time, and the length is
+   set by the caller from the launch power: a gentle nudge is previewed almost
+   to its resting point, a committed leap only gets its opening stretch. The
+   character's whole route is never drawn — reading the rebound is the skill. */
+function predict(x, y, vx, vy, maxBounce, maxDist) {
   probe.x = x; probe.y = y; probe.vx = vx; probe.vy = vy;
+  probe.dash = MOVE.dashTime;          // the preview launches the same way a real one does
   preview.n = 0; preview.blocked = false; preview.hazard = false;
+  preview.bounce = -1;
   let bounces = 0, travelled = 0, sinceDot = 1e9;
-  // the guide is a fixed *length* of path, not a fixed time: a gentle nudge is
-  // previewed almost to its resting point, a full-power shot only gets the
-  // opening stretch, so strong shots stay a matter of skill
-  const steps = 88, maxDist = 340;
+  const steps = 96;
+  if (maxDist === undefined) maxDist = 340;
   for (let i = 0; i < steps; i++) {
     const ox = probe.x, oy = probe.y;
     const r = stepBody(probe, true);
@@ -1348,11 +1519,19 @@ function predict(x, y, vx, vy, maxBounce) {
       preview.hazard = true;
       break;
     }
-    if (r.wall) bounces++;
+    if (r.wall) {
+      if (bounces === 0 && r.impact > MOVE.hitQuiet) {
+        // remember the first real rebound so the aim guide can mark it
+        preview.bounce = preview.n;
+        preview.bx = RES.hx; preview.by = RES.hy;
+        preview.bnx = RES.nx; preview.bny = RES.ny;
+      }
+      bounces++;
+    }
     applyDamping(probe);
     const moved = Math.hypot(probe.x - ox, probe.y - oy);
     travelled += moved; sinceDot += moved;
-    if (sinceDot >= 21) {                 // evenly spaced dots, whatever the speed
+    if (sinceDot >= 19) {                 // evenly spaced dots, whatever the speed
       sinceDot = 0;
       const idx = preview.n++;
       if (!preview.pts[idx]) preview.pts[idx] = { x: 0, y: 0 };
@@ -1364,6 +1543,7 @@ function predict(x, y, vx, vy, maxBounce) {
     }
     if (r.bumper || bounces > maxBounce) { preview.blocked = true; break; }
     if (travelled > maxDist) break;
+    if (probe.vx === 0 && probe.vy === 0) break;
   }
   return preview;
 }
@@ -1382,7 +1562,6 @@ const G = {
   shotLimit: 0,
   totalShots: 0,
   runTime: 0,
-  idle: 0,
   aiming: false,
   anchorX: 0, anchorY: 0,
   power: 0,
@@ -1392,19 +1571,198 @@ const G = {
   deny: 0,                // "not yet" feedback when grabbing a moving orb
 };
 
+/* ---------------------------------------------------------------------------
+   THE PLAYER
+   ---------------------------------------------------------------------------
+   The character is split into four parts that only talk through small, named
+   interfaces. Nothing here is clever; the point is simply that the collision
+   loop never writes a visual field, and the renderer never writes a physics
+   one, so the orb can be swapped for an animated model later without any of
+   the movement code being touched.
+
+     orb    — the physics body: position, velocity, radius, energy signature.
+              This is what the integrator, the collision loop and the level
+              logic operate on, and the only part that decides the outcome of
+              a launch.
+     PS     — the state machine: which speed band the body is in, whether the
+              player may aim, and how long each of those has been true.
+     Vis    — everything cosmetic: squash, stretch, flash, trail, scale. The
+              gameplay code calls its event methods (onLaunch, onImpact, …)
+              and never pokes its fields.
+     Player — the seam a future renderer plugs into: `Player.pose` is refreshed
+              once a frame with everything a character rig needs, and if
+              `Player.rig` is set, the orb drawing is handed over to it.
+
+   Input lives in section 9 and writes only to `G.aiming/power/pull*`, which is
+   read here and by the aim guide. --------------------------------------- */
+
 const orb = {
   x: 0, y: 0, vx: 0, vy: 0, r: CFG.orbR,
+  dash: 0,                  // seconds of drag-free burst left from a launch
   color: 'violet', prevColor: 'violet', colorMix: 1,
-  squash: 0, squashAng: 0, pulse: 0, flash: 0, pop: 0, failKind: 'energy',
-  alive: true, scale: 1,
-  trail: [], trailN: 0,
+  alive: true, failKind: 'energy',
 };
+
 const TRAIL_N = 18;
-for (let i = 0; i < TRAIL_N; i++) orb.trail.push({ x: 0, y: 0, v: 0 });
+
+/* ---- player state machine ------------------------------------------------
+   MOVING / AIRBORNE versus STABLE / AIMABLE, expressed as four speed bands so
+   the renderer, the audio and the input all read the same answer. `ready` is
+   the one the player actually feels: it is what decides whether a touch starts
+   an aim, and its rising edge is what the ready pulse and ring respond to. */
+const BAND = ['rest', 'settle', 'flow', 'dash'];
+const PS = {
+  state: 'rest',
+  prev: 'rest',
+  stateT: 0,
+  speed: 0,
+  facing: -Math.PI / 2,     // last meaningful direction of travel
+  ready: false,             // stable enough to aim right now
+  readyT: 0,                // seconds spent ready (drives the idle ring)
+  airT: 0,                  // seconds spent unable to aim
+  landT: 99,                // seconds since the last real surface contact
+};
+
+function speedBand(sp) {
+  if (sp >= MOVE.speedDash) return 'dash';
+  if (sp >= MOVE.speedSettle) return 'flow';
+  if (sp >= MOVE.speedRest) return 'settle';
+  return 'rest';
+}
+
+/* True when the character is calm enough to be caught and re-aimed in place.
+   Deliberately generous: it is the forgiving end of the movement, not a
+   loophole — anything above the settle band still needs a Bash target. Read
+   straight from the body so input answers the same question the simulation
+   does, even when a touch lands between two fixed steps. */
+function isStable(sp) {
+  if (sp === undefined) sp = Math.hypot(orb.vx, orb.vy);
+  return sp < MOVE.speedSettle;
+}
+
+function updatePlayerState() {
+  const sp = Math.hypot(orb.vx, orb.vy);
+  PS.speed = sp;
+  if (sp > 0.05) PS.facing = Math.atan2(orb.vy, orb.vx);
+  // while aiming the body is frozen, so the band it was in is held rather than
+  // collapsing to 'rest' and flickering back on release
+  const band = G.aiming ? PS.state : speedBand(sp);
+  if (band !== PS.state) { PS.prev = PS.state; PS.state = band; PS.stateT = 0; }
+  else PS.stateT += STEP;
+  PS.landT += STEP;
+
+  const ready = orb.alive && !G.aiming && isStable(sp) && canGrab();
+  if (ready) {
+    if (!PS.ready) { PS.readyT = 0; Vis.onReady(); }
+    PS.readyT += STEP;
+    PS.airT = 0;
+  } else {
+    PS.airT += STEP;
+  }
+  PS.ready = ready;
+}
+
+/* ---- player visuals ------------------------------------------------------
+   Purely cosmetic state, driven by events rather than by polling the physics.
+   Everything decays on the fixed step, so the look is frame-rate independent
+   and a stalled tab cannot leave the character stretched. */
+const Vis = {
+  squash: 0, squashAng: 0,     // compression along a contact
+  stretch: 0, stretchAng: 0,   // elongation along travel, strongest on a dash
+  pulse: 0,                    // free-running clock for idle motion
+  flash: 0, pop: 0, scale: 1,
+  readyPop: 0,                 // one-shot pulse when aiming becomes possible
+  landPop: 0,                  // one-shot pulse on a solid landing
+  trail: [], trailN: 0,
+
+  reset(x, y) {
+    this.squash = 0; this.stretch = 0; this.flash = 0; this.pop = 0;
+    this.scale = 1; this.readyPop = 0; this.landPop = 0;
+    for (let i = 0; i < TRAIL_N; i++) { this.trail[i].x = x; this.trail[i].y = y; this.trail[i].v = 0; }
+    this.trailN = 0;
+  },
+
+  step(sp) {
+    this.pulse += STEP;
+    if (this.flash > 0) this.flash = Math.max(0, this.flash - STEP * 3.4);
+    if (this.pop > 0) this.pop = Math.max(0, this.pop - STEP * 5.5);
+    if (this.squash > 0) this.squash = Math.max(0, this.squash - STEP * 3.6);
+    if (this.readyPop > 0) this.readyPop = Math.max(0, this.readyPop - STEP * 2.6);
+    if (this.landPop > 0) this.landPop = Math.max(0, this.landPop - STEP * 4.2);
+    // speed stretch is a follow, not a decay: it tracks the dash band so the
+    // character leans into fast travel and relaxes as it settles
+    const want = clamp((sp - MOVE.speedFlow) / (MOVE.speedDash - MOVE.speedFlow), 0, 1) * 0.2 +
+                 clamp(sp / MOVE.speedFlow, 0, 1) * 0.1;
+    this.stretch += (want - this.stretch) * 0.18;
+    if (sp > 0.5) this.stretchAng = PS.facing;
+  },
+
+  sample(x, y, sp) {
+    const tp = this.trail[this.trailN % TRAIL_N];
+    tp.x = x; tp.y = y; tp.v = sp;
+    this.trailN++;
+  },
+
+  onLaunch(ang, power) {
+    this.squash = 0.55; this.squashAng = ang;
+    this.stretch = 0.16 + power * 0.2; this.stretchAng = ang;
+    this.flash = 1;
+    this.trailN = 0;
+  },
+
+  onImpact(imp, nx, ny) {
+    const s = clamp(imp / 14, 0, 1);
+    this.squash = Math.max(this.squash, Math.min(0.6, 0.18 + s * 0.5));
+    this.squashAng = Math.atan2(ny, nx) + Math.PI / 2;
+    this.stretch *= 0.35;
+  },
+
+  onBumper(ang) {
+    this.squash = 0.7; this.squashAng = ang; this.flash = 0.9;
+  },
+
+  onLand() { this.landPop = 1; },
+  onReady() { this.readyPop = 1; },
+  onShift() { this.flash = 1; this.pop = 1; },
+};
+for (let i = 0; i < TRAIL_N; i++) Vis.trail.push({ x: 0, y: 0, v: 0 });
+
+/* ---- rig seam ------------------------------------------------------------
+   A future character (a Three.js GLTF model on a transparent canvas layered
+   over this one, most likely) needs no access to the physics: it needs a pose
+   and a state name, once a frame. `Player.pose` is that contract. Assigning
+   `Player.rig = { sync(pose) {...} }` takes over the character drawing and
+   nothing else in the game changes. Keeping the contract this narrow is the
+   whole point — the movement code must never learn what is rendering it. */
+const Player = {
+  body: orb,
+  rig: null,
+  pose: {
+    x: 0, y: 0, vx: 0, vy: 0, speed: 0,
+    facing: -Math.PI / 2, state: 'rest', ready: false,
+    squash: 0, squashAng: 0, stretch: 0, stretchAng: 0,
+    scale: 1, flash: 0, color: 'violet', alive: true,
+  },
+  syncPose() {
+    const p = this.pose;
+    p.x = orb.x; p.y = orb.y; p.vx = orb.vx; p.vy = orb.vy;
+    p.speed = PS.speed; p.facing = PS.facing;
+    p.state = PS.state; p.ready = PS.ready;
+    p.squash = Vis.squash; p.squashAng = Vis.squashAng;
+    p.stretch = Vis.stretch; p.stretchAng = Vis.stretchAng;
+    p.scale = Vis.scale; p.flash = Vis.flash;
+    p.color = orb.color; p.alive = orb.alive;
+    return p;
+  },
+};
 
 let lastPaint = -9;          // clock of the last colour transfer
+let lastHitSfx = -9;         // clock of the last impact sound (anti machine-gun)
 
-const cam = { shake: 0, sx: 0, sy: 0, zoom: 1, zoomT: 1, flash: 0, flashCol: [255, 255, 255] };
+const cam = {
+  shake: 0, sx: 0, sy: 0, zoom: 1, zoomT: 1, flash: 0, flashCol: [255, 255, 255],
+  kx: 0, ky: 0,              // directional impulse (a launch shoves the view)
+};
 
 /* ---- DOM ---- */
 const dom = {
@@ -1463,14 +1821,18 @@ function setHint(text) {
 
 function resetOrb() {
   lastPaint = -9;
+  lastHitSfx = -9;
   lastPvx = NaN;
+  clearBuffer();               // a held touch never survives a respawn
   const s = G.level.start;
   orb.x = s.x; orb.y = s.y; orb.vx = 0; orb.vy = 0;
+  orb.dash = 0;
   orb.color = G.level.color || 'violet';
   orb.prevColor = orb.color; orb.colorMix = 1;
-  orb.squash = 0; orb.flash = 0; orb.pop = 0; orb.alive = true; orb.scale = 1;
-  for (let i = 0; i < TRAIL_N; i++) { orb.trail[i].x = orb.x; orb.trail[i].y = orb.y; orb.trail[i].v = 0; }
-  orb.trailN = 0;
+  orb.alive = true;
+  PS.state = 'rest'; PS.prev = 'rest'; PS.stateT = 0; PS.speed = 0;
+  PS.facing = -Math.PI / 2; PS.ready = false; PS.readyT = 0; PS.airT = 0; PS.landT = 99;
+  Vis.reset(orb.x, orb.y);
 }
 
 function startLevel(i) {
@@ -1480,7 +1842,7 @@ function startLevel(i) {
   G.shots = 0;
   G.t = 0;
   G.phase = 'play'; G.phaseT = 0;
-  G.aiming = false; G.idle = 0;
+  G.aiming = false;
   G.fadeIn = 0.5;
   clearFX();
   resetOrb();
@@ -1549,12 +1911,17 @@ function canGrab() {
   return G.phase === 'play' && G.transDir === 0 && orb.alive;
 }
 
+/* A launch is the character throwing itself, not a cue striking a ball: it
+   leaves at a speed set by the power curve, holds that speed for the length of
+   the dash window, and only then starts paying drag. */
 function launch(ang, power) {
-  const sp = lerp(CFG.minLaunch, CFG.maxLaunch, power);
+  const sp = launchSpeed(power);
   orb.vx = Math.cos(ang) * sp;
   orb.vy = Math.sin(ang) * sp;
-  orb.squash = 0.55; orb.squashAng = ang;
-  orb.flash = 1;
+  orb.dash = MOVE.dashTime;
+  PS.facing = ang;
+  PS.state = speedBand(sp); PS.stateT = 0; PS.ready = false; PS.airT = 0;
+  Vis.onLaunch(ang, power);
   G.shots++; G.totalShots++;
   updateShotHud();
   dom.shots.classList.remove('bump'); void dom.shots.offsetWidth; dom.shots.classList.add('bump');
@@ -1564,6 +1931,10 @@ function launch(ang, power) {
   FX.spark(orb.x, orb.y, ang, 0.9, 2.2, 4, c.hi, { life: 0.28, size: 2 });
   FX.shock(orb.x, orb.y, orb.r, orb.r + 34 + power * 26, 0.34, c.rgb, 3);
   cam.shake = Math.max(cam.shake, 2 + power * 4);
+  // a short shove of the view *against* the leap: enough to feel the push,
+  // far too small to move the playfield out from under the player's finger
+  cam.kx -= Math.cos(ang) * (1.2 + power * 2.2);
+  cam.ky -= Math.sin(ang) * (1.2 + power * 2.2);
   cam.flash = Math.max(cam.flash, 0.1 + power * 0.14); cam.flashCol = c.hi;
   Sfx.launch(power);
   setHint('');
@@ -1579,8 +1950,7 @@ function shiftOrbColor(key, x, y) {
   orb.prevColor = orb.color;
   orb.color = key;
   orb.colorMix = 0;
-  orb.flash = 1;
-  orb.pop = 1;
+  Vis.onShift();
   const c = energy(key);
   FX.spark(x, y, 0, Math.PI, 3.6, 4, c.rgb, { life: 0.4, size: 2.6, drag: 0.92 });
   FX.spark(x, y, 0, Math.PI, 1.8, 2, c.hi, { life: 0.3, size: 2 });
@@ -1812,17 +2182,18 @@ function simStep() {
   cam.zoom += (cam.zoomT - cam.zoom) * 0.09;
   cam.zoomT += (1 - cam.zoomT) * 0.05;
   cam.flash *= 0.8;
+  cam.kx *= 0.80; cam.ky *= 0.80;
+  if (Math.abs(cam.kx) < 0.02) cam.kx = 0;
+  if (Math.abs(cam.ky) < 0.02) cam.ky = 0;
   if (G.fadeIn > 0) G.fadeIn = Math.max(0, G.fadeIn - STEP);
 
   if (G.deny > 0) G.deny = Math.max(0, G.deny - STEP * 2.4);
   if (orb.colorMix < 1) orb.colorMix = Math.min(1, orb.colorMix + STEP * 5);
-  if (orb.flash > 0) orb.flash = Math.max(0, orb.flash - STEP * 3.4);
-  if (orb.pop > 0) orb.pop = Math.max(0, orb.pop - STEP * 5.5);
-  if (orb.squash > 0) orb.squash = Math.max(0, orb.squash - STEP * 3.6);
-  orb.pulse += STEP;
+  Vis.step(PS.speed);
 
   if (G.phase === 'play' && orb.alive) {
     const px = orb.x, py = orb.y;
+    const wasFast = PS.speed >= MOVE.speedSettle;
     if (!G.aiming) {
       const r = stepBody(orb, true, true);
       applyDamping(orb);
@@ -1831,21 +2202,25 @@ function simStep() {
         FX.shock(b.x, b.y, b.r * 0.7, b.r + 70, 0.5, BUMPER_RGB, 4);
         FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 5, 8, [200, 240, 255],
                  { life: 0.4, size: 2.6, shape: 1, len: 10 });
-        orb.squash = 0.7; orb.squashAng = Math.atan2(orb.vy, orb.vx); orb.flash = 0.9;
+        Vis.onBumper(Math.atan2(orb.vy, orb.vx));
+        PS.landT = 0;
         cam.shake = Math.max(cam.shake, 7);
         cam.flash = Math.max(cam.flash, 0.2);
         cam.flashCol = [200, 240, 255];
         Sfx.bumper();
         if (b.color) shiftOrbColor(b.color, RES.hx, RES.hy);
-      } else if (r.wall && r.impact > 1.2) {
+      } else if (r.wall && r.impact > MOVE.hitQuiet) {
+        // Impact feedback scales with the hit and is rate-limited, so grazing a
+        // wall stays quiet and a corner cannot fire the same burst three steps
+        // running. The character still *always* answers a real contact.
         const s = clamp(r.impact / 14, 0, 1);
         const c = energy(orb.color);
         FX.spark(RES.hx, RES.hy, Math.atan2(RES.ny, RES.nx), 1.0, 1.4 + s * 4, 2 + (s * 2 | 0), c.rgb,
                  { life: 0.3, size: 1.9, shape: 1, len: 7, drag: 0.9 });
-        orb.squash = Math.min(0.6, 0.18 + s * 0.5);
-        orb.squashAng = Math.atan2(RES.ny, RES.nx) + Math.PI / 2;
+        Vis.onImpact(r.impact, RES.nx, RES.ny);
+        PS.landT = 0;
         if (s > 0.45) cam.shake = Math.max(cam.shake, s * 5);
-        Sfx.bounce(r.impact);
+        if (G.t - lastHitSfx >= MOVE.hitCool) { lastHitSfx = G.t; Sfx.bounce(r.impact); }
       }
       resolveContacts();
       compactWorld();
@@ -1854,26 +2229,25 @@ function simStep() {
     // out of energy — checked only once the final launch has played out, so a
     // last-second win always counts
     if (G.phase === 'play' && orb.alive && !G.aiming && G.shotLimit && G.shots >= G.shotLimit &&
-        Math.hypot(orb.vx, orb.vy) < CFG.stopSpeed) {
+        Math.hypot(orb.vx, orb.vy) < MOVE.speedStop) {
       killOrb('power');
     }
 
-    // trail sampling
     if (orb.alive) {
-      const sp = Math.hypot(orb.vx, orb.vy);
-      const tp = orb.trail[orb.trailN % TRAIL_N];
-      tp.x = orb.x; tp.y = orb.y; tp.v = sp;
-      orb.trailN++;
-      if (canGrab() && !G.aiming && sp < CFG.readySpeed) G.idle += STEP; else G.idle = 0;
+      updatePlayerState();
+      // the moment travel drops into the controllable band after a real flight
+      if (wasFast && PS.speed < MOVE.speedSettle && PS.landT < 0.5) Vis.onLand();
+      Vis.sample(orb.x, orb.y, PS.speed);
+      updateAimBuffer();
     }
   } else if (G.phase === 'fail') {
     // the void drags the orb away while it fades; other kinds just burst
     if (orb.failKind === 'void') {
       orb.x += orb.vx * 0.35; orb.y += orb.vy * 0.35;
       orb.vx *= 0.94; orb.vy *= 0.94;
-      orb.scale = Math.max(0, orb.scale - STEP * 2.6);
+      Vis.scale = Math.max(0, Vis.scale - STEP * 2.6);
     } else if (orb.failKind === 'power') {
-      orb.scale = Math.max(0, orb.scale - STEP * 2.2);
+      Vis.scale = Math.max(0, Vis.scale - STEP * 2.2);
     }
     if (G.phaseT > FAIL_HOLD) {
       // a retry is a clean slate: ice, crystals and launch energy all restored
@@ -1890,7 +2264,7 @@ function simStep() {
     const k = clamp(G.phaseT / 0.42, 0, 1);
     orb.x = lerp(orb.x, p2.x, 0.22);
     orb.y = lerp(orb.y, p2.y, 0.22);
-    orb.scale = Math.max(0, 1 - easeIn(k));
+    Vis.scale = Math.max(0, 1 - easeIn(k));
     orb.vx *= 0.8; orb.vy *= 0.8;
     if (G.phaseT > 0.92) nextLevel();
   }
@@ -2861,24 +3235,25 @@ function orbLayers(c) {
 }
 
 /* Fixed-size ring buffer, no allocation, and it collapses to nothing as soon
-   as the orb slows down — below ~1.5 units/step the trail is not drawn at all,
-   so a resting orb costs zero. */
+   as the character settles — inside the rest band the trail is not drawn at
+   all, so a resting character costs zero. Its weight tracks the speed bands,
+   which is what makes a dash read as a dash at a glance. */
 function drawTrail(c, col) {
-  const speed = Math.hypot(orb.vx, orb.vy);
-  if (speed < 1.5) return;
-  const n = Math.min(orb.trailN, Q.level < 1 ? (TRAIL_N >> 1) : TRAIL_N);
+  const speed = PS.speed;
+  if (speed < MOVE.speedRest) return;
+  const n = Math.min(Vis.trailN, Q.level < 1 ? (TRAIL_N >> 1) : TRAIL_N);
   if (n < 3) return;
-  const k = clamp(speed / 12, 0, 1);
+  const k = clamp((speed - MOVE.speedRest) / (MOVE.speedDash - MOVE.speedRest), 0, 1);
   c.globalCompositeOperation = 'lighter';
   c.lineCap = 'round'; c.lineJoin = 'round';
 
   c.beginPath();
   for (let i = 1; i < n; i++) {
-    const p = orb.trail[(orb.trailN - n + i + TRAIL_N * 4) % TRAIL_N];
+    const p = Vis.trail[(Vis.trailN - n + i + TRAIL_N * 4) % TRAIL_N];
     if (i === 1) c.moveTo(p.x, p.y); else c.lineTo(p.x, p.y);
   }
-  const head = orb.trail[(orb.trailN - 1 + TRAIL_N * 4) % TRAIL_N];
-  const tail = orb.trail[(orb.trailN - n + TRAIL_N * 4) % TRAIL_N];
+  const head = Vis.trail[(Vis.trailN - 1 + TRAIL_N * 4) % TRAIL_N];
+  const tail = Vis.trail[(Vis.trailN - n + TRAIL_N * 4) % TRAIL_N];
   const g = c.createLinearGradient(tail.x, tail.y, head.x, head.y);
   g.addColorStop(0, rgba(col.rgb, 0));
   g.addColorStop(0.65, rgba(col.rgb, 0.16 * k));
@@ -2891,15 +3266,17 @@ function drawTrail(c, col) {
 
 function drawOrb(c) {
   const fading = !orb.alive && (orb.failKind === 'void' || orb.failKind === 'power');
-  if ((!orb.alive && !fading) || orb.scale <= 0.01) return;
+  if ((!orb.alive && !fading) || Vis.scale <= 0.01) return;
   const col = orbColors();
-  const sp = Math.hypot(orb.vx, orb.vy);
-  const r = orb.r * orb.scale;
+  const sp = PS.speed;
+  const r = orb.r * Vis.scale;
 
   drawTrail(c, col);
 
-  // aiming visual offset: the orb leans into the stretch
-  let ox = 0, oy = 0, stretch = 0, sang = 0;
+  // Aiming leans the character back into the pull; travelling stretches it
+  // along its own direction. Both are the same transform, so a launch reads as
+  // one continuous motion: wind up, snap out, stretch into the leap.
+  let ox = 0, oy = 0, stretch = Vis.stretch, sang = Vis.stretchAng;
   if (G.aiming && G.power > 0) {
     const a = Math.atan2(G.pullY, G.pullX);
     ox = Math.cos(a) * G.power * 11;
@@ -2907,15 +3284,17 @@ function drawOrb(c) {
     stretch = G.power * 0.26;
     sang = a;
   }
-  let sq = orb.squash, sqA = orb.squashAng;
-  if (sp > 2 && sq <= 0) { sq = Math.min(0.22, sp / 100); sqA = Math.atan2(orb.vy, orb.vx); }
+  const sq = Vis.squash, sqA = Vis.squashAng;
 
-  const idle = Math.sin(orb.pulse * 2.1) * (sp < 1 ? 1 : 0);
+  const idle = Math.sin(Vis.pulse * 2.1) * (sp < MOVE.speedRest ? 1 : 0);
   const bob = idle * 1.6;
   const x = orb.x + ox, y = orb.y + oy + bob;
 
   const L = orbLayers(c);
-  const pop = 1 + orb.pop * 0.22;          // colour-change scale pulse
+  // scale pulses: colour change, plus the small ones that mark regaining
+  // control and touching down. Deliberately tiny — they are meant to be felt
+  // rather than noticed.
+  const pop = 1 + Vis.pop * 0.22 + Vis.readyPop * 0.07 + Vis.landPop * 0.05;
 
   c.save();
   c.translate(x, y);
@@ -2924,10 +3303,11 @@ function drawOrb(c) {
   // outer bloom: one cached ramp, sized by transform and lit by alpha so the
   // glow still reacts to speed/charge without rebuilding anything
   c.globalCompositeOperation = 'lighter';
-  const bloomS = (r / orb.r) * (1 + orb.flash * 0.26 + G.power * 0.2 + clamp(sp / 26, 0, 1) * 0.18);
+  const bloomS = (r / orb.r) * (1 + Vis.flash * 0.26 + G.power * 0.2 +
+                                clamp(sp / MOVE.speedDash, 0, 1) * 0.2);
   c.save();
   c.scale(bloomS, bloomS);
-  c.globalAlpha = Math.min(1, 0.74 + orb.flash * 0.26 + G.power * 0.22);
+  c.globalAlpha = Math.min(1, 0.74 + Vis.flash * 0.26 + G.power * 0.22 + Vis.readyPop * 0.14);
   c.fillStyle = L.bloom;
   c.beginPath(); c.arc(0, 0, orb.r * 2.5, 0, TAU); c.fill();
   c.globalAlpha = 1;
@@ -2935,7 +3315,9 @@ function drawOrb(c) {
   c.globalCompositeOperation = 'source-over';
 
   c.save();
-  const ang = stretch > 0 ? sang : sqA;
+  // whichever deformation is currently dominant sets the axis, so a slam reads
+  // as compression against the wall rather than as a stretch along travel
+  const ang = sq > stretch ? sqA : sang;
   c.rotate(ang);
   const sx = 1 + stretch + sq * 0.42;
   const sy = 1 - stretch * 0.5 - sq * 0.34;
@@ -2957,7 +3339,7 @@ function drawOrb(c) {
   c.globalCompositeOperation = 'lighter';
   c.fillStyle = L.inner;
   for (let i = 0; i < 2; i++) {
-    const a = orb.pulse * (0.9 + i * 0.7) + i * 2.1;
+    const a = Vis.pulse * (0.9 + i * 0.7) + i * 2.1;
     const bx = Math.cos(a) * orb.r * 0.34, by = Math.sin(a * 1.3) * orb.r * 0.34;
     c.save();
     c.translate(bx, by);
@@ -2967,11 +3349,11 @@ function drawOrb(c) {
   c.restore();
 
   // bright core — the white flash on a colour change rides on alpha
-  const corePulse = 1 + Math.sin(orb.pulse * 3.4) * 0.07 + orb.flash * 0.35 + G.power * 0.2;
+  const corePulse = 1 + Math.sin(Vis.pulse * 3.4) * 0.07 + Vis.flash * 0.35 + G.power * 0.2;
   c.globalCompositeOperation = 'lighter';
   c.save();
   c.scale(corePulse, corePulse);
-  c.globalAlpha = Math.min(1, 0.8 + orb.flash * 0.2);
+  c.globalAlpha = Math.min(1, 0.8 + Vis.flash * 0.2);
   c.fillStyle = L.core;
   c.beginPath(); c.arc(0, 0, orb.r * 0.62, 0, TAU); c.fill();
   c.globalAlpha = 1;
@@ -2990,9 +3372,9 @@ function drawOrb(c) {
   // orbiting sparkles
   c.globalCompositeOperation = 'lighter';
   for (let i = 0; i < 3; i++) {
-    const a = orb.pulse * (1.1 + i * 0.35) + i * 2.2;
-    const rr = r * (1.35 + 0.18 * Math.sin(orb.pulse * 2 + i));
-    c.fillStyle = rgba(col.hi, 0.55 + 0.3 * Math.sin(orb.pulse * 3 + i));
+    const a = Vis.pulse * (1.1 + i * 0.35) + i * 2.2;
+    const rr = r * (1.35 + 0.18 * Math.sin(Vis.pulse * 2 + i));
+    c.fillStyle = rgba(col.hi, 0.55 + 0.3 * Math.sin(Vis.pulse * 3 + i));
     c.beginPath(); c.arc(Math.cos(a) * rr, Math.sin(a) * rr, 1.5, 0, TAU); c.fill();
   }
   c.globalCompositeOperation = 'source-over';
@@ -3008,17 +3390,22 @@ function drawAim(c) {
   const a = Math.atan2(-G.pullY, -G.pullX);   // launch direction
   const p = G.power;
 
-  // predicted path — the orb is frozen while aiming, so this only has to be
-  // re-simulated when the drag actually changes (plus a slow refresh so moving
-  // obstacles stay honest)
-  const maxB = G.levelIndex === 0 ? 0 : (G.levelIndex < 3 ? 1 : 2);
-  const sp = lerp(CFG.minLaunch, CFG.maxLaunch, p);
+  // Predicted path — the character is frozen while aiming, so this only has to
+  // be re-simulated when the drag actually changes (plus a slow refresh so
+  // moving obstacles stay honest).
+  //
+  // The guide shows the opening of the leap and its first rebound, never the
+  // whole route: the length is scaled by power so a gentle placement shot is
+  // previewed nearly to its resting point while a committed dash shows only
+  // where it is going and where it will come off the first wall.
+  const maxB = G.levelIndex === 0 ? 1 : 2;
+  const sp = launchSpeed(p);
   const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
   const dynamicGuide = world.movers.length || world.hazards.some(h => h.pulse);
   if (vx !== lastPvx || vy !== lastPvy ||
       (dynamicGuide && frameCount - lastPvf > 3)) {
     lastPvx = vx; lastPvy = vy; lastPvf = frameCount;
-    predict(orb.x, orb.y, vx, vy, maxB);
+    predict(orb.x, orb.y, vx, vy, maxB, lerp(190, 330, p));
   }
   const pv = preview;
 
@@ -3026,11 +3413,27 @@ function drawAim(c) {
   for (let i = 0; i < pv.n; i++) {
     const u = i / Math.max(1, pv.n - 1);
     const q = pv.pts[i];
-    const fade = 1 - u * u * 0.85;
-    const rr = lerp(4.4, 1.6, u);
-    c.fillStyle = rgba(i < 2 ? col.hi : col.rgb, 0.2 + fade * 0.62);
+    const fade = 1 - u * u * 0.9;
+    const rr = lerp(4.2, 1.3, u);
+    c.fillStyle = rgba(i < 2 ? col.hi : col.rgb, 0.16 + fade * 0.6);
     c.beginPath(); c.arc(q.x, q.y, rr, 0, TAU); c.fill();
   }
+
+  // First rebound: a short tick along the surface normal at the contact point.
+  // It is only drawn when the guide actually reaches past the bounce, so the
+  // mark never promises more certainty than the prediction has.
+  if (pv.bounce >= 0 && pv.bounce < pv.n - 1 && !pv.hazard) {
+    const nx = pv.bnx, ny = pv.bny;
+    c.strokeStyle = rgba(col.hi, 0.42);
+    c.lineWidth = 1.8;
+    c.beginPath();
+    c.moveTo(pv.bx - ny * 7, pv.by + nx * 7);
+    c.lineTo(pv.bx + ny * 7, pv.by - nx * 7);
+    c.stroke();
+    c.fillStyle = rgba(col.hi, 0.5);
+    c.beginPath(); c.arc(pv.bx, pv.by, 2.4, 0, TAU); c.fill();
+  }
+
   if (pv.n > 0 && pv.hazard) {
     // the predicted line ends in a hazard — warn, but do not block the shot
     const q = pv.pts[pv.n - 1];
@@ -3103,16 +3506,30 @@ function drawDeny(c) {
   c.globalCompositeOperation = 'source-over';
 }
 
+/* The transition into the aimable state is the single most important thing the
+   player has to read, so it gets two layers and no words: a one-shot ring that
+   snaps outward the instant control returns, and — only once the character has
+   been sitting there a while — the slow breathing ring that says "waiting for
+   you". Both are thin, both are the character's own colour, and neither of
+   them covers any geometry. */
 function drawReadyHint(c) {
   if (G.phase !== 'play' || !orb.alive || G.aiming) return;
-  if (G.idle < 1.1) return;
   const col = orbColors();
-  const t = (G.t * 0.9) % 1;
-  const a = (1 - t) * 0.5 * clamp((G.idle - 1.1) / 0.6, 0, 1);
   c.globalCompositeOperation = 'lighter';
-  c.strokeStyle = rgba(col.hi, a);
-  c.lineWidth = 2;
-  c.beginPath(); c.arc(orb.x, orb.y, orb.r + 8 + t * 34, 0, TAU); c.stroke();
+
+  if (Vis.readyPop > 0.01) {
+    const u = 1 - Vis.readyPop;             // 0 at the moment of readiness
+    c.strokeStyle = rgba(col.hi, Vis.readyPop * 0.55);
+    c.lineWidth = 2.4 - u * 1.2;
+    c.beginPath(); c.arc(orb.x, orb.y, orb.r + 4 + easeOut(u) * 26, 0, TAU); c.stroke();
+  }
+  if (PS.ready && PS.readyT >= 1.1) {
+    const t = (G.t * 0.9) % 1;
+    const a = (1 - t) * 0.5 * clamp((PS.readyT - 1.1) / 0.6, 0, 1);
+    c.strokeStyle = rgba(col.hi, a);
+    c.lineWidth = 2;
+    c.beginPath(); c.arc(orb.x, orb.y, orb.r + 8 + t * 34, 0, TAU); c.stroke();
+  }
   c.globalCompositeOperation = 'source-over';
 }
 
@@ -3221,13 +3638,14 @@ function render() {
   // the baked layer is opaque and covers the canvas, so a separate clear is
   // one full-screen write per frame we simply do not need — except while the
   // camera is offset, when the edges would otherwise smear
-  const moved = cam.sx !== 0 || cam.sy !== 0 || cam.zoom !== 1;
+  const ox = cam.sx + cam.kx, oy = cam.sy + cam.ky;
+  const moved = ox !== 0 || oy !== 0 || cam.zoom !== 1;
   if (moved) c.clearRect(0, 0, VW, VH);
 
   c.save();
-  // camera
+  // camera: shake plus the small directional impulse a launch or a slam leaves
   const z = cam.zoom;
-  c.translate(VW / 2 + cam.sx, VH / 2 + cam.sy);
+  c.translate(VW / 2 + ox, VH / 2 + oy);
   c.scale(z, z);
   c.translate(-VW / 2, -VH / 2);
 
@@ -3252,7 +3670,10 @@ function render() {
   drawReadyHint(c);
   drawDeny(c);
   drawAim(c);
-  drawOrb(c);
+  // The character is the one thing here that is meant to be replaceable: the
+  // pose is published either way, and a rig, once attached, draws it instead.
+  const pose = Player.syncPose();
+  if (Player.rig) Player.rig.sync(pose, c); else drawOrb(c);
   drawBash(c);
   drawParticles(c);
 
@@ -3285,6 +3706,10 @@ function toGame(e) {
 
 let pointerId = null;
 
+/* An early touch, kept alive until the character is actually aimable. */
+const buffered = { active: false, t: 0, id: null, x: 0, y: 0 };
+function clearBuffer() { buffered.active = false; buffered.id = null; }
+
 function updateDrag(px, py) {
   if (BASH.target) {
     const dx = px - G.anchorX, dy = py - G.anchorY;
@@ -3296,14 +3721,35 @@ function updateDrag(px, py) {
   const d = Math.hypot(dx, dy);
   const cl = Math.min(d, CFG.maxDrag);
   if (d > 0.001) { dx = dx / d * cl; dy = dy / d * cl; }
-  G.pullX = -dx; G.pullY = -dy;          // where the finger pulled to (relative to orb)
+  G.pullX = -dx; G.pullY = -dy;          // where the finger pulled to (relative to the character)
   G.power = d < CFG.minDrag ? 0 : clamp((cl - CFG.minDrag) / (CFG.maxDrag - CFG.minDrag), 0, 1);
   Sfx.tensionUpdate(G.power);
 }
 
+/* Begin an aim. `ax`/`ay` is the anchor the drag is measured from: the
+   character itself for a touch that landed near it — so an off-centre tap
+   cannot spawn instant power — or the touch point for one that landed further
+   away, which is what lets the player drag comfortably from anywhere on the
+   screen instead of having to find a 30-pixel target. */
+function beginAim(ax, ay, px, py, id) {
+  G.anchorX = ax; G.anchorY = ay;
+  G.aiming = true;
+  lastPvx = NaN;
+  pointerId = id;
+  if (id !== null && id !== undefined && dom.canvas.setPointerCapture) {
+    try { dom.canvas.setPointerCapture(id); } catch (err) {}
+  }
+  Sfx.tensionStart();
+  updateDrag(px, py);
+  setHint('');
+}
+
 function onDown(e) {
   if (G.aiming || (e.button !== undefined && e.button !== 0)) return;
+  // a second finger never steals a touch that is already waiting its turn
+  if (buffered.active && e.pointerId !== buffered.id) return;
   Sfx.unlock();
+  clearBuffer();
   if (G.phase === 'done') return;
   if (e.target === dom.restart || dom.restart.contains(e.target)) return;
   if (G.phase !== 'play' || G.transDir !== 0 || !orb.alive) return;
@@ -3315,30 +3761,66 @@ function onDown(e) {
   }
   canvasRect = dom.canvas.getBoundingClientRect();  // one read per drag, not per move
   const p = toGame(e);
-  const airborne = Math.hypot(orb.vx, orb.vy) >= CFG.readySpeed;
-  if (airborne && Math.hypot(p.x - orb.x, p.y - orb.y) > CFG.airGrabRadius) return;
-  if (airborne && !target) {
-    showToast('NEED A GOLD SPARK NEARBY', true);
+  const reach = Math.hypot(p.x - orb.x, p.y - orb.y);
+  // read the body directly: a touch can land between two fixed steps, and the
+  // answer input gives must be the same one the simulation would give
+  const sp = Math.hypot(orb.vx, orb.vy);
+
+  if (!isStable(sp)) {
+    // Moving too fast to take hold of. A Bash target within reach redirects the
+    // flight; otherwise the touch is either buffered (the character is nearly
+    // settled and the player was simply early) or refused.
+    if (target && reach <= CFG.airGrabRadius) {
+      BASH.target = target; BASH.held = 0;
+      BASH.angle = Math.atan2(orb.vy, orb.vx);
+      beginAim(p.x, p.y, p.x, p.y, e.pointerId);
+      e.preventDefault();
+      return;
+    }
+    if (canGrab() && sp < MOVE.catchSpeed) {
+      buffered.active = true; buffered.t = 0; buffered.id = e.pointerId;
+      buffered.x = p.x; buffered.y = p.y;
+      e.preventDefault();
+      return;
+    }
+    if (reach <= CFG.airGrabRadius) showToast('NEED A GOLD SPARK NEARBY', true);
+    G.deny = 1;
     return;
   }
+
+  // Stable: a normal aim. A Bash target is still honoured, because chaining off
+  // a spark from a standstill is a legitimate move.
   BASH.target = target; BASH.held = 0;
-  if (target) BASH.angle = airborne ? Math.atan2(orb.vy, orb.vx) : -Math.PI / 2;
-  const near = Math.hypot(p.x - orb.x, p.y - orb.y) < CFG.grabRadius;
-  // A catch starts at zero power even when the finger lands off-centre.
-  // Keep velocity while held: cancelling resumes the original flight.
-  G.anchorX = !target && !airborne && near ? orb.x : p.x;
-  G.anchorY = !target && !airborne && near ? orb.y : p.y;
-  G.aiming = true;
-  lastPvx = NaN;
-  pointerId = e.pointerId;
-  dom.canvas.setPointerCapture && dom.canvas.setPointerCapture(e.pointerId);
-  Sfx.tensionStart();
-  updateDrag(p.x, p.y);
-  setHint('');
+  if (target) BASH.angle = -Math.PI / 2;
+  const near = reach < CFG.grabRadius;
+  const centred = !target && near;
+  beginAim(centred ? orb.x : p.x, centred ? orb.y : p.y, p.x, p.y, e.pointerId);
   e.preventDefault();
 }
 
+/* Spend a buffered touch the moment control comes back. The drag restarts from
+   the character, so the shot the player gets is the one they would have got had
+   they touched a moment later — never a stale vector from where it used to be. */
+function updateAimBuffer() {
+  if (!buffered.active) return;
+  buffered.t += STEP;
+  if (!canGrab() || !orb.alive || G.phase !== 'play') { clearBuffer(); return; }
+  if (PS.ready) {
+    const id = buffered.id;
+    clearBuffer();
+    beginAim(orb.x, orb.y, orb.x, orb.y, id);
+    return;
+  }
+  if (buffered.t >= MOVE.aimBuffer) { clearBuffer(); G.deny = 1; }
+}
+
 function onMove(e) {
+  if (buffered.active && e.pointerId === buffered.id) {
+    // keep the buffered touch alive and following the finger
+    buffered.x = toGame(e).x; buffered.y = gp.y;
+    e.preventDefault();
+    return;
+  }
   if (!G.aiming || (pointerId !== null && e.pointerId !== pointerId)) return;
   const p = toGame(e);
   updateDrag(p.x, p.y);
@@ -3346,6 +3828,11 @@ function onMove(e) {
 }
 
 function onUp(e) {
+  if (buffered.active && e.pointerId === buffered.id) {
+    clearBuffer();                      // lifted before control came back
+    e.preventDefault();
+    return;
+  }
   if (!G.aiming || (pointerId !== null && e.pointerId !== pointerId)) return;
   if (BASH.target) { releaseBash(); e.preventDefault(); return; }
   G.aiming = false;
@@ -3366,6 +3853,7 @@ function cancelAim() {
   BASH.target = null; BASH.held = 0;
   G.aiming = false;
   pointerId = null;
+  clearBuffer();
   G.power = 0; G.pullX = 0; G.pullY = 0;
   lastPvx = NaN;
   Sfx.tensionStop();
@@ -3514,6 +4002,11 @@ frameId = requestAnimationFrame(frame);
 /* ---- small debug surface (handy for tuning / automated checks) ---- */
 window.FLUX = {
   G, orb, world, LEVELS, CFG, Q,
+  // movement surface: the tuning table is live, so values can be adjusted from
+  // the console and felt immediately without a reload
+  MOVE, PS, Vis, Player,
+  state: () => PS.state,
+  aimable: () => PS.ready,
   go: (i) => startLevel(clamp(i | 0, 0, LEVELS.length - 1)),
   shoot: (ang, power) => { if (canGrab()) launch(ang, clamp(power, 0, 1)); },
   tick: (n) => { for (let i = 0; i < n; i++) simStep(); },
