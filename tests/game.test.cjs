@@ -4,6 +4,8 @@
 //
 //   node tests/game.test.cjs
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
 const { boot } = require('./harness.cjs');
 
 const pass = [];
@@ -49,7 +51,7 @@ if (require.main === module) {
       assert.notEqual(f.PS.state, 'hurt', `Level ${i + 1} mote ${m + 1}: respawning there is fatal`);
     }
   }
-  section('six levels spawn safe, and every checkpoint is a usable restart');
+  section('every level spawns safe, and every checkpoint is a usable restart');
 
   /* ---- an open-field arena, for measuring movement on its own --------- */
   function arena(extra) {
@@ -63,7 +65,8 @@ if (require.main === module) {
   }
   function box(o) {
     const e = { kind: o.kind || 'solid', x: o.x, y: o.y, w: o.w, h: o.h,
-      a: (o.a || 0) * Math.PI / 180, vx: 0, vy: 0, av: 0, gfx: {}, seed: 0, fire: 0 };
+      a: (o.a || 0) * Math.PI / 180, vx: 0, vy: 0, av: 0, gfx: {}, seed: 0,
+      fire: 0, lock: false, off: false, cool: 0 };
     e.ca = Math.cos(e.a); e.sa = Math.sin(e.a);
     e.br = Math.hypot(o.w, o.h) / 2;
     return e;
@@ -357,6 +360,144 @@ if (require.main === module) {
   assert(f.body.vx < -10, 'A sideways spring throws sideways, whatever the approach');
   assert(Math.abs(f.body.vy) < 6, 'A sideways spring does not throw you upward');
   section('springs throw along their own face, predictably');
+
+  /* ---- a spring throws ONCE per contact ---------------------------------
+     Counting fires by watching `fire` rise is not good enough here, because a
+     second launch inside the same contact would arrive while the flash from
+     the first is still up. So the count is on the launch itself: the spring
+     locks as it fires, and the number of times it goes from unlocked to locked
+     is exactly the number of launch events the player experienced. */
+  function springRig(springOpts) {
+    arena([{ list: 'solids', x: 1000, y: 1400, w: 1400, h: 120 }]);
+    const sp = box(Object.assign({ kind: 'spring', x: 1000, y: 1318, w: 170, h: 36 }, springOpts));
+    f.world.springs.push(sp);
+    return sp;
+  }
+  function runCounting(sp, steps, stop) {
+    let fires = 0, wasLocked = sp.lock;
+    for (let i = 0; i < steps; i++) {
+      f.tick(1);
+      if (sp.lock && !wasLocked) fires++;
+      wasLocked = sp.lock;
+      if (stop && stop(i, fires)) break;
+    }
+    return fires;
+  }
+
+  {
+    const sp = springRig();
+    drop(1000, 900, 0, 6, 1);
+    // stop on the step the launch happens: the lock and the clearance are
+    // properties of that instant, and a moment later the spirit has legitimately
+    // left the region and the lock has legitimately been released
+    const fires = runCounting(sp, 60, (i, n) => n >= 1);
+    assert.equal(fires, 1, 'One contact with a spring produces exactly one launch');
+    assert(sp.lock, 'A spring that has just fired is locked to the body it threw');
+    assert(f.body.vy < -MOVE.springSpeed * 0.9, 'and the launch itself is at full speed');
+    // and the launch left real clearance, so no later step can find the same
+    // overlap: the body is outside the face, not resting on its skin
+    const clear = (sp.y - f.body.y) - sp.h / 2 - f.body.r;
+    assert(clear >= MOVE.springClear - 1e-6,
+      `A launch must leave the collider cleanly (only ${clear.toFixed(1)} units)`);
+  }
+
+  /* ---- sitting in the trigger cannot fire it again ---------------------- */
+  {
+    const sp = springRig();
+    drop(1000, 900, 0, 6, 1);
+    runCounting(sp, 60, (i, n) => n >= 1);
+    assert(sp.lock, 'locked after the first launch');
+    // put the spirit straight back on the spring and hold it there. This is
+    // the exact shape of the bug: something keeps returning the body to the
+    // trigger, and every frame it is there is a chance to be thrown again.
+    let refires = 0;
+    for (let i = 0; i < 240; i++) {
+      T.placeSpirit(sp.x, sp.y - 4);      // deep inside the trigger
+      f.PS.state = 'air'; f.PS.t = 1;
+      f.body.vx = 0; f.body.vy = 4;
+      sp.lock = true;                      // the lock this contact cycle set
+      const before = f.body.vy;
+      f.tick(1);
+      if (f.body.vy < before - 5) refires++;
+    }
+    assert.equal(refires, 0, 'A spring never re-fires while the spirit is still inside its trigger');
+  }
+
+  /* ---- leaving the region re-arms it ------------------------------------- */
+  {
+    const sp = springRig();
+    drop(1000, 900, 0, 6, 1);
+    runCounting(sp, 60, (i, n) => n >= 1);
+    assert(sp.lock, 'locked after the first launch');
+    // far enough out that no reasonable padding still counts as "adjacent"
+    T.placeSpirit(sp.x + 600, sp.y - 600);
+    f.PS.state = 'air'; f.PS.t = 1; f.body.vx = 0; f.body.vy = 0;
+    f.tick(1);
+    assert(!sp.lock, 'Leaving the activation region re-arms the spring');
+    assert(!sp.off, 'and a single ordinary throw never trips the failsafe');
+    // ...and it really will throw again on the next genuine contact
+    T.springLoop.clear();
+    sp.cool = 0;
+    drop(1000, 900, 0, 6, 1);
+    const again = runCounting(sp, 60, (i, n) => n >= 1);
+    assert.equal(again, 1, 'A re-armed spring throws again on the next contact');
+
+    // the boundary: just outside the collider is NOT out of the region
+    sp.lock = true;
+    T.placeSpirit(sp.x, sp.y - (sp.h / 2 + f.body.r + MOVE.springExit * 0.4));
+    f.PS.state = 'air'; f.PS.t = 1; f.body.vx = 0; f.body.vy = 0;
+    f.tick(1);
+    assert(sp.lock, 'Being merely adjacent to a spring does not re-arm it');
+  }
+
+  /* ---- the loop a player can never be caught in -------------------------
+     A spring pointing straight up is the worst case in the whole design: it
+     throws the spirit far outside its own trigger region — so the contact lock
+     is satisfied and released, honestly — and then drops it back onto the same
+     spring, with the player holding a dead controller the entire time. The
+     contact lock alone cannot see this. The failsafe must. */
+  {
+    const sp = springRig();
+    T.placeSpirit(1000, 1000);
+    T.springLoop.clear();
+    f.PS.state = 'air'; f.PS.t = 1; f.PS.coyote = 0;
+    f.body.vx = 0; f.body.vy = 0;
+
+    let fires = 0, wasLocked = false, freeAt = -1;
+    for (let i = 0; i < 2000; i++) {
+      f.tick(1);
+      if (sp.lock && !wasLocked) fires++;
+      wasLocked = sp.lock;
+      if (i > 40 && f.aimable()) { freeAt = i; break; }
+    }
+    assert(freeAt > 0, 'The spirit must always get control back from a spring, however it is placed');
+    assert(fires <= MOVE.springLoopMax,
+      `A single spring may never throw the spirit more than ${MOVE.springLoopMax} times unanswered (got ${fires})`);
+    assert.equal(f.PS.state, 'ground', 'the failsafe lets the spirit fall through and land');
+    assert(freeAt / 60 < 8, `and it does so promptly (took ${(freeAt / 60).toFixed(1)}s)`);
+    assert(!sp.off, 'regaining control lifts the cutout, so the spring works again');
+
+    // proving the second half: with control back, the spring is usable again
+    T.placeSpirit(1000, 1000);
+    T.springLoop.clear();
+    f.PS.state = 'air'; f.PS.t = 1; f.PS.coyote = 0; f.body.vy = 0;
+    assert.equal(runCounting(sp, 200, (i, n) => n >= 1), 1,
+      'After the player has had a turn, the same spring throws normally again');
+  }
+
+  /* ---- the failsafe never punishes ordinary play ------------------------- */
+  {
+    const sp = springRig({ a: 20 });
+    for (let round = 0; round < 6; round++) {
+      T.placeSpirit(1000, 1000);
+      f.PS.state = 'air'; f.PS.t = 1; f.PS.coyote = 0; f.body.vx = 0; f.body.vy = 0;
+      const n = runCounting(sp, 400, (i, fired) => fired >= 1 && f.aimable());
+      assert.equal(n, 1, `Round ${round + 1}: a spring answered by the player always throws`);
+      assert(!sp.off, `Round ${round + 1}: answering a throw must never trip the failsafe`);
+      f.settle(200);
+    }
+  }
+  section('a spring throws once per contact, cannot be re-entered, and can never trap the player');
 
   /* ---- collision stability ---------------------------------------------- */
   // Neighbouring approaches into a corner must not diverge: a one-unit change
@@ -853,6 +994,220 @@ if (require.main === module) {
     }
   }
   section('the guide matches the jump from the ground and from a wall');
+
+  /* ---- the HUD counts the levels that exist ------------------------------
+     The total used to be a literal in the markup, which meant every change to
+     the level list had two places to remember and one of them was silent. */
+  {
+    const fresh = boot();
+    fresh.go(0);
+    assert.equal(fresh.text('levelTot'), '0' + fresh.LEVELS.length,
+      'The HUD total is written from LEVELS.length');
+    assert.equal(fresh.text('levelNum'), '01', 'and the current level reads 01 on the first level');
+
+    // it tracks the list rather than a constant: shorten the list and the HUD
+    // has to agree on the very next write
+    const spare = fresh.LEVELS.pop();
+    fresh.internals.updateHud();
+    assert.equal(fresh.text('levelTot'), '0' + fresh.LEVELS.length,
+      'The HUD total follows the level list, it does not remember a number');
+    fresh.LEVELS.push(spare);
+    fresh.internals.updateHud();
+    assert.equal(fresh.text('levelTot'), '0' + fresh.LEVELS.length, 'and back again');
+
+    const last = fresh.LEVELS.length - 1;
+    fresh.go(last);
+    assert.equal(fresh.text('levelNum'), last + 1 < 10 ? '0' + (last + 1) : String(last + 1),
+      'The HUD shows the level you are on');
+    assert.equal(fresh.el('progressFill').style.width, '100%',
+      'and the progress bar is full on the last level');
+  }
+  section('the level readout always comes from LEVELS.length');
+
+  /* ---- no leap counter anywhere the player can see ------------------------
+     The count is still kept — it is useful in a test and in a statistic — it
+     just has no presence in the UI. Both halves of that are asserted here,
+     because "removed" that quietly also stopped counting would be a different
+     change from the one that was asked for. */
+  {
+    const fresh = boot();
+    fresh.go(0);
+    fresh.tick(60);
+    const markup = readFileSync(join(__dirname, '..', 'index.html'), 'utf8');
+    const css = readFileSync(join(__dirname, '..', 'style.css'), 'utf8');
+    for (const gone of ['shotCount', 'id="shots"', '#shots', 'Leaps taken']) {
+      assert(markup.indexOf(gone) < 0, `The leap counter is gone from the page ("${gone}")`);
+    }
+    assert(css.indexOf('#shots') < 0, 'and gone from the stylesheet');
+    assert(css.indexOf('shotBump') < 0, 'including the animation that only it used');
+    assert(!fresh.internals.dom.shotCount && !fresh.internals.dom.shots,
+      'and the game no longer holds a handle on it');
+
+    // nothing on the page carries the number
+    fresh.burst(-Math.PI / 2, 1);
+    fresh.tick(30);
+    assert.equal(fresh.G.bursts, 1, 'The leap count is still tracked internally');
+    assert.equal(fresh.G.totalBursts, 1, 'and so is the run total');
+    fresh.settle();                       // back in control before leaping again
+    fresh.burst(-Math.PI / 2, 1); fresh.tick(30);
+    fresh.internals.restartLevel(true);
+    assert.equal(fresh.G.bursts, 0, 'A restart resets the level count');
+    assert.equal(fresh.G.totalBursts, 2, 'but the run total keeps counting across retries');
+    for (const id of ['levelNum', 'levelTot', 'levelName', 'endTime', 'endLevels', 'toast', 'hint']) {
+      assert.notEqual(String(fresh.text(id)), '1',
+        `No visible element shows the leap count (${id})`);
+    }
+  }
+  section('the leap counter is gone from the UI and still tracked internally');
+
+  /* ---- progress survives a reload ---------------------------------------- */
+  {
+    // a clean browser: nothing saved, so the game starts at the beginning
+    const first = boot();
+    assert.equal(first.G.levelIndex, 0, 'A player with no save starts on level 1');
+    assert.equal(first.Save.unlocked(), 0, 'and has nothing unlocked yet');
+
+    // finish two levels the way the game finishes them
+    for (const i of [0, 1]) {
+      first.go(i);
+      first.tick(60);
+      first.body.x = first.world.gate.x; first.body.y = first.world.gate.y;
+      first.tick(2);
+      assert.equal(first.G.phase, 'win', `level ${i + 1} completes`);
+      for (let k = 0; k < 300 && first.G.levelIndex === i; k++) first.tick(1);
+    }
+    assert(first.Save.completed(0) && first.Save.completed(1), 'Finished levels are recorded');
+    assert.equal(first.Save.unlocked(), 2, 'and finishing level 2 unlocks level 3');
+
+    // the reload: a second boot handed the same storage
+    const back = boot({ storage: first.storage.dump() });
+    assert.equal(back.Save.unlocked(), 2, 'Unlocked progress survives a reload');
+    assert.equal(back.G.levelIndex, 2, 'and the game resumes where the player was');
+    assert(back.Save.completed(0), 'completed levels survive too');
+
+    // nothing about the physics is restored: it is a fresh level, every time
+    assert.equal(back.G.bursts, 0, 'A resumed level starts with a fresh run');
+    assert(Math.abs(back.body.x - back.LEVELS[2].spawn.x) < 2 &&
+           Math.abs(back.body.y - back.LEVELS[2].spawn.y) < 60,
+      'A resumed level puts the spirit at the level spawn, not a saved position');
+    back.tick(180);
+    assert.equal(back.G.phase, 'play', 'and a resumed level is survivable');
+
+    // restarting a level is still an ordinary restart
+    back.internals.restartLevel(true);
+    assert.equal(back.G.levelIndex, 2, 'Restart stays on the level');
+    assert.equal(back.Save.unlocked(), 2, 'and does not disturb the saved progress');
+
+    // replaying from the end screen goes back to level 1 and keeps the save
+    back.internals.restartRun();
+    assert.equal(back.G.levelIndex, 0, 'Replay starts again from the first level');
+    assert.equal(back.Save.unlocked(), 2, 'without throwing away what was unlocked');
+
+    // a save from a build with more levels than this one must still load
+    const future = boot({ storage: { 'flux.progress': JSON.stringify({ v: 1, unlocked: 99, done: [0, 1, 40] }) } });
+    assert.equal(future.G.levelIndex, future.LEVELS.length - 1,
+      'A save from a longer build clamps to the levels that exist');
+    assert(future.Save.data.done.every((i) => i < future.LEVELS.length),
+      'and drops completions that are out of range');
+
+    // rubbish in storage is discarded, not trusted
+    for (const junk of ['not json at all', '{"v":99,"unlocked":4}', 'null', '[]', '{"unlocked":"3"}']) {
+      const bad = boot({ storage: { 'flux.progress': junk } });
+      assert.equal(bad.G.levelIndex, 0, `Corrupt save (${junk.slice(0, 18)}) starts clean`);
+      assert.equal(bad.Save.unlocked(), 0, 'and unlocks nothing it cannot verify');
+      bad.tick(60);
+      assert.equal(bad.G.phase, 'play', 'and the game still runs');
+    }
+
+    // storage that throws on every call must not take the game with it
+    const noStore = boot({ brokenStorage: true });
+    assert.equal(noStore.G.levelIndex, 0, 'No storage: the game still starts');
+    noStore.go(0); noStore.tick(60);
+    noStore.body.x = noStore.world.gate.x; noStore.body.y = noStore.world.gate.y;
+    noStore.tick(2);
+    assert.equal(noStore.G.phase, 'win', 'No storage: a level can still be completed');
+    for (let k = 0; k < 300 && noStore.G.levelIndex === 0; k++) noStore.tick(1);
+    assert.equal(noStore.G.levelIndex, 1, 'No storage: progression still works in the session');
+    assert.equal(noStore.Save.unlocked(), 1, 'and progress is held in memory for the session');
+
+    // wiping is explicit and complete
+    const wiped = boot({ storage: first.storage.dump() });
+    wiped.wipe();
+    assert.equal(wiped.Save.unlocked(), 0, 'Wiping resets the unlock mark');
+    assert.equal(wiped.G.levelIndex, 0, 'and drops the player back to level 1');
+    assert.equal(boot({ storage: wiped.storage.dump() }).Save.unlocked(), 0, 'and it sticks');
+  }
+  section('progress saves, restores, clamps, survives corruption and survives no storage at all');
+
+  /* ---- the name is in one place, and the game speaks Turkish -------------- */
+  {
+    const fresh = boot();
+    const { GAME, TEXT } = fresh;
+
+    // the markup ships with no name in it at all, so a rename cannot go stale
+    const markup = readFileSync(join(__dirname, '..', 'index.html'), 'utf8');
+    const body = markup.slice(markup.indexOf('<body'));
+    assert(body.indexOf(GAME.title) < 0,
+      'The page must not hardcode the game name anywhere in its body');
+    assert(/<title>\s*<\/title>/.test(markup), 'and the document title is filled in by the game');
+
+    // ...and every one of those places is actually written
+    assert.equal(fresh.document.title, GAME.title, 'The browser title is the game name');
+    assert.equal(fresh.text('markName'), GAME.title, 'The title mark is the game name');
+    assert.equal(fresh.text('endTitle'), GAME.title, 'The end screen is the game name');
+    assert(fresh.el('game').getAttribute('aria-label').startsWith(GAME.title),
+      'and the canvas is labelled with it');
+    assert(fresh.document.querySelector('meta[name="description"]').getAttribute('content')
+      .indexOf(GAME.title) >= 0, 'and so is the page description');
+
+    // the page declares the language it is actually written in
+    assert.equal(fresh.html.getAttribute('lang'), GAME.lang, 'The page declares its language');
+    assert.equal(GAME.lang, 'tr', 'which is Turkish');
+
+    // the visible chrome is Turkish
+    assert.equal(fresh.text('hudLevelKey'), 'BÖLÜM', 'The HUD says BÖLÜM');
+    assert.equal(fresh.el('restartBtn').getAttribute('aria-label'), TEXT.restart);
+    assert.equal(fresh.el('soundBtn').getAttribute('aria-label'), TEXT.sound);
+    assert.equal(fresh.text('endSub'), TEXT.endSub);
+    assert.equal(fresh.text('endRestart'), TEXT.replay);
+    assert.equal(fresh.text('endTimeLabel'), TEXT.endTime);
+    assert.equal(fresh.text('endLevelLabel'), TEXT.endLevels);
+
+    // the level names and every tutorial hint are Turkish, and short enough to
+    // be read in the glance the player actually gives them
+    const latin = /^[\x20-\x7E]*$/;             // no Turkish letters at all
+    const english = /\b(the|you|and|your|with|press|hold|pull|drag|jump|wall|level|restart|replay|leap)\b/i;
+    for (let i = 0; i < fresh.LEVELS.length; i++) {
+      const L = fresh.LEVELS[i];
+      assert(typeof L.tip === 'string' && L.tip.length > 0, `Level ${i + 1} has a tip`);
+      assert(!english.test(L.tip), `Level ${i + 1}'s tip is not English: "${L.tip}"`);
+      assert(!english.test(L.name), `Level ${i + 1}'s name is not English: "${L.name}"`);
+      assert(L.tip.length <= 56, `Level ${i + 1}'s tip is short enough to read at a glance (${L.tip.length})`);
+      assert(/[.!?]$/.test(L.tip), `Level ${i + 1}'s tip is a sentence`);
+    }
+    // the Turkish alphabet has to survive the whole round trip, or the strings
+    // are being mangled somewhere between the source and the screen
+    assert(/[çğıöşüÇĞİÖŞÜ]/.test(fresh.LEVELS.map((L) => L.name + L.tip).join('')),
+      'Turkish characters render intact');
+    assert(!latin.test(fresh.text('hudLevelKey')), 'including in the HUD');
+    for (const key of ['tagline', 'controls', 'resume', 'endSub', 'replay', 'restart', 'sound']) {
+      assert(typeof TEXT[key] === 'string' && TEXT[key].length > 0, `TEXT.${key} is set`);
+      assert(!english.test(TEXT[key]), `TEXT.${key} is Turkish: "${TEXT[key]}"`);
+    }
+
+    // the level name reaches the HUD
+    fresh.go(1);
+    assert.equal(fresh.text('levelName'), fresh.LEVELS[1].name, 'The HUD shows the level name');
+
+    // and the end screen reports the levels rather than the leaps
+    fresh.internals.reachGate();
+    fresh.G.levelIndex = fresh.LEVELS.length - 1;
+    for (let i = 0; i < 400 && fresh.G.phase !== 'done'; i++) fresh.tick(1);
+    assert.equal(fresh.G.phase, 'done', 'the run finishes');
+    assert.equal(fresh.text('endLevels'), String(fresh.LEVELS.length),
+      'The end screen counts the levels, from LEVELS.length');
+  }
+  section('one name, one place, and a Turkish UI that renders intact');
 
   console.log('PASS:\n  - ' + pass.join('\n  - '));
 }

@@ -1,5 +1,6 @@
 /* ============================================================
-   FLUX — a movement-first spirit traversal game
+   A movement-first spirit traversal game.  (The name it ships
+   under is GAME.title, in section 1 — see the note there.)
    ------------------------------------------------------------
    The player is a small spirit creature. It cannot walk. It moves
    in directional bursts: hold to wind up, drag to aim, release to
@@ -27,6 +28,52 @@
 /* ============================================================
    1. CONFIG, TUNING & MATH
    ============================================================ */
+
+/* ---- identity ------------------------------------------------------------
+   The name of the game lives HERE and nowhere else. The page title, the title
+   mark, the end screen, the accessible label and the page metadata are all
+   written from it at boot, so renaming the game is a one-line change that
+   cannot leave a stale name behind in a corner of the markup.
+
+   `storageKey` is deliberately NOT derived from the title: saved progress must
+   survive a rename, so the key the player's browser already holds has to stay
+   what it is. Change it only to intentionally discard everyone's progress. */
+const GAME = {
+  title:      'FLUX',
+  lang:       'tr',
+  storageKey: 'flux',
+};
+
+/* ---- player-facing text --------------------------------------------------
+   Every word the player reads, in one table. Level names and tutorial tips
+   live with their levels, because they are level content; everything that
+   belongs to the shell is here.
+
+   The tone is short and plain. A first-time player should be able to read a
+   hint in one glance and get back to the game — the mechanics are taught by
+   the level, and the sentence is only there to name what they are seeing. */
+const TEXT = {
+  /* shell */
+  tagline:      'Küçük bir ruhun sıçrayışları',
+  controls:     'Basılı tut · geriye çek · bırak · R yeniden başlatır',
+  description:  GAME.title + ' — küçük bir ruhu neon harabelerde yönlendir: ' +
+                'geriye çek ve bırak, duvarlara tutun, ışık kürelerini kullan.',
+  canvasLabel:  'oyun alanı',
+
+  /* HUD */
+  hudLevel:     'BÖLÜM',
+  sound:        'Sesi aç veya kapat',
+  restart:      'Bölümü yeniden başlat',
+
+  /* status */
+  resume:       'KALDIĞIN BÖLÜMDEN DEVAM',
+
+  /* completion */
+  endSub:       'Tüm bölümler tamamlandı',
+  endTime:      'süre',
+  endLevels:    'bölüm',
+  replay:       'Baştan oyna',
+};
 
 const VW = 540, VH = 960;          // camera viewport, in world units
 const STEP = 1 / 60;               // fixed physics step (seconds)
@@ -152,9 +199,29 @@ const MOVE = {
   nodeReachMin: 0.52,   // a node always throws, so its floor is higher
   nodeCool:     2.40,   // seconds before a spent node can be used again
 
-  /* --- spirit springs ------------------------------------------------------ */
+  /* --- spirit springs ------------------------------------------------------
+     A spring is the one object that hands out energy for free, so the rules
+     that stop it handing out an INFINITE amount live here too.
+
+     One physical contact must produce exactly one launch. The spring is locked
+     to the body it just threw and stays dark until that body is clearly out of
+     its activation region — `springExit` is what "clearly" means, and it is the
+     main rule. `springCool` is only a second line of defence for the case where
+     a body is flung out and back within a couple of frames, and `springClear`
+     is the separation the launch itself leaves, so the very next substep cannot
+     find the same overlap again. */
   springSpeed:  19.5,   // launch speed along the spring's face
   springKeep:   0.18,   // sideways motion kept through the throw
+  springClear:  8,      // clearance left past the face on launch, in units
+  springExit:   34,     // how far outside the trigger re-arms the spring
+  springCool:   0.30,   // secondary guard: minimum seconds between two throws
+  /* The failsafe, for geometry we did not foresee. Throws by the SAME spring
+     that the player never got a say in are counted, and one too many cuts that
+     spring out until control comes back — not for a number of seconds, which
+     could never be right, because how long the spirit is in the air is decided
+     by the throw itself. The count is cleared the moment the player can act
+     again, so someone deliberately bouncing off a spring never trips it. */
+  springLoopMax: 2,     // uninterrupted throws by one spring before the cutout
 
   /* --- camera ---------------------------------------------------------------
      The view leads rather than follows. While aiming it slides toward where
@@ -701,6 +768,11 @@ function updateDust() {
      beam    lethal energy beam; `pulse` makes it blink on a cycle.
      gap     void. Falling into it, or off the world, dissolves the spirit.
 
+   `name` and `tip` are the only player-facing strings here, and they are
+   level content rather than shell text, so they live with the level. A tip is
+   shown once, on arrival, and only names the ONE thing the level is about —
+   the level itself is what teaches it.
+
    Any entity may carry `motion` to oscillate or sweep.
    ============================================================ */
 
@@ -712,8 +784,8 @@ const LEVELS = [
        barely apart, so almost any forward drag lands on the next one, and a
        catch floor runs under the whole level: a bad first input costs a couple
        of seconds, never a life. */
-    name: 'FIRST LIGHT',
-    tip: 'Pull back from the spirit and let go — it launches the other way.',
+    name: 'İLK IŞIK',
+    tip: 'Basılı tut, geriye çek ve bırak.',
     w: 1560, h: 940,
     bg: ['#141a44', '#06091c'], accent: [120, 170, 255],
     spawn: { x: 130, y: 540 },
@@ -735,8 +807,8 @@ const LEVELS = [
     /* 2 — one wall, used once. Floor, wall and the ledge above are all in one
        composition, and the ledge is out of reach from the floor by a clear
        margin, so the wall is obviously the answer rather than a trick. */
-    name: 'STONE SONG',
-    tip: 'Fly into a wall to take hold of it, then aim again.',
+    name: 'TAŞ EZGİSİ',
+    tip: 'Duvara tutun ve yeniden yön seç.',
     w: 760, h: 980,
     bg: ['#102542', '#040a18'], accent: [90, 190, 255],
     spawn: { x: 150, y: 700 },
@@ -755,8 +827,8 @@ const LEVELS = [
        node hangs in plain sight between the two, so what it is for cannot be
        misread. The node sits clear of the ledge overhead: put it underneath
        and every leap out of it hits the ceiling. */
-    name: 'EMBERWAY',
-    tip: 'Touch near a glowing node in mid-air: it will catch you.',
+    name: 'KOR YOLU',
+    tip: 'Işık küresine yaklaş ve yönünü değiştir.',
     w: 800, h: 960,
     bg: ['#231640', '#08061c'], accent: [170, 130, 255],
     spawn: { x: 110, y: 640 },
@@ -775,8 +847,8 @@ const LEVELS = [
        across onto a wide ledge you can see from the ground. The ledge is out
        of reach from the floor, so the bloom is the only way up, and nothing
        dangerous is anywhere near the arc. */
-    name: 'BLOOMFALL',
-    tip: 'A bloom throws you the way its arrow points.',
+    name: 'ÇİÇEK DÜŞÜŞÜ',
+    tip: 'Yeşil yüzey seni ok yönünde fırlatır.',
     w: 1150, h: 1080,
     bg: ['#0d2c34', '#040f18'], accent: [90, 220, 190],
     spawn: { x: 130, y: 840 },
@@ -797,8 +869,8 @@ const LEVELS = [
        checkpoint between them so the second half is never retried from the
        very start. The spikes sit under the opening gap where they can be seen
        from the spawn, never under anything you are asked to jump to. */
-    name: 'THE NARROWS',
-    tip: 'Wall, then node. The mote on the way is a checkpoint.',
+    name: 'DAR GEÇİT',
+    tip: 'Dikenlere dokunma. Mor ışık kayıt noktandır.',
     w: 1000, h: 1180,
     bg: ['#2a1330', '#0a0418'], accent: [220, 120, 220],
     spawn: { x: 120, y: 900 },
@@ -823,8 +895,8 @@ const LEVELS = [
        node, redirect home. The wall is deliberately on the far side of where
        you are going next, because a hold pushes you off the way it faces —
        so the wall itself turns you back toward the climb. */
-    name: 'SKYWARD',
-    tip: 'Leap, cling, be thrown, be caught. Keep the chain going.',
+    name: 'GÖĞE DOĞRU',
+    tip: 'Zıpla, tutun, fırla, yakalan. Zinciri sürdür.',
     w: 1120, h: 1520,
     bg: ['#191646', '#05061a'], accent: [140, 150, 255],
     spawn: { x: 120, y: 1240 },
@@ -871,7 +943,7 @@ const world = {
 
 const ENTITY_KINDS = {
   solid:  { list: 'solids',  init: () => {} },
-  spring: { list: 'springs', init: (e) => { e.fire = 0; } },
+  spring: { list: 'springs', init: (e) => { e.fire = 0; e.lock = false; e.off = false; e.cool = 0; } },
   node:   { list: 'nodes',   init: (e) => { e.r = e.r || 26; e.cool = 0; e.glow = 0; e.spin = 0; } },
   mote:   { list: 'motes',   init: (e) => { e.r = e.r || 20; e.got = false; e.pop = 0; } },
   spike:  { list: 'lethal',  init: (e) => { e.spikes = true; } },
@@ -994,6 +1066,23 @@ const HIT = { nx: 0, ny: 0, pen: 0 };
 
 function overlapsBox(px, py, r, e) { return circleVsBox(px, py, r, e) !== null; }
 
+/* Is a body inside this box's ACTIVATION region — the box itself, grown by
+   `pad` on every side? `overlapsBox` answers "is it touching"; this answers the
+   different question "is it still around", which is what re-arming a spring
+   depends on. Same maths as circleVsBox, without the normal nobody wants. */
+function nearBox(px, py, r, e, pad) {
+  const dx = px - e.x, dy = py - e.y;
+  const reach = e.br + r + pad;
+  if (dx * dx + dy * dy > reach * reach) return false;
+  const ca = e.ca, sa = -e.sa;
+  const lx = dx * ca - dy * sa;
+  const ly = dx * sa + dy * ca;
+  const hw = e.w / 2 + pad, hh = e.h / 2 + pad;
+  const qx = clamp(lx, -hw, hw), qy = clamp(ly, -hh, hh);
+  const ddx = lx - qx, ddy = ly - qy;
+  return ddx * ddx + ddy * ddy <= r * r;
+}
+
 /* --- contact accumulator -------------------------------------------------
    Every surface touched during one substep lands here. Position is corrected
    as each contact is found, so the body is never left overlapping, but the
@@ -1109,17 +1198,94 @@ function resolveContactVel(s) {
 }
 
 /* A spring throws along its own face, whatever the approach. Predictable by
-   construction: the arrow drawn on it is exactly where you will go. */
-function fireSpring(s, sp) {
+   construction: the arrow drawn on it is exactly where you will go.
+
+   ONE CONTACT, ONE LAUNCH. The failure this guards against is the spirit
+   landing back onto the spring that just threw it and being thrown again, with
+   no input in between — a loop the player cannot get out of, because being
+   airborne is the one state that hands them no control.
+
+   So a spring that fires is locked to the body it threw. It will not fire
+   again, at all, until that body has left its activation region (`springExit`
+   past the collider on every side); `releaseSprings` is the only thing that
+   unlocks it. A timer alone could not do this — the player may sit on top of a
+   spring indefinitely — so the timer here is only the backstop for a body that
+   is flung clear and back inside a couple of frames.
+
+   `live` separates the player from the aim preview: the preview runs this same
+   function so the dotted guide knows about springs, and it must read the lock
+   but never write one — a spring the guide can see is dark is a spring the
+   guide draws you falling past, which is exactly what will happen. */
+function fireSpring(s, sp, live) {
+  if (sp.lock || sp.off || sp.cool > 0) return;
   if (!overlapsBox(s.x, s.y, s.r, sp)) return;
   const nx = sp.sa, ny = -sp.ca;             // local -y, rotated into the world
-  const tvx = s.vx - nx * (s.vx * nx + s.vy * ny);
-  const tvy = s.vy - ny * (s.vx * nx + s.vy * ny);
+  const vn = s.vx * nx + s.vy * ny;
+  const tvx = s.vx - nx * vn;
+  const tvy = s.vy - ny * vn;
   s.vx = tvx * MOVE.springKeep + nx * MOVE.springSpeed;
   s.vy = tvy * MOVE.springKeep + ny * MOVE.springSpeed;
-  s.x += nx * 4; s.y += ny * 4;
+  // Leave along the launch normal with real clearance, rather than the token
+  // nudge this used to do: the body ends up fully outside the face, so no
+  // later substep can find the same overlap, and there is no jitter between a
+  // collider and a body sitting exactly on its skin.
+  const d = (s.x - sp.x) * nx + (s.y - sp.y) * ny;
+  const want = sp.h / 2 + s.r + MOVE.springClear;
+  if (d < want) { s.x += nx * (want - d); s.y += ny * (want - d); }
+  if (live) { sp.lock = true; sp.cool = MOVE.springCool; }
   RES.spring = sp;
 }
+
+/* Re-arm every spring the spirit has got clear of. Run once per simulation
+   step, BEFORE the spirit moves, so a spring can never be unlocked and fired
+   inside the same step by the clearance its own launch just applied.
+
+   This clears the CONTACT lock only. The failsafe cutout is a different thing
+   with a different release — see springLoop — and getting away from a spring
+   is not the same as having been given back control. */
+function releaseSprings(px, py, r) {
+  for (let i = 0; i < world.springs.length; i++) {
+    const sp = world.springs[i];
+    if (sp.lock && !nearBox(px, py, r, sp, MOVE.springExit)) sp.lock = false;
+  }
+}
+
+/* The failsafe behind the lock.
+
+   Leaving the region re-arms a spring, and that is correct — but a spring
+   aimed straight up throws the spirit far outside its region and drops it
+   right back in, so the region rule ALONE still allows a loop: out, back, out,
+   back, with the player holding a dead controller the whole time. The lock is
+   working perfectly in that case and the player is still trapped.
+
+   So the thing actually being counted here is not contacts or seconds, it is
+   throws the player never got to answer. One too many and the spring is cut
+   out entirely — `off` — and the spirit falls THROUGH it (a spring is a
+   trigger, not a surface) onto whatever it is mounted on, and lands.
+
+   The cutout is cleared by CONTROL RETURNING, never by a timer. A timer cannot
+   be right here: how long the spirit is in the air is decided by the throw, so
+   any fixed lockout is either too short to break a strong spring's loop or
+   long enough to be felt on a weak one. And because control returning is what
+   clears it, a player deliberately bouncing off the same spring over and over
+   never trips it — they are answering every throw. */
+const springLoop = {
+  sp: null, n: 0,
+  /* The player got a say. Nothing before this counts, and every cutout is
+     lifted: whatever the spirit was stuck in, it is not stuck in it now. */
+  clear() {
+    this.sp = null; this.n = 0;
+    for (let i = 0; i < world.springs.length; i++) world.springs[i].off = false;
+  },
+  /* true when this throw is the one that has to be cut off */
+  count(sp) {
+    if (this.sp === sp) this.n++;
+    else { this.sp = sp; this.n = 1; }
+    if (this.n < MOVE.springLoopMax) return false;
+    this.sp = null; this.n = 0;
+    return true;
+  },
+};
 
 const SUBSTEP_MAX = 10;
 
@@ -1149,7 +1315,7 @@ function stepBody(s, live) {
     }
 
     for (let k = 0; k < world.springs.length; k++) {
-      fireSpring(s, world.springs[k]);
+      fireSpring(s, world.springs[k], live);
       if (RES.spring) { i = n; break; }
     }
   }
@@ -1522,13 +1688,90 @@ function doBurst(ang, power) {
   cam.shake = Math.max(cam.shake, 1.4 + p * 3);
   cam.kx -= Math.cos(ang) * (1 + p * 2);
   cam.ky -= Math.sin(ang) * (1 + p * 2);
+  // Kept for tests and statistics, shown nowhere. `totalBursts` used to be
+  // declared and reset but never incremented, so the figure the end screen
+  // printed was always zero — it counts for real now that nothing displays it.
   G.bursts++;
+  G.totalBursts++;
   setHint('');
 }
 
 /* ============================================================
    8. GAME STATE
    ============================================================ */
+
+/* ---- storage -------------------------------------------------------------
+   localStorage is not guaranteed to exist and not guaranteed to work: it is
+   absent on some embedded webviews, it throws on access under a strict privacy
+   setting, and setItem throws when the quota is full. None of that is the
+   player's problem, so every call goes through here and a failure is simply a
+   session that does not persist. Once a write has failed we stop trying. */
+const Store = {
+  ok: true,
+  get(key) {
+    if (!this.ok) return null;
+    try { return localStorage.getItem(GAME.storageKey + '.' + key); }
+    catch (err) { this.ok = false; return null; }
+  },
+  set(key, value) {
+    if (!this.ok) return false;
+    try { localStorage.setItem(GAME.storageKey + '.' + key, value); return true; }
+    catch (err) { this.ok = false; return false; }
+  },
+  del(key) {
+    try { localStorage.removeItem(GAME.storageKey + '.' + key); } catch (err) {}
+  },
+};
+
+/* ---- progress ------------------------------------------------------------
+   The only thing worth keeping between sessions is how far the player got.
+
+   Deliberately NOT saved: position, velocity, state, which mote was claimed —
+   anything that could restore the game into a situation the player cannot get
+   out of. Restarting a level always rebuilds it from the level data, so a save
+   can never be the reason a level is unwinnable.
+
+   `unlocked` is the furthest level that may be started, `done` is which ones
+   have been finished. Both are clamped to the levels that actually exist, so a
+   save written when the game had more levels than it does now still loads. */
+const SAVE_V = 1;
+
+const Save = {
+  data: { v: SAVE_V, unlocked: 0, done: [] },
+  fresh() { return { v: SAVE_V, unlocked: 0, done: [] }; },
+  load() {
+    this.data = this.fresh();
+    const raw = Store.get('progress');
+    if (!raw) return this.data;
+    try {
+      const o = JSON.parse(raw);
+      // anything we do not recognise is discarded rather than trusted: a bad
+      // save must cost the player their progress at worst, never the game
+      if (o && o.v === SAVE_V) {
+        this.data.unlocked = clamp(o.unlocked | 0, 0, LEVELS.length - 1);
+        if (Array.isArray(o.done)) {
+          this.data.done = o.done.filter(
+            (i) => Number.isInteger(i) && i >= 0 && i < LEVELS.length);
+        }
+      }
+    } catch (err) { /* corrupt or foreign: start clean, and keep playing */ }
+    return this.data;
+  },
+  write() { return Store.set('progress', JSON.stringify(this.data)); },
+  /* the furthest level the player may start on — always a real index */
+  unlocked() { return clamp(this.data.unlocked, 0, LEVELS.length - 1); },
+  completed(i) { return this.data.done.indexOf(i) >= 0; },
+  /* Finishing a level unlocks the next one. The mark never moves backwards,
+     so replaying an early level cannot cost the player what they have done. */
+  complete(i) {
+    if (i < 0 || i >= LEVELS.length) return;
+    if (!this.completed(i)) this.data.done.push(i);
+    const next = clamp(i + 1, 0, LEVELS.length - 1);
+    if (next > this.data.unlocked) this.data.unlocked = next;
+    this.write();
+  },
+  reset() { this.data = this.fresh(); Store.del('progress'); },
+};
 
 const G = {
   phase: 'play',          // play | win | trans | done
@@ -1537,7 +1780,7 @@ const G = {
   levelIndex: 0,
   level: null,
   bursts: 0,
-  totalBursts: 0,
+  totalBursts: 0,       // run total, across levels and retries — internal only
   runTime: 0,
   spawnX: 0, spawnY: 0,   // the last claimed mote, or the level start
   deaths: 0,
@@ -1560,9 +1803,8 @@ const dom = {
   canvas: document.getElementById('game'),
   levelNum: document.getElementById('levelNum'),
   levelName: document.getElementById('levelName'),
+  levelTot: document.getElementById('levelTot'),
   progress: document.getElementById('progressFill'),
-  shotCount: document.getElementById('shotCount'),
-  shots: document.getElementById('shots'),
   restart: document.getElementById('restartBtn'),
   banner: document.getElementById('banner'),
   bannerNum: document.querySelector('.banner-num'),
@@ -1571,8 +1813,8 @@ const dom = {
   toast: document.getElementById('toast'),
   endCard: document.getElementById('endCard'),
   endRestart: document.getElementById('endRestart'),
-  endShots: document.getElementById('endShots'),
   endTime: document.getElementById('endTime'),
+  endLevels: document.getElementById('endLevels'),
   fps: document.getElementById('fps'),
   sound: document.getElementById('soundBtn'),
 };
@@ -1580,8 +1822,51 @@ const ctx = dom.canvas.getContext('2d');
 
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
+/* The whole HUD, in one place.
+
+   There is no leap counter. It used to sit here as an icon and a number, and
+   it was pure clutter: nothing in the game is rationed by leaps, so the figure
+   never told the player anything they could act on, and on a narrow phone it
+   squeezed the level name into an ellipsis. The count is still kept on `G` for
+   tests and statistics — it is simply not shown anywhere.
+
+   The total comes from LEVELS.length every time it is written, so adding a
+   level is adding a level, with nothing else to remember. */
 function updateHud() {
-  dom.shotCount.textContent = G.bursts;
+  const i = G.levelIndex;
+  dom.levelNum.textContent = pad2(i + 1);
+  dom.levelTot.textContent = pad2(LEVELS.length);
+  dom.levelName.textContent = LEVELS[i].name;
+  dom.progress.style.width = ((i + 1) / LEVELS.length * 100) + '%';
+}
+
+/* One pass at boot writes the name and every fixed label onto the page. The
+   markup ships with none of them, so there is nowhere for a stale title or an
+   untranslated label to hide. */
+function applyBranding() {
+  const el = (id) => document.getElementById(id);
+  const setText = (id, v) => { const n = el(id); if (n) n.textContent = v; };
+  const setAttr = (id, k, v) => { const n = el(id); if (n && n.setAttribute) n.setAttribute(k, v); };
+
+  document.title = GAME.title;
+  setText('markName', GAME.title);
+  setText('endTitle', GAME.title);
+  setAttr('game', 'aria-label', GAME.title + ' ' + TEXT.canvasLabel);
+
+  setText('markSub', TEXT.tagline);
+  setText('markKeys', TEXT.controls);
+  setText('hudLevelKey', TEXT.hudLevel);
+  setText('endSub', TEXT.endSub);
+  setText('endTimeLabel', TEXT.endTime);
+  setText('endLevelLabel', TEXT.endLevels);
+  setText('endRestart', TEXT.replay);
+  setAttr('soundBtn', 'aria-label', TEXT.sound);
+  setAttr('restartBtn', 'aria-label', TEXT.restart);
+
+  const root = document.documentElement;
+  if (root && root.setAttribute) root.setAttribute('lang', GAME.lang);
+  const meta = document.querySelector && document.querySelector('meta[name="description"]');
+  if (meta && meta.setAttribute) meta.setAttribute('content', TEXT.description);
 }
 function showBanner(i) {
   const L = LEVELS[i];
@@ -1591,12 +1876,14 @@ function showBanner(i) {
   void dom.banner.offsetWidth;
   dom.banner.classList.add('show');
 }
-function showToast(msg, quick) {
+function showToast(msg, opts) {
+  const o = opts || {};
   dom.toast.textContent = msg;
-  dom.toast.classList.remove('hidden', 'show', 'quick');
+  dom.toast.classList.remove('hidden', 'show', 'quick', 'info');
   void dom.toast.offsetWidth;
   dom.toast.classList.add('show');
-  if (quick) dom.toast.classList.add('quick');
+  if (o.quick) dom.toast.classList.add('quick');
+  if (o.info) dom.toast.classList.add('info');
 }
 function setHint(text) {
   if (text) { dom.hint.textContent = text; dom.hint.classList.remove('hidden'); }
@@ -1611,6 +1898,7 @@ function placeSpirit(x, y) {
   PS.speed = 0; PS.facing = -Math.PI / 2; PS.fallT = 0;
   Aim.clear();
   clearBuffer();
+  springLoop.clear();
   Vis.reset(x, y);
 }
 
@@ -1625,9 +1913,6 @@ function startLevel(i) {
   clearFX();
   placeSpirit(G.spawnX, G.spawnY);
   updateCamera(true);
-  dom.levelNum.textContent = pad2(i + 1);
-  dom.levelName.textContent = LEVELS[i].name;
-  dom.progress.style.width = ((i + 1) / LEVELS.length * 100) + '%';
   updateHud();
   showBanner(i);
   setHint('');
@@ -1647,8 +1932,8 @@ function nextLevel() {
 function finishRun() {
   G.phase = 'done';
   const secs = Math.round(G.runTime);
-  dom.endShots.textContent = G.totalBursts;
   dom.endTime.textContent = Math.floor(secs / 60) + ':' + pad2(secs % 60);
+  dom.endLevels.textContent = String(LEVELS.length);
   dom.endCard.classList.remove('hidden');
   Sfx.complete();
   G.level = buildWorld(LEVELS[LEVELS.length - 1]);
@@ -1699,6 +1984,9 @@ function respawn() {
 
 function reachGate() {
   G.phase = 'win'; G.phaseT = 0;
+  // banked here rather than on the transition, so a level counts the moment it
+  // is actually finished and a refresh mid-transition cannot lose it
+  Save.complete(G.levelIndex);
   const g = world.gate;
   FX.implode(g.x, g.y, 92, 11, HUE.gate.hi, 0.5);
   FX.shock(g.x, g.y, g.r, g.r + 130, 0.7, HUE.gate.rgb, 4);
@@ -1765,7 +2053,11 @@ function simStep() {
     if (n.glow > 0) n.glow = Math.max(0, n.glow - STEP * 2);
     n.spin += STEP * (n.cool > 0 ? 0.6 : 1.8);
   }
-  for (const s of world.springs) if (s.fire > 0) s.fire = Math.max(0, s.fire - STEP * 2.6);
+  for (const s of world.springs) {
+    if (s.fire > 0) s.fire = Math.max(0, s.fire - STEP * 2.6);
+    if (s.cool > 0) s.cool = Math.max(0, s.cool - STEP);
+  }
+  releaseSprings(body.x, body.y, body.r);
   for (const m of world.motes) if (m.pop > 0) m.pop = Math.max(0, m.pop - STEP * 2);
   if (world.gate.open > 0 && G.phase !== 'win') world.gate.open = Math.max(0, world.gate.open - STEP * 2);
 
@@ -1861,6 +2153,10 @@ function updateSpirit() {
 
   if (r.spring) {
     const s = r.spring;
+    // Exactly one launch event per contact: the spring locked itself as it
+    // fired, so everything below — the sound, the shockwave, the shake —
+    // happens once and cannot be retriggered while the spirit is still on it.
+    if (springLoop.count(s)) s.off = true;
     s.fire = 1;
     PS.set('air');
     body.burst = MOVE.burstTime * 0.7;
@@ -1919,7 +2215,7 @@ function updateSpirit() {
   if (G.phase !== 'play') return;
 
   Vis.sample(body.x, body.y, PS.speed);
-  if (!wasAimable && canAim()) Vis.onReady();
+  if (!wasAimable && canAim()) { Vis.onReady(); springLoop.clear(); }
   updateAimBuffer();
 }
 
@@ -3111,7 +3407,7 @@ function applyMute(v) {
   Sfx.setMuted(v);
   dom.sound.classList.toggle('muted', v);
   dom.sound.setAttribute('aria-pressed', String(!v));
-  try { localStorage.setItem('flux.muted', v ? '1' : '0'); } catch (err) {}
+  Store.set('muted', v ? '1' : '0');
 }
 dom.sound.addEventListener('click', (e) => {
   e.stopPropagation(); Sfx.unlock(); applyMute(!muted); if (!muted) Sfx.ui();
@@ -3119,11 +3415,9 @@ dom.sound.addEventListener('click', (e) => {
 dom.endRestart.addEventListener('click', () => { Sfx.unlock(); Sfx.ui(); restartRun(); });
 
 const DEV = (() => {
-  try {
-    if (/[?&]dev=1/.test(location.search)) { localStorage.setItem('flux.dev', '1'); return true; }
-    if (/[?&]dev=0/.test(location.search)) { localStorage.removeItem('flux.dev'); return false; }
-    return localStorage.getItem('flux.dev') === '1';
-  } catch (err) { return /[?&]dev=1/.test(location.search); }
+  if (/[?&]dev=1/.test(location.search)) { Store.set('dev', '1'); return true; }
+  if (/[?&]dev=0/.test(location.search)) { Store.del('dev'); return false; }
+  return Store.get('dev') === '1';
 })();
 
 window.addEventListener('keydown', (e) => {
@@ -3207,22 +3501,36 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { fit(); frameId = requestAnimationFrame(frame); }
 });
 
-try { if (localStorage.getItem('flux.muted') === '1') applyMute(true); } catch (err) {}
+if (Store.get('muted') === '1') applyMute(true);
 if (DEV) { fpsOn = true; dom.fps.classList.remove('hidden'); }
 
-startLevel(0);
+/* The page carries no name and no labels of its own; this is where it gets
+   both, before the first frame is drawn. */
+applyBranding();
+
+/* Pick up where the player left off. Progress is only ever an INDEX — the
+   level itself is rebuilt from its data, exactly as a restart would build it,
+   so resuming and restarting land in the same place. */
+Save.load();
+const resumeAt = Save.unlocked();
+startLevel(resumeAt);
+if (resumeAt > 0) showToast(TEXT.resume, { info: true });
 fit();
 frameId = requestAnimationFrame(frame);
 
 /* ---- debug / automation surface ---- */
+/* Internal only — never player-facing, so it deliberately does NOT follow
+   GAME.title: renaming the game must not break a bookmarked console call or
+   the test harness. */
 window.FLUX = {
-  G, body, PS, Vis, Aim, world, LEVELS, MOVE, Q, Player, cam,
+  G, body, PS, Vis, Aim, world, LEVELS, MOVE, Q, Player, cam, Save, Store, TEXT, GAME,
   go: (i) => startLevel(clamp(i | 0, 0, LEVELS.length - 1)),
   burst: (ang, power) => { if (canAim()) doBurst(ang, clamp(power, 0, 1)); },
   tick: (n) => { for (let i = 0; i < n; i++) simStep(); },
   state: () => PS.state,
   aimable: () => canAim(),
   mute: (v) => { muted = !!v; Sfx.setMuted(muted); },
+  wipe: () => { Save.reset(); startLevel(0); },
   bench: (n) => {
     n = n || 120;
     render();

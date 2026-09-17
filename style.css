@@ -1,5 +1,6 @@
 /* ============================================================
-   FLUX - neon physics puzzle
+   Stylesheet for the game shell. The game name is not written anywhere in
+   this project except GAME.title in game.js — see the note there.
    Shell, HUD and overlays. The playfield itself is canvas-drawn.
    ============================================================ */
 
@@ -85,6 +86,11 @@ body{
   color:transparent;
   filter:drop-shadow(0 0 30px rgba(160,108,255,.45));
 }
+/* The two descriptive lines are capped to the gutter beside the stage and
+   allowed to wrap. They hold a sentence of prose, and how long that sentence
+   is depends entirely on the language it is written in — sized to fit one
+   particular string, they run under the playfield the moment it is reworded. */
+.dm-sub,.dm-keys{max-width:clamp(150px,17vw,300px);line-height:1.6;}
 .dm-sub{
   font-size:12px;letter-spacing:.34em;text-transform:uppercase;
   color:rgba(226,232,255,.42);
@@ -204,26 +210,11 @@ body{
   transition:width .5s cubic-bezier(.3,.9,.25,1);
 }
 
-.hud-side{display:flex;align-items:center;gap:clamp(6px,1.1vmin,10px);}
+/* Two round buttons, nothing else. The leap counter that used to sit here was
+   information the player never acted on, and it pushed the level name into an
+   ellipsis on a narrow phone. */
+.hud-side{display:flex;align-items:center;gap:clamp(6px,1.1vmin,10px);flex:none;}
 
-#shots{
-  display:flex;align-items:center;gap:.35em;
-  padding:clamp(3px,.6vmin,5px) clamp(6px,1.1vmin,10px);
-  border-radius:999px;
-  background:rgba(160,108,255,.13);
-  border:1px solid rgba(160,108,255,.28);
-  font-size:clamp(9px,1.75vmin,13px);
-  font-weight:650;letter-spacing:.08em;
-  color:rgba(226,214,255,.92);
-}
-#shots svg{width:1.05em;height:1.05em;fill:none;stroke:var(--violet);stroke-width:2.1;stroke-linecap:round;stroke-linejoin:round;}
-/* On rationed levels the chip counts down remaining energy and warns late. */
-#shots.limited{background:rgba(46,230,255,.13);border-color:rgba(46,230,255,.32);color:rgba(214,246,255,.95);}
-#shots.limited svg{stroke:var(--cyan);}
-#shots.low{background:rgba(255,45,110,.16);border-color:rgba(255,45,110,.45);color:#ffd9e4;}
-#shots.low svg{stroke:var(--danger);}
-#shots.bump{animation:shotBump .34s cubic-bezier(.2,1.6,.4,1);}
-@keyframes shotBump{0%{transform:scale(1)}40%{transform:scale(1.22)}100%{transform:scale(1)}}
 
 /* Touch targets: the visible dot stays small and neat, but the hit area is
    never below ~44px thanks to the padded pseudo-element. */
@@ -340,6 +331,12 @@ body{
   background:linear-gradient(180deg,rgba(255,45,110,.22),rgba(255,45,110,.12)),rgba(14,8,24,.72);
   border:1px solid rgba(255,45,110,.42);
   white-space:nowrap;
+}
+/* The default toast is failure red. `info` is the same shape in the ordinary
+   palette, for something the player should read rather than worry about. */
+#toast.info{
+  background:linear-gradient(180deg,rgba(150,175,255,.2),rgba(80,100,210,.1)),rgba(12,10,30,.74);
+  border-color:rgba(160,108,255,.42);
 }
 #toast.hidden{opacity:0;}
 #toast.show{animation:toastIn 1.6s cubic-bezier(.2,.9,.25,1) forwards;}

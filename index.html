@@ -1,46 +1,45 @@
 <!DOCTYPE html>
-<html lang="en">
+<!-- Every name and every player-facing string on this page is filled in by
+     game.js from the GAME and TEXT tables. Nothing here hardcodes the title,
+     the language or a label, so renaming the game is a one-line change. -->
+<html lang="tr">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#05060f" />
 <meta name="color-scheme" content="dark" />
-<meta name="description" content="FLUX — guide a small spirit through neon ruins with directional leaps, wall holds and energy nodes." />
+<meta name="description" content="" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
-<title>FLUX</title>
+<title></title>
 <link rel="stylesheet" href="style.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><radialGradient id='g'><stop offset='0' stop-color='%23ffffff'/><stop offset='.45' stop-color='%23b07cff'/><stop offset='1' stop-color='%234a1d9e'/></radialGradient></defs><rect width='32' height='32' rx='8' fill='%23090c1c'/><circle cx='16' cy='16' r='9' fill='url(%23g)'/><circle cx='16' cy='16' r='12' fill='none' stroke='%232ee6ff' stroke-opacity='.55' stroke-width='1.2'/></svg>" />
 </head>
 <body>
   <div id="app">
     <div class="deskmark" aria-hidden="true">
-      <span class="dm-name">FLUX</span>
-      <span class="dm-sub">Spirit traversal · vertical slice</span>
-      <span class="dm-keys">Hold · pull back · release to launch · R restarts</span>
+      <span class="dm-name" id="markName"></span>
+      <span class="dm-sub" id="markSub"></span>
+      <span class="dm-keys" id="markKeys"></span>
     </div>
 
     <div id="stage">
-      <canvas id="game" width="540" height="960" aria-label="FLUX playfield"></canvas>
+      <canvas id="game" width="540" height="960"></canvas>
 
       <div id="ui">
         <header id="hud">
           <div class="hud-main">
             <div class="hud-row">
-              <span class="hud-key">LEVEL</span>
+              <span class="hud-key" id="hudLevelKey"></span>
               <span id="levelNum">01</span>
               <span class="hud-sep">/</span>
-              <span class="hud-tot">6</span>
-              <span id="levelName">SPECTRUM</span>
+              <span class="hud-tot" id="levelTot"></span>
+              <span id="levelName"></span>
             </div>
             <div id="progress"><i id="progressFill"></i></div>
           </div>
           <div class="hud-side">
-            <div id="shots" title="Leaps taken">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20 L20 4 M20 4 h-6 M20 4 v6"/></svg>
-              <span id="shotCount">0</span>
-            </div>
-            <button id="soundBtn" class="hud-btn" type="button" aria-label="Sound on or off" aria-pressed="true">
+            <button id="soundBtn" class="hud-btn" type="button" aria-pressed="true">
               <svg class="ic-on" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 9.5h3.2L12 5.4v13.2L7.2 14.5H4z"/>
                 <path d="M15.6 9.2a4 4 0 0 1 0 5.6M18.2 6.6a7.6 7.6 0 0 1 0 10.8"/>
@@ -50,7 +49,7 @@
                 <path d="M16.2 9.8l5 4.4M21.2 9.8l-5 4.4"/>
               </svg>
             </button>
-            <button id="restartBtn" class="hud-btn" type="button" aria-label="Restart level">
+            <button id="restartBtn" class="hud-btn" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 5.2V2.2L7.4 6.1 12 10V7.2a4.9 4.9 0 1 1-4.9 4.9" />
               </svg>
@@ -61,7 +60,7 @@
         <div id="banner" aria-hidden="true">
           <div class="banner-num">01</div>
           <div class="banner-line"></div>
-          <div class="banner-name">SPECTRUM</div>
+          <div class="banner-name"></div>
         </div>
 
         <div id="hint" class="hidden"></div>
@@ -82,13 +81,13 @@
             <span class="spark s2"></span>
             <span class="spark s3"></span>
           </div>
-          <h1>FLUX</h1>
-          <p class="end-sub">Prototype Complete</p>
+          <h1 id="endTitle"></h1>
+          <p class="end-sub" id="endSub"></p>
           <div class="end-stats">
-            <div><span id="endShots">0</span><em>leaps</em></div>
-            <div><span id="endTime">0:00</span><em>runtime</em></div>
+            <div><span id="endTime">0:00</span><em id="endTimeLabel"></em></div>
+            <div><span id="endLevels">0</span><em id="endLevelLabel"></em></div>
           </div>
-          <button id="endRestart" type="button">Replay</button>
+          <button id="endRestart" type="button"></button>
         </div>
       </div>
     </div>
