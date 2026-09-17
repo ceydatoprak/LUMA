@@ -10,11 +10,18 @@
 //   REACH   is there any input that gets there at all?
 //   MARGIN  how wide is the window of inputs that work? A hop that needs one
 //           exact angle is a hop the player will fail over and over.
+//   TIMING  for a level with beams or moving ground, the hop is tried from
+//           eight points around the world's cycle. How many of them work is
+//           the timing slack: 8/8 means the mechanic never gates the hop,
+//           and 1/8 means the player is being asked for one exact moment.
 //   SEE     with the camera where it would actually be while aiming, is the
 //           destination on screen before the player has to commit?
 //   REST    once there, does the player get control back?
 //
 // A hop that fails any of these is a design bug, not a difficulty setting.
+// Standing still is free — the world is frozen while a stretch is held — so a
+// hop that only works at some phases is fine as long as the player can wait
+// for one, which is what MIN_PHASES is about.
 const { boot } = require('./harness.cjs');
 
 const f = boot();
@@ -28,9 +35,27 @@ const PULLS = [0, 0.2, 0.4, 0.6, 0.8, 1];
 const POWERS = PULLS.map(p => T.powerCurve(p));
 const MIN_ANGLE_WINDOW = 12;       // degrees of aim slack a hop must allow
 const MIN_COMBOS = 6;
+const PHASES = 8;                  // points around the world cycle to try
+const MIN_PHASES = 2;              // fewer than this is one exact moment
+
+/* The longest cycle in a level: every beam period and every platform period.
+   Sweeping this is what turns "unreachable" into "reachable at 5 of 8 moments",
+   which is the difference between a broken hop and a timed one. */
+function worldPeriod(L) {
+  let p = 0;
+  for (const b of (L.beams || [])) if (b.pulse) p = Math.max(p, b.pulse.period);
+  for (const e of (L.solids || [])) if (e.motion && e.motion.period) p = Math.max(p, e.motion.period);
+  return p;
+}
 
 function place(wp) {
-  const [x, y, kind] = wp;
+  let [x, y, kind] = wp;
+  // A waypoint on moving ground is written where that ground STARTS. Standing
+  // on it means standing where it is now, so carry the placement with it.
+  if (kind === 'ground') {
+    const s = surfaceAt(x, y);
+    if (s && s.motion) { x += s.x - s.bx; y += s.y - s.by; }
+  }
   T.placeSpirit(x, y);
   f.PS.t = 1;
   if (kind === 'cling') {
@@ -51,24 +76,34 @@ function place(wp) {
     f.PS.node = n; f.PS.state = 'node';
   } else {
     f.PS.state = 'ground'; f.PS.coyote = 1;
+    const s = surfaceAt(wp[0], wp[1]);
+    if (s) f.PS.support = s;             // so a mover carries the spirit along
   }
 }
 
-/* The surface a waypoint names: the flat top nearest under it. */
+/* The surface a waypoint names: the flat top nearest under it.
+
+   Matched against each solid's BASE position, because that is what the level
+   data declares. A platform that is halfway through its travel is still the
+   same platform, and looking it up by where it happens to be right now made
+   every moving-ground waypoint read as a different surface each frame. */
 function surfaceAt(x, y) {
   let best = null, bestGap = 90;
   for (const s of f.world.solids) {
     if (s.a) continue;
-    const top = s.y - s.h / 2;
+    const bx = s.bx === undefined ? s.x : s.bx, by = s.by === undefined ? s.y : s.by;
+    const top = by - s.h / 2;
     const gap = Math.abs(top - (y + f.body.r));
-    if (x < s.x - s.w / 2 - 40 || x > s.x + s.w / 2 + 40) continue;
+    if (x < bx - s.w / 2 - 40 || x > bx + s.w / 2 + 40) continue;
     if (gap < bestGap) { bestGap = gap; best = s; }
   }
   return best;
 }
+/* Arriving means standing on THAT surface — wherever it has got to. */
 function onSurfaceOf(tx, ty) {
   const s = surfaceAt(tx, ty);
   if (!s) return Math.hypot(f.body.x - tx, f.body.y - ty) < 190;
+  if (f.PS.support === s) return true;
   const top = s.y - s.h / 2;
   return Math.abs((f.body.y + f.body.r) - top) < 26 &&
          f.body.x > s.x - s.w / 2 - f.body.r && f.body.x < s.x + s.w / 2 + f.body.r;
@@ -133,52 +168,84 @@ function visible(rect, x, y, pad = 0) {
   return x > rect.x0 + pad && x < rect.x1 - pad && y > rect.y0 + pad && y < rect.y1 - pad;
 }
 
+/* Put the world at a given point in its cycle before the hop is attempted, so
+   a beam that is lit right now and a platform that is at the far end of its
+   travel are both things the player can simply wait out. */
+function startAt(level, t0) {
+  f.go(level);
+  const n = 20 + Math.round(t0 * 60);
+  for (let i = 0; i < n; i++) f.tick(1);
+}
+
 function checkHop(level, from, to) {
+  const period = worldPeriod(f.LEVELS[level]);
+  const phases = period > 0 ? PHASES : 1;
   const wins = [];
-  for (let ai = 0; ai < ANGLES; ai++) {
-    const angle = -Math.PI + ai * (Math.PI * 2 / ANGLES);
-    for (const power of POWERS) {
-      f.go(level);
-      for (let i = 0; i < 20; i++) f.tick(1);
-      place(from);
-      if (!T.canAim()) continue;
-      f.burst(angle, power);
-      if (arrives(to)) wins.push({ angle, power, deg: angle * 180 / Math.PI, lx: landed.x, ly: landed.y });
+  const phaseWorks = new Array(phases).fill(false);
+  for (let ph = 0; ph < phases; ph++) {
+    const t0 = period > 0 ? period * ph / phases : 0;
+    for (let ai = 0; ai < ANGLES; ai++) {
+      const angle = -Math.PI + ai * (Math.PI * 2 / ANGLES);
+      for (const power of POWERS) {
+        startAt(level, t0);
+        place(from);
+        if (!T.canAim()) continue;
+        f.burst(angle, power);
+        if (arrives(to)) {
+          phaseWorks[ph] = true;
+          wins.push({ angle, power, phase: ph, t0, deg: angle * 180 / Math.PI, lx: landed.x, ly: landed.y });
+        }
+      }
     }
   }
-  if (!wins.length) return { ok: false, combos: 0, window: 0, seeing: 0, seen: false };
+  const okPhases = phaseWorks.filter(Boolean).length;
+  if (!wins.length) return { ok: false, combos: 0, window: 0, seeing: 0, seen: false, phases, okPhases: 0 };
 
   // MARGIN: the widest run of neighbouring angles that all work, at one power.
   // This is the forgiveness the player feels — a hop needing one exact angle
   // is a hop they will fail repeatedly.
-  let window = 0, best = wins[0];
-  for (const power of POWERS) {
-    const at = wins.filter(w => w.power === power).sort((a, b) => a.deg - b.deg);
-    let run = 0, runStart = 0;
-    for (let i = 0; i < at.length; i++) {
-      if (i && at[i].deg - at[i - 1].deg <= 360 / ANGLES + 0.01) run++;
-      else { run = 1; runStart = i; }
-      const span = run * (360 / ANGLES);
-      if (span > window) { window = span; best = at[runStart + ((run / 2) | 0)]; }
+  // Every contiguous run of working angles, at one power and one phase. The
+  // widest is the forgiveness the player feels.
+  const runs = [];
+  for (let ph = 0; ph < phases; ph++) {
+    for (const power of POWERS) {
+      const at = wins.filter(w => w.power === power && w.phase === ph).sort((a, b) => a.deg - b.deg);
+      let run = 0, runStart = 0;
+      for (let i = 0; i < at.length; i++) {
+        if (i && at[i].deg - at[i - 1].deg <= 360 / ANGLES + 0.01) run++;
+        else { run = 1; runStart = i; }
+        runs.push({ span: run * (360 / ANGLES), shot: at[runStart + ((run / 2) | 0)] });
+      }
     }
   }
+  runs.sort((a, b) => b.span - a.span);
+  const window = runs.length ? runs[0].span : 0;
 
-  // SEE: while aiming the representative shot, can the player see the place
-  // they are going? The bar is the destination AREA being on screen, not the
-  // exact pixel of the landing — a player aims at the ledge they can see, and
-  // a long arc that leaves the frame is information, not unfairness.
-  f.go(level);
-  for (let i = 0; i < 20; i++) f.tick(1);
+  // SEE: while aiming, can the player see the place they are going?
+  //
+  // The question is whether the hop CAN be made with the destination on
+  // screen, not whether one arbitrarily chosen shot happens to show it. A
+  // gentle lob leads the camera barely at all, so picking the widest angle
+  // window as the representative could report a perfectly readable hop as
+  // blind purely because the sample was a soft one. So: check the widest few
+  // runs, and take the first that shows the destination.
+  let best = runs.length ? runs[0].shot : wins[0], seen = false, rect = null;
+  for (const cand of runs.slice(0, 14)) {
+    startAt(level, cand.shot.t0);
+    place(from);
+    const r = viewWhileAiming(cand.shot.angle, cand.shot.power);
+    if (destinationVisible(r, to, cand.shot)) { best = cand.shot; rect = r; seen = true; break; }
+    if (!rect) { best = cand.shot; rect = r; }
+  }
+  startAt(level, best.t0);
   place(from);
-  const rect = viewWhileAiming(best.angle, best.power);
-  const seen = destinationVisible(rect, to, best);
 
   // ...and how many of the working inputs land somewhere on screen, reported
   // for information rather than as a pass/fail
   let inView = 0;
   for (const w of wins) if (visible(rect, w.lx, w.ly, 0)) inView++;
 
-  return { ok: true, combos: wins.length, seeing: inView, seen, window, best, rect };
+  return { ok: true, combos: wins.length, seeing: inView, seen, window, best, rect, phases, okPhases };
 }
 
 /* Is the thing the hop is aimed at on screen? For a surface, any part of it
@@ -214,8 +281,13 @@ for (const li of only) {
       for (let k = 0; k < 20; k++) f.tick(1);
       const sp = f.world.springs.reduce((b, s) =>
         (!b || Math.hypot(s.x - from[0], s.y - from[1]) < Math.hypot(b.x - from[0], b.y - from[1])) ? s : b, null);
-      T.placeSpirit(sp.x - sp.sa * 40, sp.y + sp.ca * 40);
-      f.PS.state = 'air'; f.PS.t = 1; f.body.vy = 2;
+      // Drop onto the face along the launch normal, which is the only way a
+      // player ever meets a spring. Approaching from behind it does nothing,
+      // and testing it that way was testing the wrong thing.
+      const nx = sp.sa, ny = -sp.ca, d = sp.h / 2 + MOVE.radius + 24;
+      T.placeSpirit(sp.x + nx * d, sp.y + ny * d);
+      f.PS.state = 'air'; f.PS.t = 1;
+      f.body.vx = -nx * 5; f.body.vy = -ny * 5;
       const ok = arrives(to);
       console.log(`  ${String(i + 1).padStart(2)}. ${label.padEnd(18)} ${ok ? 'OK   (the spring does the work)' : 'FAIL the throw does not arrive'}`);
       if (!ok) problems++;
@@ -231,6 +303,7 @@ for (const li of only) {
 
     const tight = r.window < MIN_ANGLE_WINDOW || r.combos < MIN_COMBOS;
     const flags = [];
+    if (r.phases > 1 && r.okPhases < MIN_PHASES) flags.push('ONE MOMENT');
     if (!r.seen) {
       flags.push('BLIND');
       if (process.env.PT_DEBUG) {
@@ -244,7 +317,8 @@ for (const li of only) {
     console.log(`  ${String(i + 1).padStart(2)}. ${label.padEnd(18)} ` +
       `${flags.length ? flags.join('+').padEnd(11) : 'OK'.padEnd(11)} ` +
       `aim ${r.best.deg.toFixed(0).padStart(5)}deg p${r.best.power}  ` +
-      `slack ${r.window.toFixed(0).padStart(3)}deg  ${String(r.combos).padStart(3)} inputs work, ${String(r.seeing).padStart(3)} land in view`);
+      `slack ${r.window.toFixed(0).padStart(3)}deg  ${String(r.combos).padStart(3)} inputs work, ${String(r.seeing).padStart(3)} land in view` +
+      (r.phases > 1 ? `,  timing ${r.okPhases}/${r.phases}` : ''));
   }
 }
 

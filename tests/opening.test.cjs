@@ -56,8 +56,15 @@ function solve(li,route){
  }
  const win=states.find(v=>v.s.G.phase==='win');assert(win,`L${li+1} must finish`);return win.path;
 }
+const nearest=(list,wp)=>list.reduce((b,e)=>(!b||Math.hypot(e.x-wp[0],e.y-wp[1])<Math.hypot(b.x-wp[0],b.y-wp[1]))?e:b,null);
+/* The face a cling waypoint is holding: the solid whose side the spirit is
+   resting one radius clear of, at that height. */
+const face=(wp)=>f.world.solids.find(e=>!e.a && wp[1]>e.y-e.h/2 && wp[1]<e.y+e.h/2 &&
+  (Math.abs(wp[0]-(e.x-e.w/2-13))<6 || Math.abs(wp[0]-(e.x+e.w/2+13))<6));
 function visibleTarget(wp){
- const obj=wp[2]==='ground'?floor(wp):wp[2]==='node'?f.world.nodes[0]:wp[2]==='spring'?f.world.springs[0]:wp[2]==='cling'?f.world.solids.find(e=>e.h>300):f.world.gate;
+ const obj=wp[2]==='ground'?floor(wp):wp[2]==='node'?nearest(f.world.nodes,wp)
+   :wp[2]==='spring'?nearest(f.world.springs,wp):wp[2]==='cling'?face(wp):f.world.gate;
+ assert(obj,`waypoint names something that exists: ${JSON.stringify(wp)}`);
  const hx=obj.w?obj.w/2:obj.r, hy=obj.h?obj.h/2:obj.r;
  assert(obj.x+hx>f.cam.x-270/f.cam.zoom && obj.x-hx<f.cam.x+270/f.cam.zoom && obj.y+hy>f.cam.y-480/f.cam.zoom && obj.y-hy<f.cam.y+480/f.cam.zoom,'required destination must be revealed before release');
 }
@@ -77,7 +84,14 @@ function touchShot(deg,p,target){
 }
 for(let li=0;li<5;li++){
  const L=f.LEVELS[li];assert(!L.winds&&!L.beams&&!L.motes);assert(!L.solids.some(e=>e.motion||e.crumble));
- assert.equal((L.nodes||[]).length,li===2?1:0);assert.equal((L.springs||[]).length,li===3?1:0);
+ // Nodes are introduced in level 3 and springs in level 4. Nothing may show
+ // up before its own level; after that a level is free not to use it again.
+ assert(li>=2||(L.nodes||[]).length===0,`L${li+1} shows nodes before level 3`);
+ assert(li>=3||(L.springs||[]).length===0,`L${li+1} shows springs before level 4`);
+ if(li===2) assert((L.nodes||[]).length>0,'level 3 introduces the node');
+ if(li===3) assert((L.springs||[]).length>0,'level 4 introduces the spring');
+ // a mechanic's first appearance is safe, so it may appear more than once
+ assert((L.nodes||[]).length<=2 && (L.springs||[]).length<=2,`L${li+1} introduces too much at once`);
  for(const [label,route] of [['safe',L.route],...(L.fastRoute?[['fast',L.fastRoute]]:[])]){
   touchReplay=false;const path=solve(li,route);f.go(li);f.resize(390,390*960/540);f.tick(60);touchReplay=true;
   for(const shot of path){if(!shot.auto)touchShot(shot.deg,shot.p,shot.target);assert(advance(shot.target),`L${li+1} touch replay ${label}: ${JSON.stringify(shot)}`);if(f.G.phase==='win')break;}

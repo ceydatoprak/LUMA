@@ -786,1182 +786,612 @@ function updateDust() {
    Any entity may carry `motion` to oscillate or sweep.
    ============================================================ */
 
-const LEVELS = [
-  // 1 — Three broad ledges: 40–50% pull, 55–65% pull, short finish.
-  {
-    name: "İlk Işık",
-    tip: "Basılı tut, geriye çek ve bırak.",
-    w: 900,
-    h: 900,
-    bg: ["#141a44","#06091c"],
-    accent: [120,170,255],
-    spawn: {"x":120,"y":755},
-    gate: {"x":820,"y":265},
-    solids: [
-      {"x":450,"y":945,"w":900,"h":130},
-      {"x":140,"y":840,"w":280,"h":80},
-      {"x":370,"y":680,"w":250,"h":80},
-      {"x":625,"y":490,"w":290,"h":80},
-      {"x":815,"y":350,"w":170,"h":60}
+/* ---- authoring helpers ---------------------------------------------------
+   A designer thinks about a surface as "these edges, this top". The
+   simulation wants a centre and a size. These two lines are the whole
+   translation, and they exist so that every number written below is a number
+   that can be reasoned about directly against the measurements above.
+
+   `at` returns the route waypoint for standing on a surface: the resting
+   centre of the spirit, which is one radius above the top. */
+const ledge = (l, r, top, h, extra) =>
+  Object.assign({ x: (l + r) / 2, y: top + h / 2, w: r - l, h }, extra || {});
+const tower = (l, r, top, bottom, extra) =>
+  Object.assign({ x: (l + r) / 2, y: (top + bottom) / 2, w: r - l, h: bottom - top }, extra || {});
+const topOf = (s) => s.y - s.h / 2;
+const at = (s, x) => [x === undefined ? s.x : x, topOf(s) - MOVE.radius, 'ground'];
+/* A hold on one face of a tower: `side` is -1 for its left face, +1 for its
+   right, and the spirit sits one radius clear of it. */
+const grip = (s, side, y) => [s.x + side * (s.w / 2 + MOVE.radius), y, 'cling'];
+const via = (n) => [n.x, n.y, 'node'];
+const onto = (sp) => [sp.x, sp.y, 'spring'];
+/* The gate floats a little above the surface it crowns, close enough that
+   arriving on that surface is arriving. The goal is a place, not a last
+   fiddly input. */
+const gateOn = (s, x) => ({ x: x === undefined ? s.x : x, y: topOf(s) - 55 });
+/* A checkpoint sits just above its platform, so the respawn drops the spirit
+   the last few units onto solid ground rather than into anything. */
+const checkOn = (s, x) => ({ x: x === undefined ? s.x : x, y: topOf(s) - 42 });
+
+/* ---------------------------------------------------------------------------
+   THE CAMPAIGN
+
+   Fifteen levels, one new idea at a time, built against measured numbers
+   rather than guessed ones. `node tests/measure-reach.cjs` and
+   `node tests/measure-camera.cjs` print the two tables the geometry below is
+   sized from; `node tests/validate-levels.cjs` checks every level against
+   them. The short version:
+
+     a full-power leap carries 917 units flat, or rises 405 straight up
+     at +160 of rise there are 733 units of horizontal left
+     an energy node throws slightly harder: 961 flat, 427 up
+     a wall hold launches exactly as hard as the ground does
+     a spring at 12 degrees rises 526 and carries 365 across on the way down;
+       at 20 degrees, 486 and 573; at 28 degrees, 438 and 732
+
+   ...and the number that actually decides the geometry:
+
+     WHILE AIMING, THE PLAYER CAN SEE ABOUT 560 UNITS AHEAD AND 990 ABOVE.
+
+   The view is 540 x 960 and portrait. So a horizontal leap can be physically
+   possible and still be a blind jump, and the honest limit on a mandatory
+   sideways hop is around 500 units, not 917. That single fact is why this
+   campaign climbs, folds and zig-zags instead of running to the right: height
+   is cheap to frame and distance is not. Long leaps are left for optional
+   shortcuts, where not seeing the far side is the player's choice.
+
+   Difficulty is raised by what a hop asks for — timing, sequencing, choosing
+   a route, reading a pattern — and only rarely by making one longer.
+--------------------------------------------------------------------------- */
+
+const LEVELS = [];
+
+/* === 1. First contact ======================================================
+   Teach one thing: pull back further, go further. Three broad ledges climbing
+   to the right, a floor across the whole world so nothing can go wrong, and
+   no mechanic at all. The middle hop is the long one, so the level says
+   "short, longer, short" rather than "easy, easy, easy".
+   Target: 1/10. */
+LEVELS.push((() => {
+  const floor = ledge(0, 1660, 950, 150);
+  const p1 = ledge(-20, 380, 815, 120);
+  const p2 = ledge(500, 780, 690, 90);      // gap 120, rise 125
+  const p3 = ledge(950, 1240, 570, 90);     // gap 170, rise 120
+  const p4 = ledge(1390, 1670, 455, 90);    // gap 150, rise 115
+  return {
+    name: 'İlk Işık',
+    tip: 'Basılı tut, geriye çek ve bırak.',
+    w: 1660, h: 1060,
+    bg: ['#141a44', '#06091c'], accent: [120, 170, 255],
+    spawn: { x: 120, y: 770 },
+    gate: gateOn(p4, 1540),
+    solids: [floor, p1, p2, p3, p4],
+    route: [at(p1, 120), at(p2, 580), at(p3, 1030), at(p4, 1470), [0, 0, 'gate']],
+  };
+})());
+
+/* === 2. Height =============================================================
+   Wall cling. It appears twice: once on a stub in the middle of the world
+   where falling off costs nothing, and then on the tower that is the level.
+   The tower's crown is the goal, and it is in frame from the ledge below it
+   before the player commits to the climb.
+   Target: 1.5/10. */
+LEVELS.push((() => {
+  const floor = ledge(0, 1500, 1330, 150);
+  const p1 = ledge(-20, 320, 1180, 130);
+  const stub = tower(440, 610, 930, 1330);   // practice face, crown at 930
+  const p2 = ledge(760, 1080, 900, 90);      // a flat rest between the two holds
+  const keep = tower(1170, 1410, 480, 1330); // the tower: crown at 480
+  return {
+    name: 'Tutun',
+    tip: 'Duvara değ ve tutun. Sonra yukarı bırak.',
+    w: 1500, h: 1440,
+    bg: ['#102542', '#040a18'], accent: [90, 190, 255],
+    spawn: { x: 110, y: 1135 },
+    gate: gateOn(keep),
+    solids: [floor, p1, stub, p2, keep],
+    route: [
+      at(p1, 110),
+      grip(stub, -1, 1030),
+      at(stub, 540),
+      at(p2, 850),
+      grip(keep, -1, 700),
+      at(keep),
+      [0, 0, 'gate'],
+    ],
+  };
+})());
+
+/* === 3. Echo ===============================================================
+   Energy nodes. A node only catches you if you press for it, so the first one
+   can simply sit on a leap that already works: nothing happens unless the
+   player reaches for it, and reaching for it is the lesson. The second is the
+   level — the last ledge is 417 units up, past anything a standing leap can
+   do, and the node is the only way onto it.
+   Target: 2/10. */
+LEVELS.push((() => {
+  const floor = ledge(0, 1660, 1010, 140);
+  const p1 = ledge(-20, 350, 870, 120);
+  const p2 = ledge(620, 1010, 760, 90);      // 410 to its near edge, rise 110
+  const p3 = ledge(1320, 1700, 400, 90);     // out of reach from the ledge below
+  const spare = { x: 480, y: 690 };          // free to ignore; free to discover
+  const lift = { x: 1060, y: 640 };
+  return {
+    name: 'Yankı',
+    tip: 'Havada küreye bas. Seni tutar, yeniden nişan al.',
+    w: 1740, h: 1120,
+    bg: ['#231640', '#08061c'], accent: [170, 130, 255],
+    spawn: { x: 250, y: 825 },
+    gate: gateOn(p3, 1540),
+    solids: [floor, p1, p2, p3],
+    nodes: [spare, lift],
+    route: [at(p1, 250), at(p2, 900), via(lift), at(p3, 1540), [0, 0, 'gate']],
+  };
+})());
+
+/* === 4. Leap ===============================================================
+   Springs. The first one is arrived at along a 90-unit hop with nothing near
+   it, and it throws the player onto a 450-wide shelf — it is not possible to
+   misread. The second is aimed the other way, folding the level back over
+   itself: the shelf it leaves is 467 units below its landing, so the throw is
+   the only way up, and the world stays compact instead of running off to the
+   right.
+   Target: 2.5/10. */
+LEVELS.push((() => {
+  const floor = ledge(0, 1500, 1440, 150);
+  const p1 = ledge(-20, 330, 1300, 120);
+  const pad = ledge(420, 830, 1200, 110);            // arrive here, calmly
+  const s1 = { x: 690, y: 1176, w: 172, h: 44, a: 16 };
+  const shelf = ledge(1050, 1500, 880, 120);         // 450 units of safety
+  const s2 = { x: 1400, y: 856, w: 170, h: 44, a: -14 };
+  const p4 = ledge(800, 1180, 400, 110);     // clear of the throw's rising arc
+  const p5 = ledge(300, 700, 290, 100);
+  return {
+    name: 'Sıçrama',
+    tip: 'Yeşil yüzey, baktığı yöne fırlatır.',
+    w: 1500, h: 1560,
+    bg: ['#0d2c34', '#040f18'], accent: [90, 220, 190],
+    spawn: { x: 110, y: 1255 },
+    gate: gateOn(p5, 450),
+    solids: [floor, p1, pad, shelf, p4, p5],
+    springs: [s1, s2],
+    route: [
+      at(p1, 110), at(pad, 520), onto(s1), at(shelf, 1160),
+      onto(s2), at(p4, 1040), at(p5, 450), [0, 0, 'gate'],
+    ],
+  };
+})());
+
+/* === 5. The crimson road ===================================================
+   Danger, and the first choice. The spike bed is 135 units below a hop the
+   player has already made a dozen times, so it is seen long before it
+   matters. Then the level forks: a stepping stone over the pit for two short
+   safe hops, or one 520-unit crossing straight over it. The long way is not a
+   punishment and the short way is not a trap — it is simply the first time
+   the player decides anything.
+   Target: 3/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 960, 1070, 130);          // only the near half
+  const p1 = ledge(-20, 400, 830, 130);
+  const p2 = ledge(560, 950, 790, 100);
+  const stone = ledge(1030, 1220, 800, 70);          // the cautious way across
+  const p4 = ledge(1300, 1760, 700, 110);
+  return {
+    name: 'Kızıl Yol',
+    tip: 'Kırmızıya dokunma. İki yol da geçer.',
+    w: 1780, h: 1180,
+    bg: ['#2a1330', '#0a0418'], accent: [220, 120, 220],
+    spawn: { x: 240, y: 785 },
+    gate: gateOn(p4, 1660),
+    solids: [floor, p1, p2, stone, p4],
+    spikes: [{ x: 1125, y: 965, w: 330, h: 70 }],
+    route: [at(p1, 240), at(p2, 860), at(stone, 1120), at(p4, 1400), [0, 0, 'gate']],
+    fastRoute: [at(p1, 240), at(p2, 860), at(p4, 1400), [0, 0, 'gate']],
+  };
+})());
+
+/* === 6. Pulse ==============================================================
+   Beams, and the first level shaped as a shaft rather than a walk. Every
+   crossing is made from a wide ledge the player can stand on for as long as
+   they like — the world is frozen while a stretch is held, so counting the
+   beam costs nothing. Lit for 1.3 seconds, dark for 3.5.
+
+   The first hop passes UNDER the first beam and the last hop sails OVER the
+   second: the level opens by showing the danger without asking anything, and
+   closes by letting the player use what they have learned to ignore it.
+   Target: 3.5/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 1060, 2120, 120);
+  const p1 = ledge(-20, 400, 2040, 120);
+  const watch = ledge(640, 1040, 1810, 110);   // stand here and count
+  const p3 = ledge(-20, 460, 1580, 100);
+  const p4 = ledge(600, 1040, 1350, 100);
+  const p5 = ledge(-20, 460, 1120, 110);
+  return {
+    name: 'Nabız',
+    tip: 'Işık sönünce geç. Beklemek serbest.',
+    w: 1060, h: 2240,
+    bg: ['#161a3a', '#050919'], accent: [140, 175, 245],
+    spawn: { x: 220, y: 1995 },
+    gate: gateOn(p5, 220),
+    solids: [floor, p1, watch, p3, p4, p5],
+    beams: [
+      { x: 520, y: 1640, w: 28, h: 280, pulse: { period: 4.8, phase: 0, duty: 0.28 } },
+      { x: 520, y: 1400, w: 28, h: 280, pulse: { period: 4.8, phase: 0.45, duty: 0.28 } },
     ],
     route: [
-      [120,787,"ground"],
-      [370,627,"ground"],
-      [565,437,"ground"],
-      [815,307,"ground"],
-      [0,0,"gate"]
-    ]
-  },
-  // 2 — One wall hold, the top of the same tower, then a separate goal ledge.
-  {
-    name: "Tutun",
-    tip: "Duvara tutun. Yeniden yön seç.",
-    w: 800,
-    h: 1000,
-    bg: ["#102542","#040a18"],
-    accent: [90,190,255],
-    spawn: {"x":120,"y":810},
-    gate: {"x":710,"y":215},
-    solids: [
-      {"x":400,"y":980,"w":800,"h":120},
-      {"x":150,"y":890,"w":300,"h":80},
-      {"x":540,"y":665,"w":280,"h":470},
-      {"x":705,"y":305,"w":190,"h":70}
+      at(p1, 220), at(watch, 860), at(p3, 200), at(p4, 820), at(p5, 200), [0, 0, 'gate'],
+    ],
+  };
+})());
+
+/* === 7. Sway ===============================================================
+   Moving ground. The first one crosses a gap with a floor under it, takes ten
+   seconds to complete a lap, and is 260 units wide — it can be watched for as
+   long as the player likes from the ledge before it, and missing it costs a
+   short climb rather than a life. The second moves vertically, which is the
+   same idea read on the other axis.
+   Target: 4/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 1820, 1140, 120);
+  const p1 = ledge(-20, 420, 880, 130);
+  const watch = ledge(520, 850, 820, 110);
+  const m1 = ledge(1000, 1260, 755, 70, { motion: { type: 'osc', dx: 130, dy: 0, period: 10 } });
+  const p3 = ledge(1420, 1800, 780, 110);
+  const m2 = ledge(1160, 1400, 455, 70, { motion: { type: 'osc', dx: 0, dy: 90, period: 9 } });  // clear over the ledge below
+  const p4 = ledge(820, 1140, 180, 110);     // 600 above the ledge before it: ride or nothing
+  return {
+    name: 'Salınım',
+    tip: 'Zemin geliyor. Acele etme, izle.',
+    w: 1820, h: 1260,
+    bg: ['#10203c', '#040a18'], accent: [110, 200, 235],
+    spawn: { x: 110, y: 835 },
+    gate: gateOn(p4, 980),
+    solids: [floor, p1, watch, m1, p3, m2, p4],
+    route: [
+      at(p1, 110), at(watch, 780), at(m1), at(p3, 1600), at(m2), at(p4, 980), [0, 0, 'gate'],
+    ],
+  };
+})());
+
+/* === 8. Fragile ============================================================
+   Crumbling ground. The first one is a landing with a floor beneath it and
+   2.2 seconds of cracking, so the lesson costs nothing: stand on it, watch it
+   fail, understand what the cracks mean.
+
+   The pair above is the level. Between the middle ledge and the top there are
+   440 units of climb and nothing else to stand on, so the two crumbling steps
+   are the way up rather than a detour — and neither can be skipped, because
+   from the first the top is still 387 up and a standing leap tops out at 405
+   with almost no reach left over. The floor still runs underneath everything,
+   so getting it wrong costs the climb, never the level.
+   Target: 4.5/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 1440, 1080, 120);
+  const p1 = ledge(-20, 400, 900, 130);
+  const c1 = ledge(520, 820, 840, 80, { crumble: 2.2 });    // safe: a floor below it
+  const p2 = ledge(960, 1300, 800, 110);
+  const c2 = ledge(700, 920, 620, 70, { crumble: 1.8 });
+  const c3 = ledge(500, 720, 470, 70, { crumble: 1.8 });
+  const p3 = ledge(40, 380, 300, 110);     // a diagonal hop, not a climb up its face
+  return {
+    name: 'Kırılgan',
+    tip: 'Çatlarsa kalma. Ama telaş da etme.',
+    w: 1440, h: 1200,
+    bg: ['#2b1b2e', '#0b0616'], accent: [215, 160, 200],
+    spawn: { x: 110, y: 855 },
+    gate: gateOn(p3, 200),
+    solids: [floor, p1, c1, p2, c2, c3, p3],
+    route: [
+      at(p1, 110), at(c1, 670), at(p2, 1100), at(c2, 810), at(c3, 610), at(p3, 200), [0, 0, 'gate'],
+    ],
+  };
+})());
+
+/* === 9. Flow ===============================================================
+   The first real combination, and deliberately not a precision test: hold a
+   wall, go over its crown, step across, and be thrown. Nothing here is
+   dangerous. The point is that the four things the player knows now join up
+   into one continuous movement, and it should be the level where they first
+   feel good at this.
+   Target: 5/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 1300, 1830, 130);
+  const p1 = ledge(-20, 420, 1760, 130);
+  const keep = tower(560, 740, 1320, 1830);
+  const p2 = ledge(820, 1260, 1280, 100);    // room to land BESIDE the spring
+  const s1 = { x: 1150, y: 1256, w: 170, h: 44, a: -14 };
+  const p3 = ledge(500, 940, 820, 110);      // right edge kept clear of the rising arc
+  const p4 = ledge(80, 400, 640, 100);
+  return {
+    name: 'Akış',
+    tip: 'Tutun, tırman, fırla. Hepsi tek bir hareket.',
+    w: 1300, h: 1900,
+    bg: ['#0e2b3a', '#040f1a'], accent: [95, 210, 220],
+    spawn: { x: 120, y: 1715 },
+    gate: gateOn(p4, 240),
+    solids: [floor, p1, keep, p2, p3, p4],
+    springs: [s1],
+    route: [
+      at(p1, 120), grip(keep, -1, 1580), at(keep), at(p2, 880),
+      onto(s1), at(p3, 760), at(p4, 240), [0, 0, 'gate'],
+    ],
+  };
+})());
+
+/* === 10. The lasso =========================================================
+   A node over moving ground. Held at the node the world is frozen, so the
+   player can watch the platform's whole path and pick the moment to let go —
+   which is the point: this should feel clever rather than quick. Past the
+   first section the floor stops, so the checkpoint on the far ledge is what
+   makes the second half cost seconds instead of the whole level.
+   Target: 5.5/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 960, 1290, 120);          // near half only
+  const p1 = ledge(-20, 400, 1080, 130);
+  const watch = ledge(520, 900, 1000, 110);
+  const hold = { x: 1060, y: 820 };
+  const m1 = ledge(1080, 1320, 865, 70, { motion: { type: 'osc', dx: 0, dy: 150, period: 8 } });
+  const p3 = ledge(1420, 1800, 780, 110);
+  const m2 = ledge(1000, 1220, 565, 70, { motion: { type: 'osc', dx: 140, dy: 0, period: 7 } });
+  const p4 = ledge(420, 800, 290, 110);      // out of the node's reach: the lift is the way
+  return {
+    name: 'Kement',
+    tip: 'Küredeyken dünya durur. Zamanını seç.',
+    w: 1820, h: 1400,
+    bg: ['#22183f', '#07051a'], accent: [190, 150, 250],
+    spawn: { x: 110, y: 1035 },
+    gate: gateOn(p4, 610),
+    solids: [floor, p1, watch, m1, p3, m2, p4],
+    nodes: [hold],
+    motes: [checkOn(p3, 1500)],
+    route: [
+      at(p1, 110), at(watch, 800), via(hold), at(m1), at(p3, 1600), at(m2), at(p4, 610),
+      [0, 0, 'gate'],
+    ],
+  };
+})());
+
+/* === 11. Current ===========================================================
+   Wind, three times, in the order the player needs it.
+
+     FEEL IT   a weak sideways current over a 440-wide ledge, so the arc can
+               be watched bending with nothing riding on it.
+     FIGHT IT  the same kind of current, pushing the wrong way, on a hop that
+               has to be aimed about 120 units into it.
+     RIDE IT   a rising current that roughly doubles the arc. The shelf it
+               leads to is 460 up, which no standing leap can reach, so the
+               current is not a shortcut — it is the way.
+
+   A current is weaker than gravity, always: it bends a leap, it never takes
+   the leap away. And the floor runs the whole width here, because this level
+   is about learning to read the air, not about being punished for it.
+   Target: 6/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 1500, 1450, 120);
+  const p1 = ledge(-20, 400, 1280, 130);
+  const p2 = ledge(620, 1060, 1180, 110);            // 440 wide: the drift cannot miss
+  const p3 = ledge(120, 560, 980, 110);
+  const p4 = ledge(860, 1400, 520, 130);             // the shelf above the current
+  return {
+    name: 'Akıntı',
+    tip: 'Akıntı seni taşır. Ona göre nişan al.',
+    w: 1500, h: 1560,
+    bg: ['#0c2b33', '#030f16'], accent: [80, 215, 210],
+    spawn: { x: 230, y: 1235 },
+    gate: gateOn(p4, 1200),
+    solids: [floor, p1, p2, p3, p4],
+    winds: [
+      { x: 700, y: 1180, w: 420, h: 300, dx: 1, dy: 0, strength: 0.05 },   // feel it
+      { x: 640, y: 960, w: 420, h: 280, dx: 1, dy: 0, strength: 0.07 },    // fight it
+      { x: 700, y: 700, w: 520, h: 520, dx: 0, dy: -1, strength: 0.26 },   // ride it
     ],
     route: [
-      [120,837,"ground"],
-      [387,610,"cling"],
-      [470,417,"ground"],
-      [705,257,"ground"],
-      [0,0,"gate"]
-    ]
-  },
-  // 3 — Rest first; the only node supplies a second decision in the air.
-  {
-    name: "Yankı",
-    tip: "Işık küresine yaklaş. Havada yönünü değiştir.",
-    w: 1050,
-    h: 900,
-    bg: ["#231640","#08061c"],
-    accent: [170,130,255],
-    spawn: {"x":120,"y":760},
-    gate: {"x":920,"y":130},
-    solids: [
-      {"x":525,"y":950,"w":1050,"h":140},
-      {"x":150,"y":840,"w":300,"h":80},
-      {"x":445,"y":695,"w":330,"h":80},
-      {"x":915,"y":225,"w":270,"h":80}
+      at(p1, 230), at(p2, 860), at(p3, 300), at(p3, 480),
+      // the ride: carried, so its reach is checked by flying it, not by an
+      // envelope measured in still air
+      [at(p4, 1100)[0], at(p4, 1100)[1], 'ground', 'wind'],
+      [0, 0, 'gate'],
     ],
-    nodes: [
-      {"x":660,"y":320}
+  };
+})());
+
+/* === 12. The cycle =========================================================
+   Spring and beam, alternating, so the level reads as a bar of music:
+
+     rest -> be thrown -> land -> stand still and count -> cross -> rest
+
+   ...twice. Every beam is met from a ledge with nothing happening on it, and
+   every spring throw has clear air the whole way, so the two mechanics never
+   ask for anything at the same moment. That is what makes this a rhythm and
+   not a reaction test.
+
+   The checkpoint sits on the ledge in the middle, so the half already solved
+   stays solved.
+   Target: 6.5/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 1000, 1830, 130);         // the near side only
+  const p1 = ledge(-20, 400, 1740, 130);
+  const p2 = ledge(560, 960, 1660, 110);
+  const s1 = { x: 820, y: 1636, w: 170, h: 44, a: 12 };
+  const p3 = ledge(1060, 1500, 1330, 100);
+  const p4 = ledge(280, 780, 1090, 110);             // land left of the beam, rest
+  const s2 = { x: 380, y: 1066, w: 170, h: 44, a: 16 };
+  const p5 = ledge(700, 1140, 760, 100);
+  const p6 = ledge(1260, 1700, 560, 110);
+  return {
+    name: 'Döngü',
+    tip: 'Bekle, fırla, in, say, geç.',
+    w: 1740, h: 1900,
+    bg: ['#1c1436', '#060418'], accent: [160, 150, 245],
+    spawn: { x: 230, y: 1695 },
+    gate: gateOn(p6, 1560),
+    solids: [floor, p1, p2, p3, p4, p5, p6],
+    springs: [s1, s2],
+    beams: [
+      { x: 820, y: 1180, w: 28, h: 240, pulse: { period: 4.2, phase: 0, duty: 0.30 } },
+      { x: 1200, y: 640, w: 28, h: 220, pulse: { period: 4.0, phase: 0.35, duty: 0.32 } },
     ],
+    motes: [checkOn(p4, 620)],
     route: [
-      [120,787,"ground"],
-      [445,642,"ground"],
-      [660,320,"node"],
-      [0,0,"gate"]
-    ]
-  },
-  // 4 — The angled spring ends at a safe rest before the final normal leap.
-  {
-    name: "Yükseliş",
-    tip: "Yeşil yüzey seni gösterdiği yöne fırlatır.",
-    w: 1100,
-    h: 1100,
-    bg: ["#0d2c34","#040f18"],
-    accent: [90,220,190],
-    spawn: {"x":110,"y":975},
-    gate: {"x":1005,"y":240},
-    solids: [
-      {"x":550,"y":1170,"w":1100,"h":220},
-      {"x":135,"y":1040,"w":270,"h":70},
-      {"x":370,"y":915,"w":360,"h":80},
-      {"x":840,"y":485,"w":420,"h":70},
-      {"x":995,"y":320,"w":210,"h":60}
+      at(p1, 230), at(p2, 620), onto(s1), at(p3, 1185), at(p4, 600),
+      onto(s2), at(p5, 850), at(p6, 1400), [0, 0, 'gate'],
     ],
-    springs: [
-      {"x":430,"y":851,"w":180,"h":44,"a":12}
-    ],
+  };
+})());
+
+/* === 13. The parting =======================================================
+   One chasm, one hub, two honest ways over it.
+
+   The patient way goes DOWN first: drop onto a crumbling step, leave before
+   it goes, ride the lift back up, step off. Three hops, nothing the player
+   has not already done, and the only pressure is the 1.6 seconds of cracking.
+
+   The bold way is two: a 400-unit leap out over the void into a node, then
+   one throw from it onto the far shelf. It asks for a real commitment over
+   open air — and it is the only place in the level where being wrong costs
+   the whole crossing.
+
+   Both are reasonable. Mastery is paid in hops saved, which is the only
+   currency this game has.
+   Target: 7/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 1000, 1390, 120);         // the near side only
+  const p1 = ledge(-20, 400, 1200, 130);
+  const hub = ledge(540, 980, 1120, 120);            // the fork, and the checkpoint
+  const step = ledge(1060, 1260, 1240, 70, { crumble: 1.6 });
+  const lift = ledge(1320, 1560, 1140, 70, { motion: { type: 'osc', dx: 0, dy: 120, period: 8 } });
+  const bold = { x: 1300, y: 900 };                  // the whole of the short way
+  const far = ledge(1640, 2040, 820, 110);           // clear of the lift's travel
+  const p6 = ledge(1240, 1620, 560, 110);
+  return {
+    name: 'Ayrım',
+    tip: 'İki yol var. İkisi de doğru.',
+    w: 2080, h: 1520,
+    bg: ['#2a1526', '#0b0514'], accent: [230, 140, 180],
+    spawn: { x: 230, y: 1155 },
+    gate: gateOn(p6, 1420),
+    solids: [floor, p1, hub, step, lift, far, p6],
+    nodes: [bold],
+    motes: [checkOn(hub, 760)],
     route: [
-      [110,992,"ground"],
-      [285,862,"ground"],
-      [430,838,"spring"],
-      [740,437,"ground"],
-      [995,277,"ground"],
-      [0,0,"gate"]
-    ]
-  },
-  // 5 — Lower ledge for safety; the direct crossing is optional.
-  {
-    name: "Kızıl Yol",
-    tip: "Kırmızı enerjiye dokunma.",
-    w: 1250,
-    h: 950,
-    bg: ["#2a1330","#0a0418"],
-    accent: [220,120,220],
-    spawn: {"x":120,"y":785},
-    gate: {"x":1090,"y":400},
-    solids: [
-      {"x":160,"y":870,"w":320,"h":90},
-      {"x":490,"y":750,"w":280,"h":70},
-      {"x":735,"y":650,"w":370,"h":80},
-      {"x":1110,"y":500,"w":280,"h":70}
-    ],
-    spikes: [
-      {"x":700,"y":890,"w":700,"h":50}
-    ],
-    route: [
-      [120,812,"ground"],
-      [490,702,"ground"],
-      [735,597,"ground"],
-      [1110,452,"ground"],
-      [0,0,"gate"]
+      at(p1, 230), at(hub, 860), at(step, 1160), at(lift), at(far, 1760),
+      at(p6, 1400), [0, 0, 'gate'],
     ],
     fastRoute: [
-      [120,812,"ground"],
-      [735,597,"ground"],
-      [1110,452,"ground"],
-      [0,0,"gate"]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
+      at(p1, 230), at(hub, 860), via(bold), at(far, 1760), at(p6, 1400), [0, 0, 'gate'],
     ],
-    "accent": [
-      140,
-      175,
-      245
+  };
+})());
+
+/* === 14. The ascent ========================================================
+   The first long level, and a wave rather than a ramp:
+
+     wall    -> REST -> moving ground -> CHECKPOINT
+     current and node (the hard section) -> REST
+     spring over a hazard -> CHECKPOINT -> a short wall, and out
+
+   Every named REST is a wide ledge with nothing on it, and the two
+   checkpoints are placed so the worst a mistake costs is one section.
+
+   The spike bed is the floor of the upper chamber: it is under everything
+   that happens there and in the way of nothing, so it reads as a reason to
+   be careful rather than as a trap.
+   Target: 7.5/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 1250, 2930, 130);
+  const p1 = ledge(-20, 380, 2800, 120);
+  const keep = tower(550, 730, 2340, 2860);
+  const rest1 = ledge(840, 1240, 2230, 110);
+  const m1 = ledge(585, 815, 2065, 70, { motion: { type: 'osc', dx: 150, dy: 0, period: 8 } });
+  const camp1 = ledge(120, 620, 1900, 100);
+  const hold = { x: 820, y: 1650 };
+  const rest2 = ledge(180, 640, 1500, 110);          // 460 wide, and only 160 up
+  const s1 = { x: 520, y: 1476, w: 170, h: 44, a: 12 };
+  const camp2 = ledge(760, 1200, 1080, 110);
+  const last = tower(360, 560, 640, 1060);
+  const p6 = ledge(640, 1040, 460, 110);
+  return {
+    name: 'Tırmanış',
+    tip: 'Uzun bir tırmanış. Aralarda dinlen.',
+    w: 1250, h: 3000,
+    bg: ['#141d3e', '#05081a'], accent: [130, 180, 250],
+    spawn: { x: 110, y: 2755 },
+    gate: gateOn(p6, 840),
+    solids: [floor, p1, keep, rest1, m1, camp1, rest2, camp2, last, p6],
+    springs: [s1],
+    nodes: [hold],
+    winds: [{ x: 640, y: 1700, w: 360, h: 320, dx: 1, dy: 0, strength: 0.055 }],
+    spikes: [{ x: 1060, y: 1500, w: 280, h: 60 }],   // the chamber floor, never an arc
+    motes: [checkOn(camp1, 300), checkOn(camp2, 1060)],   // clear of the current
+    route: [
+      at(p1, 110), grip(keep, -1, 2600), at(keep), at(rest1, 1000),
+      at(m1), at(camp1, 360), via(hold), at(rest2, 320),
+      onto(s1), at(camp2, 900), grip(last, 1, 900), at(last), at(p6, 840), [0, 0, 'gate'],
     ],
-    "name": "Nabız",
-    "tip": "Işık sönünce geç. Zamanlamanı ayarla.",
-    "w": 1300,
-    "h": 960,
-    "spawn": {
-      "x": 130,
-      "y": 690
-    },
-    "gate": {
-      "x": 1120,
-      "y": 410
-    },
-    "solids": [
-      {
-        "x": 170,
-        "y": 820,
-        "w": 340,
-        "h": 180
-      },
-      {
-        "x": 600,
-        "y": 690,
-        "w": 360,
-        "h": 80
-      },
-      {
-        "x": 1090,
-        "y": 510,
-        "w": 380,
-        "h": 80
-      }
+  };
+})());
+
+/* === 15. The last light ===================================================
+   Everything, once, in an order that never asks for two unfamiliar things at
+   the same time. It is the only level allowed to be genuinely hard, and the
+   hardness is in the length of the chain rather than the precision of any one
+   link: nothing here needs an exact angle, and nothing kills without showing
+   itself first. Three checkpoints keep a mistake inside its own section.
+
+   The node halfway up sits in a low corridor with a roof over it. That roof
+   is doing real work: an energy node throws nearly a thousand units, far
+   enough to skip most of a level, and the ceiling is what turns that throw
+   back into the one move the chamber is asking for — out along the corridor,
+   onto the crumbling step, and up.
+
+   The closing chain — wall, node, spring, landing — is the one place the game
+   asks for four things without a proper rest between them.
+   Target: 9/10. */
+LEVELS.push((() => {
+  const floor = ledge(-20, 700, 3260, 120);          // the start, and nothing else
+  const p1 = ledge(-20, 400, 3140, 120);
+  const p2 = ledge(660, 940, 3020, 90);
+  const w1 = tower(1020, 1400, 2740, 3100);          // crown wide enough to stand beside the spring
+  const s1 = { x: 1290, y: 2716, w: 170, h: 44, a: -16 };
+  const camp1 = ledge(560, 980, 2440, 100);
+  const m1 = ledge(310, 530, 2285, 70, { motion: { type: 'osc', dx: 0, dy: 130, period: 7 } });
+  const turn = { x: 300, y: 1880 };                  // only the lift reaches it
+  const roof = ledge(120, 740, 1700, 80);            // the ceiling that shapes the throw
+  const c1 = ledge(760, 1000, 1870, 70, { crumble: 1.5 });
+  const camp2 = ledge(1340, 1640, 1760, 100);
+  const p5 = ledge(900, 1260, 1560, 100);
+  const p6 = ledge(300, 680, 1400, 100);
+  const w3 = tower(555, 725, 960, 1160);    // faces out of reach of the ledge below
+  const m2 = ledge(960, 1160, 1035, 70, { motion: { type: 'osc', dx: 160, dy: 0, period: 6.5 } });
+  const camp3 = ledge(1180, 1520, 860, 100);
+  const w4 = tower(740, 900, 560, 860);
+  const last = { x: 520, y: 560 };
+  const p8 = ledge(180, 460, 700, 90);
+  const s2 = { x: 320, y: 676, w: 170, h: 44, a: 18 };
+  const p9 = ledge(700, 1060, 300, 100);
+  return {
+    name: 'Son Işık',
+    tip: 'Bildiğin her şey. Sırayla.',
+    w: 1740, h: 3400,
+    bg: ['#1a1030', '#050310'], accent: [235, 200, 255],
+    spawn: { x: 240, y: 3095 },
+    gate: gateOn(p9, 880),
+    solids: [floor, p1, p2, w1, camp1, m1, roof, c1, camp2, p5, p6, w3, m2, camp3, w4, p8, p9],
+    springs: [s1, s2],
+    nodes: [turn, last],
+    winds: [{ x: 1060, y: 1540, w: 360, h: 340, dx: -1, dy: 0, strength: 0.06 }],
+    beams: [{ x: 800, y: 1450, w: 28, h: 260, pulse: { period: 3.8, phase: 0, duty: 0.32 } }],
+    motes: [checkOn(camp1, 860), checkOn(camp2, 1500), checkOn(camp3, 1360)],
+    route: [
+      at(p1, 240), at(p2, 800), grip(w1, -1, 2800), at(w1, 1100),
+      onto(s1), at(camp1, 860), at(m1), via(turn), at(c1, 880), at(camp2, 1500),
+      at(p5, 1080), at(p6, 400), grip(w3, -1, 1100), at(w3),
+      at(m2), at(camp3, 1260), grip(w4, 1, 800), at(w4),
+      via(last), onto(s2), at(p9, 840), [0, 0, 'gate'],
     ],
-    "beams": [
-      {
-        "x": 835,
-        "y": 540,
-        "w": 26,
-        "h": 220,
-        "pulse": {
-          "period": 5,
-          "phase": 0,
-          "duty": 0.16
-        }
-      }
-    ],
-    "route": [
-      [
-        130,
-        717,
-        "ground"
-      ],
-      [
-        600,
-        637,
-        "ground"
-      ],
-      [
-        1090,
-        457,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Hareketli Zemin",
-    "tip": "Zemini izle, üzerine in ve devam et.",
-    "w": 1360,
-    "h": 960,
-    "spawn": {
-      "x": 130,
-      "y": 700
-    },
-    "gate": {
-      "x": 1160,
-      "y": 380
-    },
-    "solids": [
-      {
-        "x": 160,
-        "y": 830,
-        "w": 320,
-        "h": 180
-      },
-      {
-        "x": 650,
-        "y": 680,
-        "w": 330,
-        "h": 60,
-        "motion": {
-          "type": "osc",
-          "dx": 100,
-          "dy": 0,
-          "period": 8
-        }
-      },
-      {
-        "x": 1150,
-        "y": 480,
-        "w": 400,
-        "h": 80
-      }
-    ],
-    "route": [
-      [
-        130,
-        727,
-        "ground"
-      ],
-      [
-        650,
-        637,
-        "ground"
-      ],
-      [
-        1150,
-        427,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Kırılgan Zemin",
-    "tip": "Çatlakları görünce yeniden sıçra.",
-    "w": 1420,
-    "h": 1000,
-    "spawn": {
-      "x": 140,
-      "y": 670
-    },
-    "gate": {
-      "x": 1210,
-      "y": 370
-    },
-    "solids": [
-      {
-        "x": 710,
-        "y": 1010,
-        "w": 1420,
-        "h": 180
-      },
-      {
-        "x": 170,
-        "y": 800,
-        "w": 340,
-        "h": 180
-      },
-      {
-        "x": 660,
-        "y": 650,
-        "w": 400,
-        "h": 65,
-        "crumble": 1.5
-      },
-      {
-        "x": 1200,
-        "y": 475,
-        "w": 400,
-        "h": 80
-      },
-      {
-        "x": 660,
-        "y": 840,
-        "w": 480,
-        "h": 60
-      }
-    ],
-    "route": [
-      [
-        140,
-        697,
-        "ground"
-      ],
-      [
-        660,
-        604.5,
-        "ground"
-      ],
-      [
-        1200,
-        422,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Zincir",
-    "tip": "Duvara tutun, yüksel ve yayı kullan.",
-    "w": 1120,
-    "h": 1520,
-    "spawn": {
-      "x": 120,
-      "y": 1240
-    },
-    "gate": {
-      "x": 820,
-      "y": 470
-    },
-    "solids": [
-      {
-        "x": 180,
-        "y": 1400,
-        "w": 360,
-        "h": 240
-      },
-      {
-        "x": 680,
-        "y": 1090,
-        "w": 120,
-        "h": 480
-      },
-      {
-        "x": 315,
-        "y": 985,
-        "w": 450,
-        "h": 70
-      },
-      {
-        "x": 850,
-        "y": 555,
-        "w": 440,
-        "h": 70
-      }
-    ],
-    "springs": [
-      {
-        "x": 280,
-        "y": 931,
-        "w": 200,
-        "h": 44,
-        "a": 20
-      }
-    ],
-    "route": [
-      [
-        120,
-        1267,
-        "ground"
-      ],
-      [
-        607,
-        1100,
-        "cling"
-      ],
-      [
-        480,
-        913,
-        "ground"
-      ],
-      [
-        280,
-        918,
-        "spring"
-      ],
-      [
-        850,
-        507,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Akış",
-    "tip": "Kürede dur, hareketli zemine yönel.",
-    "w": 1160,
-    "h": 1160,
-    "spawn": {
-      "x": 130,
-      "y": 940
-    },
-    "gate": {
-      "x": 300,
-      "y": 270
-    },
-    "solids": [
-      {
-        "x": 180,
-        "y": 1060,
-        "w": 360,
-        "h": 180
-      },
-      {
-        "x": 820,
-        "y": 590,
-        "w": 330,
-        "h": 65,
-        "motion": {
-          "type": "osc",
-          "dx": 65,
-          "dy": 25,
-          "period": 9
-        }
-      },
-      {
-        "x": 300,
-        "y": 370,
-        "w": 420,
-        "h": 80
-      }
-    ],
-    "nodes": [
-      {
-        "x": 570,
-        "y": 740
-      }
-    ],
-    "route": [
-      [
-        130,
-        957,
-        "ground"
-      ],
-      [
-        570,
-        740,
-        "node"
-      ],
-      [
-        820,
-        544.5,
-        "ground"
-      ],
-      [
-        300,
-        317,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Rüzgâr",
-    "tip": "Işık akımı seni ok yönünde taşır.",
-    "w": 1500,
-    "h": 980,
-    "spawn": {
-      "x": 130,
-      "y": 700
-    },
-    "gate": {
-      "x": 1280,
-      "y": 380
-    },
-    "solids": [
-      {
-        "x": 160,
-        "y": 840,
-        "w": 320,
-        "h": 180
-      },
-      {
-        "x": 820,
-        "y": 640,
-        "w": 540,
-        "h": 70
-      },
-      {
-        "x": 1280,
-        "y": 480,
-        "w": 380,
-        "h": 80
-      }
-    ],
-    "winds": [
-      {
-        "x": 590,
-        "y": 510,
-        "w": 780,
-        "h": 500,
-        "dx": 1,
-        "dy": -0.25,
-        "strength": 0.075
-      }
-    ],
-    "route": [
-      [
-        130,
-        737,
-        "ground"
-      ],
-      [
-        820,
-        592,
-        "ground"
-      ],
-      [
-        1280,
-        427,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Dar Geçit",
-    "tip": "Yayı kullan. Mor ışıkta dinlen, geçişi bekle.",
-    "w": 1460,
-    "h": 1280,
-    "spawn": {
-      "x": 130,
-      "y": 1030
-    },
-    "gate": {
-      "x": 1280,
-      "y": 380
-    },
-    "solids": [
-      {
-        "x": 530,
-        "y": 1190,
-        "w": 1060,
-        "h": 240
-      },
-      {
-        "x": 800,
-        "y": 650,
-        "w": 430,
-        "h": 80
-      },
-      {
-        "x": 1270,
-        "y": 475,
-        "w": 360,
-        "h": 70
-      }
-    ],
-    "springs": [
-      {
-        "x": 310,
-        "y": 1046,
-        "w": 200,
-        "h": 44,
-        "a": 17
-      }
-    ],
-    "motes": [
-      {
-        "x": 800,
-        "y": 570
-      }
-    ],
-    "beams": [
-      {
-        "x": 1040,
-        "y": 460,
-        "w": 26,
-        "h": 290,
-        "pulse": {
-          "period": 5,
-          "phase": 0.1,
-          "duty": 0.24
-        }
-      }
-    ],
-    "route": [
-      [
-        130,
-        1057,
-        "ground"
-      ],
-      [
-        310,
-        1033,
-        "spring"
-      ],
-      [
-        800,
-        597,
-        "ground"
-      ],
-      [
-        1270,
-        427,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Parçalanan Yol",
-    "tip": "Hareketi izle. Çatlak zeminden küreye geç.",
-    "w": 1560,
-    "h": 1280,
-    "spawn": {
-      "x": 130,
-      "y": 1050
-    },
-    "gate": {
-      "x": 1320,
-      "y": 240
-    },
-    "solids": [
-      {
-        "x": 180,
-        "y": 1180,
-        "w": 360,
-        "h": 180
-      },
-      {
-        "x": 640,
-        "y": 940,
-        "w": 340,
-        "h": 60,
-        "motion": {
-          "type": "osc",
-          "dx": 75,
-          "dy": 30,
-          "period": 8
-        }
-      },
-      {
-        "x": 1150,
-        "y": 740,
-        "w": 370,
-        "h": 70,
-        "crumble": 1.3
-      },
-      {
-        "x": 1320,
-        "y": 340,
-        "w": 400,
-        "h": 80
-      },
-      {
-        "x": 1110,
-        "y": 1090,
-        "w": 440,
-        "h": 70
-      }
-    ],
-    "nodes": [
-      {
-        "x": 850,
-        "y": 490
-      }
-    ],
-    "route": [
-      [
-        130,
-        1077,
-        "ground"
-      ],
-      [
-        640,
-        897,
-        "ground"
-      ],
-      [
-        1150,
-        692,
-        "ground"
-      ],
-      [
-        850,
-        490,
-        "node"
-      ],
-      [
-        1320,
-        287,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Yükseliş",
-    "tip": "Her mor ışıkta yolculuğun kaydedilir.",
-    "w": 1120,
-    "h": 2300,
-    "spawn": {
-      "x": 120,
-      "y": 2020
-    },
-    "gate": {
-      "x": 300,
-      "y": 210
-    },
-    "solids": [
-      {
-        "x": 180,
-        "y": 2180,
-        "w": 360,
-        "h": 240
-      },
-      {
-        "x": 680,
-        "y": 1870,
-        "w": 120,
-        "h": 480
-      },
-      {
-        "x": 315,
-        "y": 1765,
-        "w": 450,
-        "h": 70
-      },
-      {
-        "x": 830,
-        "y": 1345,
-        "w": 420,
-        "h": 70
-      },
-      {
-        "x": 350,
-        "y": 1090,
-        "w": 330,
-        "h": 60,
-        "motion": {
-          "type": "osc",
-          "dx": 65,
-          "dy": 20,
-          "period": 9
-        }
-      },
-      {
-        "x": 800,
-        "y": 850,
-        "w": 400,
-        "h": 70
-      },
-      {
-        "x": 300,
-        "y": 310,
-        "w": 440,
-        "h": 80
-      }
-    ],
-    "springs": [
-      {
-        "x": 280,
-        "y": 1711,
-        "w": 200,
-        "h": 44,
-        "a": 20
-      }
-    ],
-    "nodes": [
-      {
-        "x": 700,
-        "y": 530
-      }
-    ],
-    "winds": [
-      {
-        "x": 590,
-        "y": 950,
-        "w": 600,
-        "h": 430,
-        "dx": 0.3,
-        "dy": -1,
-        "strength": 0.045
-      }
-    ],
-    "motes": [
-      {
-        "x": 830,
-        "y": 1270
-      },
-      {
-        "x": 820,
-        "y": 775
-      }
-    ],
-    "spikes": [
-      {
-        "x": 760,
-        "y": 2250,
-        "w": 580,
-        "h": 40
-      }
-    ],
-    "route": [
-      [
-        120,
-        2047,
-        "ground"
-      ],
-      [
-        607,
-        1880,
-        "cling"
-      ],
-      [
-        480,
-        1693,
-        "ground"
-      ],
-      [
-        280,
-        1698,
-        "spring"
-      ],
-      [
-        830,
-        1297,
-        "ground"
-      ],
-      [
-        350,
-        1047,
-        "ground"
-      ],
-      [
-        800,
-        802,
-        "ground"
-      ],
-      [
-        700,
-        530,
-        "node"
-      ],
-      [
-        300,
-        257,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  },
-  {
-    "bg": [
-      "#161a3a",
-      "#050919"
-    ],
-    "accent": [
-      140,
-      175,
-      245
-    ],
-    "name": "Son Işık",
-    "tip": "Öğrendiklerini birleştir. Son ışığa ulaş.",
-    "w": 1580,
-    "h": 2520,
-    "spawn": {
-      "x": 130,
-      "y": 2240
-    },
-    "gate": {
-      "x": 1270,
-      "y": 230,
-      "r": 52
-    },
-    "solids": [
-      {
-        "x": 180,
-        "y": 2400,
-        "w": 360,
-        "h": 240
-      },
-      {
-        "x": 680,
-        "y": 2090,
-        "w": 120,
-        "h": 480
-      },
-      {
-        "x": 300,
-        "y": 1940,
-        "w": 360,
-        "h": 65,
-        "motion": {
-          "type": "osc",
-          "dx": 60,
-          "dy": 0,
-          "period": 9
-        }
-      },
-      {
-        "x": 1070,
-        "y": 1510,
-        "w": 500,
-        "h": 80
-      },
-      {
-        "x": 560,
-        "y": 1090,
-        "w": 430,
-        "h": 80
-      },
-      {
-        "x": 1100,
-        "y": 860,
-        "w": 380,
-        "h": 65,
-        "crumble": 1.5
-      },
-      {
-        "x": 1270,
-        "y": 330,
-        "w": 450,
-        "h": 80
-      },
-      {
-        "x": 1260,
-        "y": 1200,
-        "w": 400,
-        "h": 65
-      }
-    ],
-    "nodes": [
-      {
-        "x": 640,
-        "y": 1650
-      },
-      {
-        "x": 820,
-        "y": 550
-      }
-    ],
-    "winds": [
-      {
-        "x": 850,
-        "y": 1430,
-        "w": 650,
-        "h": 450,
-        "dx": 1,
-        "dy": -0.3,
-        "strength": 0.05
-      }
-    ],
-    "springs": [
-      {
-        "x": 1080,
-        "y": 1455,
-        "w": 170,
-        "h": 40,
-        "a": -20
-      }
-    ],
-    "beams": [
-      {
-        "x": 765,
-        "y": 1070,
-        "w": 26,
-        "h": 310,
-        "pulse": {
-          "period": 5.4,
-          "phase": 0,
-          "duty": 0.22
-        }
-      }
-    ],
-    "motes": [
-      {
-        "x": 470,
-        "y": 1005
-      }
-    ],
-    "spikes": [
-      {
-        "x": 1030,
-        "y": 2480,
-        "w": 760,
-        "h": 40
-      }
-    ],
-    "route": [
-      [
-        130,
-        2267,
-        "ground"
-      ],
-      [
-        607,
-        2100,
-        "cling"
-      ],
-      [
-        300,
-        1894.5,
-        "ground"
-      ],
-      [
-        640,
-        1650,
-        "node"
-      ],
-      [
-        1250,
-        1457,
-        "ground"
-      ],
-      [
-        1080,
-        1442,
-        "spring"
-      ],
-      [
-        560,
-        1037,
-        "ground"
-      ],
-      [
-        1100,
-        814.5,
-        "ground"
-      ],
-      [
-        820,
-        550,
-        "node"
-      ],
-      [
-        1270,
-        277,
-        "ground"
-      ],
-      [
-        0,
-        0,
-        "gate"
-      ]
-    ]
-  }
-];
+  };
+})());
 
 /* ============================================================
    5. WORLD BUILDING
@@ -4297,9 +3727,11 @@ function render() {
   const pose = Player.syncPose();
   if (Player.rig) Player.rig.sync(pose, c); else drawSpirit(c);
   drawParticles(c);
+  if (DEV && devOverlay) drawDebug(c);
 
   c.restore();
 
+  if (DEV && devOverlay) drawDebugHud(c);
   if (cam.flash > 0.01) {
     c.fillStyle = rgba(cam.flashCol, Math.min(0.5, cam.flash * 0.45));
     c.fillRect(0, 0, VW, VH);
@@ -4309,6 +3741,149 @@ function render() {
     c.fillRect(0, 0, VW, VH);
   }
   drawTransition(c);
+}
+
+/* ============================================================
+   9b. LEVEL-DESIGN DEBUG VIEW  (?dev=1 only)
+   ============================================================
+   Everything a level needs tuning against, drawn on top of the level itself:
+   collision boxes as the simulation sees them, the paths moving ground
+   actually travels, where a spring's trigger region starts and which way it
+   throws, how far a node can catch from, the bounds of every current, and the
+   route the level declares — the same waypoints the tests fly.
+
+   Nothing here is on for a player. `DEV` is set only by an explicit ?dev=1,
+   it persists in its own storage key, and ?dev=0 removes it.
+
+     G   overlay on/off        H   declared route on/off
+     arrow keys   previous / next level        R   restart
+     ?level=10&dev=1           jump straight to a level
+
+   Drawn in world space, inside the camera transform, except the readout. */
+let devOverlay = true, devRoute = true;
+
+function devBox(c, e, col, dash) {
+  c.save();
+  c.translate(e.x, e.y);
+  if (e.a) c.rotate(e.a);
+  c.strokeStyle = col; c.lineWidth = 1.5;
+  if (dash) c.setLineDash(dash);
+  c.strokeRect(-e.w / 2, -e.h / 2, e.w, e.h);
+  c.restore();
+}
+
+function drawDebug(c) {
+  c.save();
+  c.setLineDash([]);
+
+  // solids: the boxes the simulation collides against, and their landing edge
+  for (const e of world.solids) {
+    if (e.broken) continue;
+    devBox(c, e, e.crumble ? 'rgba(255,170,120,.75)' : e.motion ? 'rgba(120,235,255,.75)' : 'rgba(120,255,180,.5)');
+    if (!e.a) {
+      c.strokeStyle = 'rgba(255,255,255,.55)'; c.lineWidth = 2;
+      c.beginPath(); c.moveTo(e.x - e.w / 2, e.y - e.h / 2); c.lineTo(e.x + e.w / 2, e.y - e.h / 2); c.stroke();
+    }
+    // the full travel of moving ground, as a box plus its two end positions
+    if (e.motion && e.motion.type === 'osc') {
+      const dx = e.motion.dx || 0, dy = e.motion.dy || 0;
+      c.strokeStyle = 'rgba(120,235,255,.35)'; c.lineWidth = 1; c.setLineDash([6, 6]);
+      c.strokeRect(e.bx - e.w / 2 - Math.abs(dx), e.by - e.h / 2 - Math.abs(dy),
+                   e.w + Math.abs(dx) * 2, e.h + Math.abs(dy) * 2);
+      c.beginPath(); c.moveTo(e.bx - dx, e.by - dy); c.lineTo(e.bx + dx, e.by + dy); c.stroke();
+      c.setLineDash([]);
+    }
+  }
+
+  // hazards, at the radius they are actually tested against
+  for (const e of world.lethal) {
+    devBox(c, e, 'rgba(255,66,116,.85)');
+    const k = e.k === undefined ? 1 : e.k;
+    if (e.pulse) {
+      c.fillStyle = k > 0.35 ? 'rgba(255,66,116,.9)' : 'rgba(255,66,116,.3)';
+      c.fillRect(e.x - 3, e.y - e.h / 2 - 16, 6, 10);
+    }
+  }
+
+  // springs: the trigger box, and the direction the throw actually goes
+  for (const s of world.springs) {
+    devBox(c, s, s.off ? 'rgba(140,140,140,.7)' : 'rgba(120,255,170,.9)');
+    c.strokeStyle = 'rgba(120,255,170,.4)'; c.lineWidth = 1; c.setLineDash([4, 4]);
+    c.strokeRect(s.x - s.w / 2 - MOVE.springExit, s.y - s.h / 2 - MOVE.springExit,
+                 s.w + MOVE.springExit * 2, s.h + MOVE.springExit * 2);
+    c.setLineDash([]);
+    const nx = s.sa, ny = -s.ca;
+    c.strokeStyle = '#7fffbe'; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(s.x, s.y); c.lineTo(s.x + nx * 70, s.y + ny * 70); c.stroke();
+  }
+
+  // nodes: the catch radius, which is the target the player is really aiming at
+  for (const n of world.nodes) {
+    c.strokeStyle = n.cool > 0 ? 'rgba(140,140,140,.6)' : 'rgba(255,190,90,.8)';
+    c.lineWidth = 1.5;
+    c.beginPath(); c.arc(n.x, n.y, MOVE.nodeReach, 0, TAU); c.stroke();
+  }
+
+  // checkpoints: the mote, and where a respawn actually puts the spirit
+  for (const m of world.motes) {
+    c.strokeStyle = m.got ? 'rgba(200,160,255,.5)' : 'rgba(200,160,255,.9)';
+    c.lineWidth = 1.5;
+    c.beginPath(); c.arc(m.x, m.y, m.r, 0, TAU); c.stroke();
+    c.beginPath(); c.arc(m.x, m.y - 26, 5, 0, TAU); c.stroke();
+  }
+
+  // currents: bounds and direction
+  for (const w of world.winds) {
+    c.strokeStyle = 'rgba(110,240,235,.7)'; c.lineWidth = 1.5;
+    c.strokeRect(w.x - w.w / 2, w.y - w.h / 2, w.w, w.h);
+    const len = Math.hypot(w.dx, w.dy) || 1;
+    c.beginPath(); c.moveTo(w.x, w.y);
+    c.lineTo(w.x + (w.dx / len) * 60, w.y + (w.dy / len) * 60); c.stroke();
+  }
+
+  // the declared route: what the reachability tests actually fly
+  const L = LEVELS[G.levelIndex];
+  if (devRoute && L && L.route) {
+    c.strokeStyle = 'rgba(255,255,255,.45)'; c.lineWidth = 2; c.setLineDash([9, 7]);
+    c.beginPath();
+    let started = false;
+    for (const wp of L.route) {
+      if (wp[2] === 'gate') { c.lineTo(world.gate.x, world.gate.y); break; }
+      if (started) c.lineTo(wp[0], wp[1]); else { c.moveTo(wp[0], wp[1]); started = true; }
+    }
+    c.stroke(); c.setLineDash([]);
+    for (const wp of L.route) {
+      if (wp[2] === 'gate') continue;
+      c.fillStyle = wp[2] === 'cling' ? '#9fd8ff' : wp[2] === 'node' ? '#ffbe5a'
+        : wp[2] === 'spring' ? '#7fffbe' : '#ffffff';
+      c.beginPath(); c.arc(wp[0], wp[1], 6, 0, TAU); c.fill();
+    }
+  }
+
+  // the spirit's own body and the reach it is aiming with
+  c.strokeStyle = 'rgba(255,255,255,.8)'; c.lineWidth = 1.5;
+  c.beginPath(); c.arc(body.x, body.y, body.r, 0, TAU); c.stroke();
+  c.restore();
+}
+
+/* The readout, in screen space: where we are, and what the world is doing. */
+function drawDebugHud(c) {
+  const L = LEVELS[G.levelIndex];
+  const lines = [
+    `L${G.levelIndex + 1}/${LEVELS.length} ${L ? L.name : ''}  world ${world.w}x${world.h}`,
+    `spirit ${body.x.toFixed(0)},${body.y.toFixed(0)}  v ${body.vx.toFixed(1)},${body.vy.toFixed(1)}  ${PS.state}`,
+    `cam ${cam.x.toFixed(0)},${cam.y.toFixed(0)}  zoom ${cam.zoom.toFixed(2)}  t ${G.t.toFixed(1)}s`,
+    `spawn ${G.spawnX.toFixed(0)},${G.spawnY.toFixed(0)}  deaths ${G.deaths}  bursts ${G.bursts}`,
+    Aim.on ? `aim ${(Aim.angle * 180 / Math.PI).toFixed(0)}deg  power ${Aim.power.toFixed(2)}` : 'G overlay · H route · arrows level · R restart',
+  ];
+  c.save();
+  c.font = '11px ui-monospace, monospace';
+  c.textAlign = 'left'; c.textBaseline = 'top';
+  c.fillStyle = 'rgba(5,6,15,.62)';
+  c.fillRect(8, 92, 330, lines.length * 14 + 10);
+  c.fillStyle = '#cfe6ff';
+  lines.forEach((t, i) => c.fillText(t, 14, 97 + i * 14));
+  c.restore();
 }
 
 /* ---- rig seam ----------------------------------------------------------
@@ -4614,6 +4189,8 @@ window.addEventListener('keydown', (e) => {
     dom.fps.classList.toggle('hidden', !fpsOn);
     fpsFrames = 0; fpsSince = performance.now();
   }
+  if (DEV && (e.key === 'g' || e.key === 'G')) devOverlay = !devOverlay;
+  if (DEV && (e.key === 'h' || e.key === 'H')) devRoute = !devRoute;
 });
 
 window.addEventListener('resize', fit);
@@ -4693,7 +4270,11 @@ applyBranding();
    level itself is rebuilt from its data, exactly as a restart would build it,
    so resuming and restarting land in the same place. */
 Save.load();
-const resumeAt = Save.unlocked();
+/* ?level=N jumps straight to a level, for tuning one without playing to it.
+   Developer mode only: without ?dev=1 it is ignored, so a shared link cannot
+   unlock anything. */
+const devJump = DEV && /[?&]level=(\d+)/.exec(location.search);
+const resumeAt = devJump ? clamp(Number(devJump[1]) - 1, 0, LEVELS.length - 1) : Save.unlocked();
 startLevel(resumeAt);
 showMenu(false);
 fit();

@@ -135,8 +135,8 @@ const TAU_STEP = (Math.PI * 2) / ANGLES;
 function verify(level, route) {
   f.go(level);
   for (let i = 0; i < 40; i++) f.tick(1);
-  const used = { cling: 0, node: 0, spring: 0, mote: 0, won: false };
-  let wasCling = false;
+  const used = { cling: 0, node: 0, spring: 0, mote: 0, mover: 0, crumble: 0, wind: 0, won: false };
+  let wasCling = false, wasMover = false, wasCrumble = false;
   for (const [angle, power] of route) {
     if (!T.canAim()) {
       const n = T.nodeInReach();
@@ -154,6 +154,23 @@ function verify(level, route) {
       const c = f.PS.state === 'cling';
       if (c && !wasCling) used.cling++;
       wasCling = c;
+      // Did the route actually STAND on the moving and crumbling ground the
+      // level is built around, and did it fly through the currents? A level
+      // whose best route never touches its own mechanic is a level that does
+      // not teach what it thinks it teaches, however well it plays.
+      // Holding a platform's face is engaging with it just as much as standing
+      // on its top is, and the solver reaches for faces constantly, so both count.
+      const sup = f.PS.state === 'ground' ? f.PS.support
+        : (f.PS.state === 'cling' ? f.PS.clingWall : null);
+      const onMover = !!(sup && sup.motion), onCrumble = !!(sup && sup.crumble);
+      if (onMover && !wasMover) used.mover++;
+      if (onCrumble && !wasCrumble) used.crumble++;
+      wasMover = onMover; wasCrumble = onCrumble;
+      if (f.PS.state === 'air') {
+        for (const w of f.world.winds) {
+          if (Math.abs(f.body.x - w.x) < w.w / 2 && Math.abs(f.body.y - w.y) < w.h / 2) { used.wind++; break; }
+        }
+      }
       if (f.G.phase !== 'play') break;
       if (T.canAim() || T.nodeInReach()) break;
     }
@@ -177,19 +194,48 @@ for (const level of only) {
   report.push({ level: level + 1, name: f.LEVELS[level].name, moves: route.length, ...used });
 }
 
-console.log('\n  lvl  name           moves  cling  node  spring  mote   result');
+console.log('\n  lvl  name           moves  cling  node  spring  mote  move  crmb  wind   result');
 for (const r of report) {
   if (!r.name) { console.log(`  ${String(r.level).padStart(3)}  UNSOLVED`); continue; }
   console.log(`  ${String(r.level).padStart(3)}  ${r.name.padEnd(13)} ${String(r.moves).padStart(5)}  ` +
     `${String(r.cling).padStart(5)} ${String(r.node).padStart(5)} ${String(r.spring).padStart(7)} ` +
-    `${String(r.mote).padStart(5)}   ${r.won ? 'WIN' : 'FAIL'}`);
+    `${String(r.mote).padStart(5)} ${String(r.mover).padStart(5)} ${String(r.crumble).padStart(5)} ` +
+    `${String(r.wind).padStart(5)}   ${r.won ? 'WIN' : 'FAIL'}`);
 }
-// a level that offers a mechanic the best route never touches is a design bug
+/* A mechanic the DESIGNED route uses and the optimiser skips is a shortcut —
+   wall holds make several of those, and earning one is the reward for having
+   learned to read the geometry. A mechanic NEITHER route touches is the real
+   bug: the level is carrying an object that does nothing.
+
+   So the declared route is what decides, and the optimiser's line is reported
+   next to it rather than instead of it. */
+function routeTouches(L, pick) {
+  for (const wp of (L.route || [])) {
+    if (wp[2] !== 'ground') continue;
+    for (const e of (L.solids || [])) {
+      const top = e.y - e.h / 2;
+      if (Math.abs(top - (wp[1] + f.MOVE.radius)) > 40) continue;
+      if (wp[0] < e.x - e.w / 2 - 40 || wp[0] > e.x + e.w / 2 + 40) continue;
+      if (pick(e)) return true;
+    }
+  }
+  return false;
+}
 for (const r of report) {
   if (!r.name) continue;
   const L = f.LEVELS[r.level - 1];
+  const designedMover = routeTouches(L, e => e.motion);
+  const designedCrumble = routeTouches(L, e => e.crumble);
+  if ((L.solids || []).some(e => e.motion) && !r.mover)
+    console.log(`  ${designedMover ? '~' : '!'} L${r.level} moving ground: the optimal line skips it` +
+      (designedMover ? ' (the designed route rides it — a shortcut)' : ' AND SO DOES THE DESIGNED ROUTE'));
+  if ((L.solids || []).some(e => e.crumble) && !r.crumble)
+    console.log(`  ${designedCrumble ? '~' : '!'} L${r.level} crumbling ground: the optimal line skips it` +
+      (designedCrumble ? ' (the designed route stands on it — a shortcut)' : ' AND SO DOES THE DESIGNED ROUTE'));
   if ((L.nodes || []).length && !r.node) console.log(`  ! L${r.level} places nodes the route ignores`);
   if ((L.springs || []).length && !r.spring) console.log(`  ! L${r.level} places springs the route ignores`);
+  if ((L.winds || []).length && !r.wind)
+    console.log(`  ~ L${r.level} currents: the optimal line never flies through one`);
 }
 if (failed) process.exitCode = 1;
 module.exports = { out, report };

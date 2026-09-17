@@ -3,6 +3,8 @@
   "private": true,
   "scripts": {
     "start": "node tests/serve.cjs",
-    "test": "node tests/game.test.cjs && node tests/environment.test.cjs && node tests/opening.test.cjs && node tests/playtest.cjs && node tests/playtest.cjs 5 fast && node tests/solve-levels.cjs"
+    "test": "node tests/game.test.cjs && node tests/environment.test.cjs && node tests/validate-levels.cjs && node tests/opening.test.cjs && node tests/playtest.cjs && node tests/playtest.cjs 5 fast && node tests/solve-levels.cjs",
+    "measure": "node tests/measure-reach.cjs && node tests/measure-camera.cjs",
+    "validate": "node tests/validate-levels.cjs"
   }
 }

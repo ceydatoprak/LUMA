@@ -4,35 +4,103 @@ Işığın yolunu bul.
 
 Run `npm start`, then open http://localhost:8090. No packages or build step are required. Opening `index.html` directly also works. The identity is configured only in `GAME.title` in `game.js`; the existing `flux.progress` storage namespace is preserved.
 
-Run `npm test` for the movement regressions, environment tests, designer-route checks and full-level solver/replays. The solver writes reproducible inputs and completion results to `tests/completion-routes.json`.
+`npm test` runs the movement regressions, the environment tests, the level validator, the designer-route checks and the full-level solver/replays. `npm run measure` prints the physics tables the levels are built from, and `npm run validate` runs the structural checks on their own.
 
-## Design and systems
+## The numbers the levels are built from
 
-The 15 explicit level layouts are in `LEVELS`. Each has a short Turkish hint and an intended route used to check reachability, camera visibility and input tolerance. This revision rebuilds only levels 1–5 as the opening chapter; levels 6–15 and the movement/camera systems are unchanged.
+Nothing in the campaign is a guessed coordinate. Two tools measure the real movement model out of the live simulation, and the level geometry is sized from their output:
 
-1. **İlk Işık** — start, wide middle ledge, higher ledge, short goal crossing. A catch floor keeps ordinary misses recoverable. Sequential replays use 40–50% power for the first leap, 55–65% for the second, and at most 30% for the final leap.
-2. **Tutun** — one tower, its side, its own crown, then a separate goal ledge. The tower requires a wall hold, with a broad top to rest on.
-3. **Yankı** — safe intermediate ledge, one node, upper-right goal. The node is a comfortable second decision in mid-air.
-4. **Yükseliş** — safe intermediate ledge, one spring angled upward-right, upper resting ledge, normal jump to the goal. The 12-degree spring face gives clearance from the final ledge above; the arrival restores control before the last jump.
-5. **Kızıl Yol** — visible red danger below the crossing. The lower intermediate ledge provides the safe route; `fastRoute` documents a direct optional crossing using one fewer pull. Neither path needs maximum power.
+`npm run measure` →
 
-Completion-time ranges in the design brief remain human-playtest targets, not enforced timers or measured claims. No deliberate waiting or movement changes were added to make a stopwatch match them.
+| | |
+|---|---|
+| full-power leap, flat | **917** units |
+| full-power leap, straight up | **405** |
+| reach remaining at +160 of rise | 733 |
+| reach remaining at +280 of rise | 521 |
+| energy node (throws slightly harder) | 961 flat, 427 up |
+| wall hold | launches exactly as hard as the ground |
+| spring at 12° / 20° / 28° | rises 526 / 486 / 438, carries 365 / 573 / 732 |
+| landing assist | reaches 46 units past a ledge edge |
 
-- Moving solids use the existing `motion` configuration: `{type:'osc', dx, dy, period, phase}` gives a smooth repeating path relative to the platform's centre. `period` is in seconds. Grounded riders receive displacement once per tick. The trajectory forecasts moving surfaces and beam phases without changing the live world.
-- Set `crumble` on a solid to its warning duration in seconds. Landing starts the warning; cracks brighten and a remaining-time line shrinks before the platform disappears. Respawn and restart restore it. Aiming pauses the warning along with the rest of the world.
-- `winds` define `{x,y,w,h,dx,dy,strength}`. Direction is normalized; acceleration is applied only in flight and shared with the preview. Animated arrows show the current's area and direction.
-- The start screen and level grid use the existing save. Buttons are disabled for locked levels and the selection handler independently checks unlocks. Going back from the grid resumes the current checkpoint/state. Starting a selected level always starts safely from its beginning. Replay preserves unlocks.
-- Procedural audio adds a quiet tonal bed, nearby filtered wind, crystal cracks and subtle landing/grip variation to the existing magical event motifs. It starts after a user gesture, respects mute and suspends when the document is hidden.
-- Completion pulls the spirit into the portal, then releases a short particle bloom. The finale has a larger portal and richer burst/chord. The session-only timer is deliberately hidden on the ending screen because it does not represent total saved play time.
+...and the one that actually decides the shapes:
+
+> **While aiming, the player can see about 560 units ahead and 990 above.**
+
+The view is 540 × 960 and portrait. So a horizontal leap can be physically possible and still be a blind jump, and the honest limit on a mandatory sideways hop is around 500 units, not 917. That is why this campaign climbs, folds and zig-zags instead of running to the right: height is cheap to frame and distance is not. Long leaps are left for optional shortcuts, where not seeing the far side is the player's own choice.
+
+Because of that ceiling, difficulty is **not** raised by making hops longer. Every mandatory hop across all fifteen levels sits between 24% and 76% of the reach available in its own direction. What rises instead is what a hop asks you to do: time it, ride it, choose a route, read a pattern, chain it to the next one.
+
+## The fifteen levels
+
+Each level introduces at most one idea, and introduces it safely before asking anything of it.
+
+| | name | idea | shape |
+|---|---|---|---|
+| 1 | İlk Işık | pull back further, go further | rightward climb, floor throughout, nothing can kill you |
+| 2 | Tutun | wall cling — a stub first, then the tower | one tower, its crown is the goal |
+| 3 | Yankı | energy node — one free to ignore, one that is the level | wide chamber, a 380-unit shelf no leap reaches |
+| 4 | Sıçrama | springs — one unmissable, one aimed back over the level | rising zig-zag, compact |
+| 5 | Kızıl Yol | danger, and the first choice | a spike pit with a stepping stone over it, or one 480-unit crossing |
+| 6 | Nabız | beams | a shaft: the first hop passes *under* a beam, the last sails *over* one |
+| 7 | Salınım | moving ground | a slow one over a floor, then a lift 600 units past any leap |
+| 8 | Kırılgan | crumbling ground | one safe lesson, then two steps that *are* the climb |
+| 9 | Akış | wall + spring, joined up | a tower and a throw, nothing dangerous |
+| 10 | Kement | node over moving ground; first checkpoint | held at the node, the world is frozen — pick the moment |
+| 11 | Akıntı | currents: feel it, fight it, ride it | a rising current to a shelf 420 up |
+| 12 | Döngü | spring and beam alternating; checkpoint | rest → thrown → land → count → cross → rest, twice |
+| 13 | Ayrım | one chasm, two honest ways over | patient: crumble + lift. Bold: one 400-unit leap into a node |
+| 14 | Tırmanış | the first long climb; two checkpoints | wall → REST → lift → wind+node → REST → spring → REST → out |
+| 15 | Son Işık | everything, in order; three checkpoints | the closing chain is wall → node → spring → landing |
+
+Level 15 is the only one allowed to be genuinely hard, and its hardness is the length of the chain rather than the precision of any one link.
+
+Two details worth knowing when reading the data. Springs are mounted **beside** a landing area, never across the whole of one, so there is always somewhere to come down that is not a spring. And a node throws nearly a thousand units — far enough to skip most of a level — so in Level 15 the node halfway up sits under a roof, and that ceiling is what turns the throw back into the move the chamber is asking for.
+
+### Authoring
+
+Levels are written the way a designer thinks about them and converted at the point of definition:
+
+```js
+const p2 = ledge(500, 780, 690, 90);   // left edge, right edge, top, thickness
+const keep = tower(1170, 1410, 480, 1330);
+route: [at(p1, 120), grip(keep, -1, 700), at(keep), [0, 0, 'gate']]
+```
+
+`at` places a route waypoint on a surface, `grip` on one face of a tower, `via` on a node, `onto` on a spring. `gateOn` and `checkOn` place the gate and a checkpoint above a surface. Every number below those helpers can be reasoned about directly against the tables above.
+
+## Systems
+
+- Moving solids use `motion: {type:'osc', dx, dy, period, phase}`, relative to the platform's centre; `period` is in seconds. Grounded riders receive displacement once per tick.
+- `crumble` on a solid is its warning in seconds. Landing starts it; cracks brighten and a remaining-time line shrinks before it goes. Respawn and restart restore it. Aiming pauses it with the rest of the world.
+- `winds` are `{x,y,w,h,dx,dy,strength}`. A current is always weaker than gravity — it bends a leap, it never takes the leap away — and it only acts in flight.
+- `beams` blink on a cycle with a charge ramp before they become lethal. No beam in the campaign is dark for less than 2.5 seconds.
+- Checkpoints (`motes`) are claimed on touch and become the respawn point. None respawns onto moving ground, crumbling ground, a spring, inside a current, or within 150 units of a hazard — the validator enforces each of those.
+- The start screen, level grid, save/migration, procedural audio and completion sequence are unchanged.
+
+## Developer mode
+
+`?dev=1` turns it on and persists it; `?dev=0` removes it. `?dev=1&level=10` jumps straight to a level — developer mode only, so a shared link cannot unlock anything.
+
+| | |
+|---|---|
+| `G` | debug overlay on/off |
+| `H` | declared route on/off |
+| `←` `→` | previous / next level |
+| `R` | restart |
+| `F` | frame timing |
+
+The overlay draws collision boxes as the simulation sees them, the full travel of moving ground, spring trigger regions and throw directions, node catch radii, checkpoint respawn points, current bounds and direction, and the declared route with its waypoint kinds — plus a readout of world size, spirit position and velocity, camera and zoom.
 
 ## Validation
 
-All 15 levels have been completed by the real-simulation solver and replayed from clean starts. All intended route hops pass reachability, visibility and generous-input checks. Existing core movement tests remain, including camera-independent aiming, stationary aim stability, pointer cancellation/resize, wall-to-top assistance and spring rearming.
+`npm test` is the gate. All fifteen levels pass:
 
-New tests cover moving landings and 20-second rides through horizontal/vertical cycles; preview/live landing parity and snapshot restoration; crumble warning, aim pause and respawn/restart; wind direction and grounded immunity; normal-menu lock enforcement; save reload and migration from a completed six-level save; and off-centre spring launches in every spring level. Timed-beam spring approaches are checked in their safe window.
+- **`validate-levels.cjs`** — the structural checks, measured against a reach envelope rebuilt from the live simulation on every run, so retuning `MOVE` retunes the budget with it. Spawn is safe and grounded; the gate is not buried; checkpoints respawn safely and away from hazards, currents, springs, moving and crumbling ground; moving platforms stay in bounds, never sweep through geometry or a hazard, **and never crush a rider against a ceiling**; crumbling platforms reset on respawn and give at least a second of warning; currents stay weaker than gravity and are not buried in rock; every beam has a dark window; every spring is entered along its face, fires, and is reported with the exact point it lands you; no route waypoint sits in a hazard; and every hop is reported as a percentage of the reach available in its direction, against the budget for that point in the campaign.
+- **`playtest.cjs`** — flies every declared hop in the real simulation with the real camera: is it reachable, how many degrees of aim slack does it allow, for a level with beams or moving ground how many of eight points around the world's cycle admit it, and is the destination on screen at the moment the player has to commit. Every hop in the campaign is reachable, forgiving and visible.
+- **`solve-levels.cjs`** — searches each level from scratch with no knowledge of the declared route, then replays what it finds and audits which mechanics it used. All fifteen are solved and replayed.
+- **`opening.test.cjs`** — replays the intended sequence for levels 1–5 using touch pointer events at a 390-pixel phone width, including both routes through level 5, and asserts the destination is framed before each release.
 
-`tests/opening.test.cjs` additionally searches the **intended** opening sequences from each actual preceding landing, then replays them using touch pointer events at a 390-pixel phone width. This includes pointer-driven node capture, stationary aiming, visible destinations, visibility of the spring's landing before entering it, and both level 5 routes. Reproducible inputs are saved to `tests/opening-routes.json`. `node tests/playtest.cjs 5 fast` checks shortcut visibility and aiming margin independently. These are simulation checks, not a claim of physical phone testing.
+The solver is an exhaustive optimiser, not a representative player, and it finds shorter lines than the designed routes — mostly by holding platform faces. Where the designed route uses a mechanic and the optimiser skips it, the audit says so and calls it a shortcut rather than a fault; that is the mastery reward, and it is the intended reading of Level 13, which is built around the choice. It reports a genuine fault only when *neither* route touches an object the level is carrying.
 
-Browser checks at 390×844 and 844×390 covered menu visibility, all 15 lock states, starting a level, backward dragging, orientation resize, audio initialization and rendered wind. No browser console errors were observed. These checks do not replace physical Android/iOS touch testing or a listening pass on phone speakers. Full-level automated replays prove completion, not a subjective difficulty rating.
-
-For developer inspection only, `?dev=1` enables arrow-key chapter navigation and frame timing; `?dev=0` turns it off. Normal players cannot use this navigation unless developer mode was explicitly enabled. `window.FLUX` remains the existing internal test/debug API regardless of the displayed title.
+Browser checks covered menu visibility, level jumping, the debug overlay and normal rendering with no console errors. These are simulation and desktop-browser checks: they do not replace physical Android/iOS touch testing, a listening pass on phone speakers, or a human opinion about how hard any of it feels. Completion-time targets remain design intent, not measured or enforced claims — an automated replay proves a level can be finished, never that it is enjoyable.

@@ -41,11 +41,29 @@ for(const li of [7,12,14]) {
   T.respawn();assert(!e.broken);assert.equal(e.crumbleT,-1);
   e.broken=true; T.restartLevel(true);assert(!f.world.solids.find(e=>e.crumble).broken);
 }
-f.go(10); const w=f.world.winds[0];
-const probe={x:w.x,y:w.y,vx:0,vy:0,burst:1}; T.integrate(probe);
-assert(probe.vx>0 && probe.vy<0,'wind follows its visible direction');
-f.PS.state='ground'; f.body.x=w.x;f.body.y=w.y;f.body.vx=0;f.body.vy=0;f.body.burst=1;T.integrate(f.body);
-assert.equal(f.body.vx,0,'wind leaves resting body alone');
+// Every current in the campaign pushes the way its arrows are drawn, and
+// none of them is strong enough to take a leap away rather than bend it.
+let windsSeen=0;
+for(let li=0; li<f.LEVELS.length; li++) {
+  const L=f.LEVELS[li]; if(!(L.winds||[]).length) continue;
+  f.go(li);
+  for(const w of f.world.winds) {
+    windsSeen++;
+    const len=Math.hypot(w.dx,w.dy)||1, ux=w.dx/len, uy=w.dy/len;
+    const probe={x:w.x,y:w.y,vx:0,vy:0,burst:1}; T.integrate(probe);
+    const got=Math.hypot(probe.vx,probe.vy);
+    assert(got>0,`L${li+1} current does nothing`);
+    assert(Math.abs(probe.vx/got-ux)<1e-6 && Math.abs(probe.vy/got-uy)<1e-6,
+      `L${li+1} current does not follow its visible direction`);
+    assert(w.strength<f.MOVE.gravity,`L${li+1} current is stronger than gravity`);
+  }
+  // a current never moves a body that is standing on something
+  const w0=f.world.winds[0];
+  f.PS.state='ground'; f.body.x=w0.x;f.body.y=w0.y;f.body.vx=0;f.body.vy=0;f.body.burst=1;
+  T.integrate(f.body);
+  assert.equal(f.body.vx,0,`L${li+1} current moved a resting body`);
+}
+assert(windsSeen>=3,'the campaign teaches currents more than once');
 
 // The actual platform-aware forecast matches the live flight's first contact.
 f.go(6); f.tick(60);

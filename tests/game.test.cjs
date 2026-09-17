@@ -878,11 +878,17 @@ if (require.main === module) {
     const L = f.LEVELS[i];
     assert(Array.isArray(L.route) && L.route.length >= 2,
       `Level ${i + 1}: must declare the route it intends`);
-    // A guard against levels sprawling, not a hard design rule. Level 1 sits
-    // near the top of it on purpose: its ledges are deliberately huge so that
-    // almost any forward pull lands on one, and that costs width.
-    assert(L.w <= 1620 && L.h <= (i >= 13 ? 2600 : 1700),
-      `Level ${i + 1}: world is larger than a handcrafted space needs (${L.w}x${L.h})`);
+    // A guard against levels sprawling. Raw size is the wrong measure for
+    // that — the campaign deliberately climbs, because the view is 540x960
+    // and portrait, so a tall world is good framing rather than sprawl. What
+    // sprawl actually looks like is empty travel, so the rule is world area
+    // per hop of the declared route. The two longest levels are the densest
+    // by this measure, which is exactly right.
+    assert(L.w <= 2100 && L.h <= 3500,
+      `Level ${i + 1}: world is larger than any level needs (${L.w}x${L.h})`);
+    const perHop = L.w * L.h / (L.route.length - 1);
+    assert(perHop <= 600000,
+      `Level ${i + 1}: ${Math.round(perHop / 1000)}k units of world per hop is empty travel`);
   }
   // the first level teaches one thing and introduces nothing else
   const first = f.LEVELS[0];
