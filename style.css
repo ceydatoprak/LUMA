@@ -1,7 +1,8 @@
 /* ============================================================
-   Stylesheet for the game shell. The game name is not written anywhere in
-   this project except GAME.title in game.js — see the note there.
-   Shell, HUD and overlays. The playfield itself is canvas-drawn.
+   Oyun kabuğu için stil sayfası. Oyunun adı bu proje içinde hiçbir yerde
+   yazılı değildir, yalnızca game.js içindeki GAME.title hariç — oradaki
+   nota bakın.
+   Kabuk, HUD ve kaplamalar. Oyun alanının kendisi canvas ile çizilir.
    ============================================================ */
 
 :root{
@@ -41,7 +42,7 @@ body{
   place-items:center;
 }
 
-/* ---------- App frame + ambient light ---------- */
+/* ---------- Uygulama çerçevesi + ortam ışığı ---------- */
 
 #app{
   position:relative;
@@ -58,11 +59,11 @@ body{
   padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
-/* The ambient wash (three 46vmax layers under filter:blur, animated forever)
-   is gone: each was a large GPU texture recomposited every frame the game
-   repainted. The same look is painted once into the #app gradients above. */
+/* Burada animasyonlu blur katmanı yok: bu, her karede yeniden oluşturulan
+   büyük bir GPU dokusu olurdu. Aynı görünüm yukarıdaki #app gradyanlarına
+   tek seferde çizildi. */
 
-/* ---------- Desktop-only side mark ---------- */
+/* ---------- Sadece masaüstünde görünen yan işaret ---------- */
 
 .deskmark{
   position:absolute;
@@ -86,10 +87,11 @@ body{
   color:transparent;
   filter:drop-shadow(0 0 30px rgba(160,108,255,.45));
 }
-/* The two descriptive lines are capped to the gutter beside the stage and
-   allowed to wrap. They hold a sentence of prose, and how long that sentence
-   is depends entirely on the language it is written in — sized to fit one
-   particular string, they run under the playfield the moment it is reworded. */
+/* İki açıklama satırı, sahnenin yanındaki boşlukla sınırlıdır ve satır
+   kaydırmaya izin verir. Bir cümlelik metin taşırlar ve bu cümlenin
+   uzunluğu tamamen yazıldığı dile bağlıdır — belirli bir metne göre
+   boyutlandırıldıkları için, metin değiştiği an oyun alanının altına
+   taşabilirler. */
 .dm-sub,.dm-keys{max-width:clamp(150px,17vw,300px);line-height:1.6;}
 .dm-sub{
   font-size:12px;letter-spacing:.34em;text-transform:uppercase;
@@ -104,12 +106,12 @@ body{
   .deskmark{display:flex;}
 }
 
-/* ---------- Stage (9:16) ---------- */
+/* ---------- Sahne (9:16) ---------- */
 
 #stage{
-  /* sized from the viewport, never from percentages: a percentage height here
-     is indefinite inside the centring grid and collapses to the canvas's
-     intrinsic 540x960, which overflows the window. */
+  /* boyut viewport'tan alınır, asla yüzdeden değil: buradaki bir yüzde
+     yükseklik, ortalayan grid içinde belirsiz kalır ve canvas'ın doğal
+     540x960 boyutuna çöker, bu da pencereyi taşırır. */
   --avail-w:calc(100vw - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px));
   --avail-h:calc(100vh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));
   position:relative;
@@ -125,8 +127,8 @@ body{
     0 30px 90px rgba(0,0,0,.65);
 }
 
-/* dynamic viewport height on mobile browsers that support it, so the stage
-   does not jump when the URL bar collapses */
+/* bunu destekleyen mobil tarayıcılarda dinamik viewport yüksekliği,
+   böylece URL çubuğu kapandığında sahne zıplamaz */
 @supports (height:100dvh){
   #stage{--avail-h:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));}
 }
@@ -153,9 +155,9 @@ body{
   gap:10px;
   padding:clamp(7px,1.3vmin,11px) clamp(9px,1.6vmin,14px);
   border-radius:999px;
-  /* No backdrop-filter: it would re-blur a snapshot of the canvas on every
-     single frame the game repaints. Layered translucency reads the same and
-     costs nothing. */
+  /* backdrop-filter yok: bu, oyunun yeniden çizdiği her karede canvas'ın bir
+     anlık görüntüsünü yeniden bulanıklaştırırdı. Katmanlı yarı saydamlık aynı
+     görünümü verir ve hiçbir maliyeti yoktur. */
   background:
     linear-gradient(180deg,rgba(150,175,255,.13),rgba(80,100,210,.07)),
     rgba(10,13,34,.62);
@@ -210,14 +212,14 @@ body{
   transition:width .5s cubic-bezier(.3,.9,.25,1);
 }
 
-/* Two round buttons, nothing else. The leap counter that used to sit here was
-   information the player never acted on, and it pushed the level name into an
-   ellipsis on a narrow phone. */
+/* Sadece iki yuvarlak buton, başka bir şey yok — buraya bir sıçrama sayacı
+   eklemek, dar bir telefonda bölüm adının üç nokta ile kısaltılmasına
+   yol açardı. */
 .hud-side{display:flex;align-items:center;gap:clamp(6px,1.1vmin,10px);flex:none;}
 
 
-/* Touch targets: the visible dot stays small and neat, but the hit area is
-   never below ~44px thanks to the padded pseudo-element. */
+/* Dokunma hedefleri: görünen nokta küçük ve düzenli kalır, ancak dolgulu
+   pseudo-element sayesinde tıklanabilir alan asla ~44px'in altına inmez. */
 .hud-btn{
   position:relative;
   width:clamp(30px,5vmin,38px);
@@ -250,7 +252,7 @@ body{
 #soundBtn.muted .ic-on{display:none;}
 #soundBtn.muted .ic-off{display:block;}
 
-/* ---------- Level banner ---------- */
+/* ---------- Bölüm afişi ---------- */
 
 #banner{
   position:absolute;
@@ -264,8 +266,9 @@ body{
   pointer-events:none;
 }
 #banner.show{animation:bannerIn 2.35s cubic-bezier(.2,.8,.25,1) forwards;}
-/* opacity + transform only: animating filter:blur() here re-rasterised the
-   banner every frame, on top of a playfield that is already repainting. */
+/* sadece opacity + transform: burada filter:blur() animasyonu, zaten
+   yeniden çizilmekte olan oyun alanının üzerinde afişi her karede yeniden
+   rasterize ederdi. */
 @keyframes bannerIn{
   0%{opacity:0;transform:translateY(18px) scale(.92)}
   16%{opacity:1;transform:none}
@@ -293,7 +296,7 @@ body{
   color:rgba(226,232,255,.82);
 }
 
-/* ---------- Hint + toast ---------- */
+/* ---------- İpucu + bildirim ---------- */
 
 #hint{
   position:absolute;
@@ -332,15 +335,17 @@ body{
   border:1px solid rgba(255,45,110,.42);
   white-space:nowrap;
 }
-/* The default toast is failure red. `info` is the same shape in the ordinary
-   palette, for something the player should read rather than worry about. */
+/* Varsayılan bildirim başarısızlık kırmızısıdır. `info`, oyuncunun
+   endişelenmek yerine sadece okuması gereken bir şey için aynı şeklin
+   sıradan renk paletiyle kullanılmış halidir. */
 #toast.info{
   background:linear-gradient(180deg,rgba(150,175,255,.2),rgba(80,100,210,.1)),rgba(12,10,30,.74);
   border-color:rgba(160,108,255,.42);
 }
 #toast.hidden{opacity:0;}
 #toast.show{animation:toastIn 1.6s cubic-bezier(.2,.9,.25,1) forwards;}
-/* Failure text is a tag, not a screen: in and out well inside one second. */
+/* Başarısızlık metni bir ekran değil, bir etikettir: bir saniyeden kısa
+   sürede belirir ve kaybolur. */
 #toast.quick{animation:toastQuick .9s cubic-bezier(.2,.9,.25,1) forwards;}
 @keyframes toastQuick{
   0%{opacity:0;transform:translateX(-50%) translateY(-6px) scale(.9)}
@@ -355,7 +360,7 @@ body{
   100%{opacity:0;transform:translateX(-50%) translateY(-8px) scale(1)}
 }
 
-/* ---------- FPS readout (toggled with F) ---------- */
+/* ---------- FPS göstergesi (F ile açılıp kapanır) ---------- */
 
 #fps{
   position:absolute;
@@ -374,7 +379,7 @@ body{
 }
 #fps.hidden{display:none;}
 
-/* ---------- End card ---------- */
+/* ---------- Bitiş kartı ---------- */
 
 #endCard{
   position:absolute;inset:0;
@@ -527,7 +532,7 @@ body{
 @media (prefers-reduced-motion:reduce){
   .blob,.end-glow,.end-orb,.end-orb .spark,.end-orb .core,.end-orb .ring{animation:none!important;}
 }
-/* Menus retain native buttons and scroll on small landscape screens. */
+/* Menüler, küçük yatay ekranlarda yerel butonları ve kaydırmayı korur. */
 #menuCard{position:absolute;inset:0;z-index:6;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 20%,#24224beF,#060917fa);overflow-y:auto;touch-action:pan-y;padding:24px 18px;}
 #menuCard.hidden{display:none;}
 .menu-inner{width:100%;max-width:420px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px;}

@@ -1,59 +1,61 @@
 /* ============================================================
-   A movement-first spirit traversal game.  (The name it ships
-   under is GAME.title, in section 1 — see the note there.)
+   Hareket odaklı bir ruh geçiş oyunu.  (Oyunun yayınlandığı ad
+   GAME.title içindedir, 1. bölümde — oradaki nota bakın.)
    ------------------------------------------------------------
-   The player is a small spirit creature. It cannot walk. It moves
-   in directional bursts: hold to wind up, drag to aim, release to
-   leap. Gravity pulls it into arcs, ordinary surfaces catch it
-   rather than bounce it, and the interesting movement comes from
-   what it can do while airborne — cling to a wall, be caught and
-   re-aimed by an energy node, or be thrown by a spirit spring.
+   Oyuncu küçük bir ruh yaratığıdır. Yürüyemez. Yönlü sıçramalarla
+   hareket eder: basılı tutarak gerilir, sürükleyerek nişan alır,
+   bırakarak sıçrar. Yer çekimi onu yaylara doğru çeker, sıradan
+   yüzeyler onu zıplatmak yerine tutar ve ilginç hareket havadayken
+   yapabildikleriyle ortaya çıkar — bir duvara tutunmak, bir enerji
+   düğümü tarafından yakalanıp yeniden yönlendirilmek ya da bir ruh
+   yayı tarafından fırlatılmak.
 
-   Sections
-     1. Config, tuning & math
-     2. Audio (Web Audio synthesis)
-     3. Particles & shockwaves
-     4. Level data
-     5. World building
-     6. Collision & motion
-     7. Player (physics / state / visual / input contract)
-     8. Game state machine
-     9. Rendering
-    10. Input
-    11. Main loop
+   Bölümler
+     1. Yapılandırma, ince ayar ve matematik
+     2. Ses (Web Audio sentezi)
+     3. Parçacıklar ve şok dalgaları
+     4. Bölüm verisi
+     5. Dünya oluşturma
+     6. Çarpışma ve hareket
+     7. Oyuncu (fizik / durum / görsel / girdi sözleşmesi)
+     8. Oyun durum makinesi
+     9. Çizim (rendering)
+    10. Girdi
+    11. Ana döngü
    ============================================================ */
 (() => {
 'use strict';
 
 /* ============================================================
-   1. CONFIG, TUNING & MATH
+   1. YAPILANDIRMA, İNCE AYAR VE MATEMATİK
    ============================================================ */
 
-/* ---- identity ------------------------------------------------------------
-   The name of the game lives HERE and nowhere else. The page title, the title
-   mark, the end screen, the accessible label and the page metadata are all
-   written from it at boot, so renaming the game is a one-line change that
-   cannot leave a stale name behind in a corner of the markup.
+/* ---- kimlik ----------------------------------------------------------------
+   Oyunun adı SADECE burada yaşar, başka hiçbir yerde değil. Sayfa başlığı,
+   başlık işareti, bitiş ekranı, erişilebilirlik etiketi ve sayfa meta verisi
+   açılışta buradan yazılır; böylece oyunu yeniden adlandırmak, işaretlemenin
+   bir köşesinde eski bir ad bırakmayan tek satırlık bir değişikliktir.
 
-   `storageKey` is deliberately NOT derived from the title: saved progress must
-   survive a rename, so the key the player's browser already holds has to stay
-   what it is. Change it only to intentionally discard everyone's progress. */
+   `storageKey` bilerek başlıktan türetilmemiştir: kaydedilmiş ilerleme bir
+   yeniden adlandırmadan sağ çıkmalıdır, bu yüzden oyuncunun tarayıcısının
+   zaten tuttuğu anahtar aynı kalmalıdır. Bunu yalnızca herkesin ilerlemesini
+   bilerek silmek istiyorsanız değiştirin. */
 const GAME = {
   title:      'LUMA',
   lang:       'tr',
   storageKey: 'flux',
 };
 
-/* ---- player-facing text --------------------------------------------------
-   Every word the player reads, in one table. Level names and tutorial tips
-   live with their levels, because they are level content; everything that
-   belongs to the shell is here.
+/* ---- oyuncuya görünen metin -----------------------------------------------
+   Oyuncunun okuduğu her kelime, tek bir tabloda. Bölüm adları ve öğretici
+   ipuçları kendi bölümleriyle birlikte yaşar, çünkü onlar bölüm içeriğidir;
+   kabuğa ait olan her şey burada.
 
-   The tone is short and plain. A first-time player should be able to read a
-   hint in one glance and get back to the game — the mechanics are taught by
-   the level, and the sentence is only there to name what they are seeing. */
+   Ton kısa ve sadedir. İlk kez oynayan biri bir ipucunu tek bakışta okuyup
+   oyuna geri dönebilmelidir — mekanikler bölüm tarafından öğretilir, cümle
+   yalnızca gördüklerini adlandırmak için vardır. */
 const TEXT = {
-  /* shell */
+  /* kabuk */
   tagline:      'Işığın yolunu bul.',
   controls:     'Basılı tut · geriye çek · bırak · R yeniden başlatır',
   description:  GAME.title + ' — küçük bir ruhu neon harabelerde yönlendir: ' +
@@ -65,209 +67,210 @@ const TEXT = {
   sound:        'Sesi aç veya kapat',
   restart:      'Bölümü yeniden başlat',
 
-  /* status */
+  /* durum */
   resume:       'KALDIĞIN BÖLÜMDEN DEVAM',
 
-  /* completion */
+  /* tamamlama */
   endSub:       'YOLCULUK TAMAMLANDI',
   endTime:      'süre',
   endLevels:    'bölüm',
   replay:       'BAŞTAN OYNA',
 };
 
-const VW = 540, VH = 960;          // camera viewport, in world units
-const STEP = 1 / 60;               // fixed physics step (seconds)
+const VW = 540, VH = 960;          // kamera viewport'u, dünya birimi cinsinden
+const STEP = 1 / 60;               // sabit fizik adımı (saniye)
 
 /* ---------------------------------------------------------------------------
-   MOVEMENT TUNING
+   HAREKET İNCE AYARI
    ---------------------------------------------------------------------------
-   One table, one source of truth. Nothing outside it invents a threshold.
+   Tek tablo, tek gerçek kaynak. Bunun dışında hiçbir yerde eşik uydurulmaz.
 
-   Speeds are world units per 1/60 s step; accelerations are units per step
-   squared. For scale: the camera shows 540 x 960 units, the spirit is 13 units
-   across, and a full-power leap rises a little over a quarter of a screen.
+   Hızlar 1/60 saniyelik adım başına dünya birimidir; ivmeler adım başına
+   birimin karesidir. Ölçek için: kamera 540 x 960 birim gösterir, ruh 13
+   birim genişliğindedir ve tam güçte bir sıçrama ekranın çeyreğinden biraz
+   fazlasını yükselir.
 
-   The feel this describes is a creature, not a projectile. Ordinary surfaces
-   have NO restitution at all — they absorb the normal component and let the
-   spirit keep a fraction of its slide, which is what stops the whole world
-   reading as a pinball table. Every strong rebound in the game is a deliberate
-   object: a spring throws you, a node re-aims you. Those are the only two
-   things that can add energy, so traversal stays readable.
+   Burada anlatılan his bir mermininki değil, bir yaratığınkidir. Sıradan
+   yüzeylerin HİÇ geri sekmesi yoktur — normal bileşeni emerler ve ruhun
+   kaymasının bir kısmını korumasına izin verirler; bütün dünyanın bir
+   flipper masası gibi okunmasını önleyen de budur. Oyundaki her güçlü
+   sekme kasıtlı bir nesnedir: bir yay seni fırlatır, bir düğüm seni yeniden
+   yönlendirir. Enerji ekleyebilen tek iki şey bunlardır, bu yüzden hareket
+   okunabilir kalır.
 --------------------------------------------------------------------------- */
 const MOVE = {
-  /* --- body ------------------------------------------------------------- */
+  /* --- gövde --------------------------------------------------------------- */
   radius:       13,
 
-  /* --- gravity & air -----------------------------------------------------
-     Low gravity and a wide float band at the top of the arc. The spirit is
-     meant to hang long enough that you can watch the arc happen and see where
-     it is going, rather than being over before you have read it. */
-  gravity:      0.46,   // downward acceleration per step
-  floatBand:    4.4,    // |vy| under this counts as the top of the arc
-  floatScale:   0.48,   // gravity multiplier there — a long, readable apex
-  fallMax:      14.0,   // terminal velocity
-  airDrag:      0.9975, // horizontal only; vertical is governed by gravity
+  /* --- yer çekimi ve hava --------------------------------------------------
+     Düşük yer çekimi ve yayın tepesinde geniş bir süzülme bandı. Ruhun,
+     okunmadan bitmek yerine, yayın gerçekleştiğini izleyip nereye gittiğini
+     görebileceğiniz kadar uzun süre havada asılı kalması amaçlanmıştır. */
+  gravity:      0.46,   // adım başına aşağı yönlü ivme
+  floatBand:    4.4,    // bunun altındaki |vy| yayın tepesi sayılır
+  floatScale:   0.48,   // oradaki yer çekimi çarpanı — uzun, okunabilir bir tepe
+  fallMax:      14.0,   // uç (terminal) hız
+  airDrag:      0.9975, // yalnızca yatay; dikey olan yer çekimi tarafından yönetilir
 
-  /* --- the burst ---------------------------------------------------------
-     These five numbers are one design, not five knobs.
+  /* --- sıçrama --------------------------------------------------------------
+     Bu beş sayı beş ayrı düğme değil, tek bir tasarımdır.
 
-     Horizontal reach goes as the square of the launch speed, so the speed
-     range is chosen from the REACH range we want, not the other way round: a
-     dead-minimum pull should still carry you `reachMin` of a full leap, and
-     everything between should feel like a usable dial. With reachMin at 0.4
-     the three pulls the player can actually feel come out at roughly 40% /
-     70% / 100% of full reach.
+     Yatay menzil, fırlatma hızının karesiyle artar; bu yüzden hız aralığı
+     istediğimiz MENZİL aralığından seçilir, tersi değil: en düşük çekiş bile
+     tam bir sıçramanın `reachMin` kadarını taşımalı, aradaki her şey
+     kullanılabilir bir kadran gibi hissettirmelidir. reachMin 0.4 iken
+     oyuncunun gerçekten hissedebildiği üç çekiş, tam menzilin kabaca
+     %40 / %70 / %100'üne denk gelir.
 
-     `dragFull` is in virtual screen units — 250 of the 540-wide virtual box,
-     so a full stretch is a comfortable thumb-length swipe on any phone, and
-     short pulls have enough travel to be controllable rather than snapping
-     straight to maximum. */
-  burstMax:     16.8,   // full-commitment leap
-  reachMin:     0.34,   // a dead-minimum pull reaches this fraction of a full one
-  burstTime:    0.075,  // gravity-free snap right after release
-  dragFull:     250,    // stretch, in virtual screen units, for full power
-  dragDead:     14,     // under this a release is a cancel, and nothing is spent
+     `dragFull` sanal ekran birimindedir — 540 genişliğindeki sanal kutunun
+     250'si; böylece tam bir gerilme herhangi bir telefonda rahat bir baş
+     parmak uzunluğunda bir kaydırmadır, kısa çekişler ise doğrudan maksimuma
+     zıplamak yerine kontrol edilebilecek kadar mesafeye sahiptir. */
+  burstMax:     16.8,   // tam taahhütlü sıçrama
+  reachMin:     0.34,   // en düşük çekiş, tam bir sıçramanın bu kesrine ulaşır
+  burstTime:    0.075,  // bırakıldıktan hemen sonraki yer çekimsiz an
+  dragFull:     250,    // tam güç için sanal ekran biriminde gerilme
+  dragDead:     14,     // bunun altında bırakma iptal sayılır, hiçbir şey harcanmaz
 
-  /* --- ordinary surfaces: catch, do not bounce --------------------------- */
-  floorDot:     0.55,   // contact normal more vertical than this is a floor
-  landHard:     9.0,    // impact speed that reads as a heavy landing
-  slideKeep:    0.62,   // slide kept when arriving fast
-  groundDrag:   0.84,   // per step once settled on a floor
-  groundStop:   0.30,   // below this the spirit is parked
-  ceilingKeep:  0.55,   // glancing a ceiling costs some slide, nothing more
-  wallSlide:    0.92,   // brushing a wall keeps nearly all the motion ALONG it:
-                        // at 0.5 a graze on the way up a face cost half the
-                        // leap, which is most of why hopping onto the ledge
-                        // above a wall felt impossible
-  slop:         0.05,   // separation kept after a contact, to stay quiet
+  /* --- sıradan yüzeyler: tutar, zıplatmaz ----------------------------------- */
+  floorDot:     0.55,   // temas normali bundan daha dikeyse zemin sayılır
+  landHard:     9.0,    // ağır bir iniş gibi okunan çarpma hızı
+  slideKeep:    0.62,   // hızlı varışta korunan kayma
+  groundDrag:   0.84,   // bir zemine yerleştikten sonra adım başına
+  groundStop:   0.30,   // bunun altında ruh durdurulur
+  ceilingKeep:  0.55,   // bir tavana sürtünmek biraz kayma maliyetine yol açar, başka bir şey değil
+  wallSlide:    0.92,   // bir duvara sürtünmek, ALONG yönündeki hareketin neredeyse tamamını korur:
+                        // 0.5 değerinde bir yüzeyde yukarı doğru sürtünme sıçramanın
+                        // yarısına mal olurdu; bir duvarın üzerindeki çıkıntıya
+                        // zıplamanın imkânsız hissettirmesinin başlıca nedeni buydu
+  slop:         0.05,   // sessiz kalmak için bir temastan sonra korunan ayrılma
 
-  /* --- landing assist ------------------------------------------------------
-     A leap that comes down a hair short of a ledge is the most annoying way to
-     fail, because the player did read the situation correctly. While falling
-     near the top of a safe surface the spirit is nudged toward it — a gentle
-     acceleration, well under what the player is already doing, so it reads as
-     the character reaching for the edge and never as a snap. */
-  assistReach:  46,     // how far past the edge the nudge still applies
-  assistBand:   150,    // how far above a surface top the nudge starts
-  assistPull:   0.90,   // sideways acceleration per step while assisting
-  assistMax:    5.0,    // the most sideways speed the nudge may ever add
+  /* --- iniş yardımı -----------------------------------------------------------
+     Bir sıçramanın bir çıkıntının hemen kısasında düşmesi, en can sıkıcı
+     başarısızlık biçimidir, çünkü oyuncu durumu doğru okumuştur. Güvenli bir
+     yüzeyin tepesine yakın düşerken ruh ona doğru hafifçe itilir — oyuncunun
+     zaten yaptığının çok altında, nazik bir ivme; böylece bu, bir anda
+     ışınlanma değil, karakterin kenara uzanması gibi okunur. */
+  assistReach:  46,     // itmenin kenarın ne kadar ötesinde hâlâ uygulandığı
+  assistBand:   150,    // itmenin bir yüzey tepesinin ne kadar üstünde başladığı
+  assistPull:   0.90,   // yardım sırasında adım başına yanal ivme
+  assistMax:    5.0,    // itmenin ekleyebileceği en fazla yanal hız
 
-  /* --- ledge assist: the same idea, for going UP over a corner ---------- */
-  ledgeBand:    70,     // how near the top edge the inward drift applies
-  ledgeReach:   40,     // how far outside the surface it still applies
-  ledgePull:    0.85,   // inward acceleration per step while clearing a corner
-  ledgeMax:     7.0,    // the most inward speed it may ever add
-  ledgeTime:    1.20,   // how long a launch stays armed for the corner
+  /* --- çıkıntı yardımı: aynı fikir, bir köşenin üzerine ÇIKARKEN için ------ */
+  ledgeBand:    70,     // içe doğru sürüklenmenin uygulandığı üst kenara yakınlık
+  ledgeReach:   40,     // yüzeyin ne kadar dışında hâlâ uygulandığı
+  ledgePull:    0.85,   // bir köşeyi aşarken adım başına içe doğru ivme
+  ledgeMax:     7.0,    // eklenebilecek en fazla içe doğru hız
+  ledgeTime:    1.20,   // bir fırlatmanın köşe için ne kadar süre etkin kaldığı
 
-  /* --- wall cling ----------------------------------------------------------
-     A wall is a safe place to stop and think, not a reaction test. Contact
-     kills all speed, the grip holds with no slide at all for well over a
-     second, and only then does it start to creep. */
-  clingTime:    2.40,   // total hold before the wall lets go
-  clingGrip:    1.50,   // seconds of full grip before the slide starts
-  clingSlide:   2.0,    // downward slide speed once grip runs out
-  clingKick:    0.30,   // outward push for a FLAT launch along a face
-  clingKickMin: 1.20,   // ...and the bare separation a steeper one gets
-  clingFree:    0.55,   // aim more upward than this is taken literally, even
-                        // if it points into the wall: that is the player going
-                        // over the top of what they are holding
-  wallRegrab:   0.16,   // seconds a wall cannot re-catch you after you leave it
-  wallRegrabDist: 40,   // ...or until you are this far from its face
+  /* --- duvara tutunma ---------------------------------------------------------
+     Bir duvar, bir refleks testi değil, durup düşünmek için güvenli bir
+     yerdir. Temas tüm hızı yok eder, kavrama bir saniyeden fazla süreyle
+     hiç kaymadan tutar ve ancak ondan sonra kaymaya başlar. */
+  clingTime:    2.40,   // duvarın bırakmasından önceki toplam tutunma süresi
+  clingGrip:    1.50,   // kayma başlamadan önceki tam kavrama süresi (saniye)
+  clingSlide:   2.0,    // kavrama bittikten sonraki aşağı kayma hızı
+  clingKick:    0.30,   // bir yüzey boyunca DÜZ bir fırlatma için dışa doğru itiş
+  clingKickMin: 1.20,   // ...ve daha dik bir fırlatmanın aldığı çıplak ayrılma
+  clingFree:    0.55,   // bunun üzerinde bir nişan yukarı yönlü sayılır, hatta
+                        // duvara doğru işaret etse bile: bu, oyuncunun tuttuğu
+                        // şeyin tepesinden geçmesi demektir
+  wallRegrab:   0.16,   // duvarın seni bıraktıktan sonra yeniden yakalayamadığı süre (saniye)
+  wallRegrabDist: 40,   // ...ya da yüzeyinden bu kadar uzaklaşana kadar
 
-  /* --- forgiveness -------------------------------------------------------- */
-  coyote:       0.13,   // aim still works just after leaving a surface
-  /* An early press is not a mistake, it is intent. A finger held down while
-     the spirit is still in the air is answered the moment anything can answer
-     it — the ground, a wall, or a node — so wanting to go again never costs a
-     second press. It is generous because it only ever converts a press the
-     player is still holding; a tap that is released is simply dropped. */
+  /* --- hoşgörü ------------------------------------------------------------ */
+  coyote:       0.13,   // bir yüzeyden ayrıldıktan hemen sonra nişan hâlâ çalışır
+  /* Erken bir basış bir hata değil, niyettir. Ruh hâlâ havadayken basılı
+     tutulan bir parmak, bir şey buna cevap verebildiği anda cevaplanır —
+     zemin, bir duvar ya da bir düğüm — böylece tekrar gitmek istemek asla
+     ikinci bir basışa mal olmaz. Cömerttir çünkü yalnızca oyuncunun hâlâ
+     basılı tuttuğu bir basışı dönüştürür; bırakılan bir dokunuş sadece
+     düşer. */
   buffer:       0.90,
-  /* A guard against a stuck pointer, NOT a rule the player should ever meet.
-     It used to be 2.6s, which is less time than it takes to look at a level
-     and decide where to go: press, think, then drag, and the stretch had
-     already been cancelled underneath you. Dragging did nothing, releasing did
-     nothing, and there was no way to tell why — the game simply felt dead.
-     Holding still is the player being deliberate, and the world is frozen
-     while they do it, so there is nothing to protect against except an input
-     the browser never told us about. */
+  /* Takılı kalmış bir işaretçiye karşı bir koruma, oyuncunun asla
+     karşılaşması gereken bir kural DEĞİL. Hareketsiz durmak oyuncunun
+     bilinçli olması demektir ve bunu yaptığı sürece dünya donmuştur; bu
+     yüzden tarayıcının bize hiç bildirmediği bir girdi dışında korunacak
+     bir şey yoktur. */
   aimHold:      20.0,
 
-  /* --- energy nodes -------------------------------------------------------- */
-  nodeReach:    130,    // generous catch radius — this is a mobile target
-  nodePull:     0.30,   // per frame the node draws the spirit toward itself
-  nodeBurst:    17.4,   // release speed at full power
-  nodeReachMin: 0.52,   // a node always throws, so its floor is higher
-  nodeCool:     2.40,   // seconds before a spent node can be used again
+  /* --- enerji düğümleri ------------------------------------------------------ */
+  nodeReach:    130,    // cömert yakalama yarıçapı — bu mobilde bir hedef
+  nodePull:     0.30,   // düğümün ruhu kendine doğru çektiği kare başına miktar
+  nodeBurst:    17.4,   // tam güçte bırakma hızı
+  nodeReachMin: 0.52,   // bir düğüm her zaman fırlatır, bu yüzden alt sınırı daha yüksektir
+  nodeCool:     2.40,   // harcanmış bir düğümün yeniden kullanılabilmesi için geçmesi gereken saniye
 
-  /* --- spirit springs ------------------------------------------------------
-     A spring is the one object that hands out energy for free, so the rules
-     that stop it handing out an INFINITE amount live here too.
+  /* --- ruh yayları ------------------------------------------------------------
+     Bir yay, bedavaya enerji dağıtan tek nesnedir; bu yüzden onun SONSUZ
+     miktarda dağıtmasını engelleyen kurallar da burada yaşar.
 
-     One physical contact must produce exactly one launch. The spring is locked
-     to the body it just threw and stays dark until that body is clearly out of
-     its activation region — `springExit` is what "clearly" means, and it is the
-     main rule. `springCool` is only a second line of defence for the case where
-     a body is flung out and back within a couple of frames, and `springClear`
-     is the separation the launch itself leaves, so the very next substep cannot
-     find the same overlap again. */
-  springSpeed:  19.5,   // launch speed along the spring's face
-  springKeep:   0.18,   // sideways motion kept through the throw
-  springClear:  8,      // clearance left past the face on launch, in units
-  springExit:   34,     // how far outside the trigger re-arms the spring
-  springCool:   0.30,   // secondary guard: minimum seconds between two throws
-  /* The failsafe, for geometry we did not foresee. Throws by the SAME spring
-     that the player never got a say in are counted, and one too many cuts that
-     spring out until control comes back — not for a number of seconds, which
-     could never be right, because how long the spirit is in the air is decided
-     by the throw itself. The count is cleared the moment the player can act
-     again, so someone deliberately bouncing off a spring never trips it. */
-  springLoopMax: 2,     // uninterrupted throws by one spring before the cutout
+     Bir fiziksel temas tam olarak bir fırlatma üretmelidir. Yay, az önce
+     fırlattığı bedene kilitlenir ve o beden etkinleştirme bölgesinden açıkça
+     çıkana kadar sönük kalır — `springExit`, "açıkça" ile kastedilen budur
+     ve asıl kural budur. `springCool` yalnızca bir bedenin birkaç kare
+     içinde dışarı fırlatılıp geri geldiği durum için ikinci bir savunma
+     hattıdır; `springClear` ise fırlatmanın kendisinin bıraktığı ayrılıktır,
+     böylece bir sonraki alt adım aynı çakışmayı bulamaz. */
+  springSpeed:  19.5,   // yayın yüzeyi boyunca fırlatma hızı
+  springKeep:   0.18,   // fırlatma boyunca korunan yanal hareket
+  springClear:  8,      // fırlatmada yüzeyin ötesinde bırakılan boşluk, birim cinsinden
+  springExit:   34,     // tetikleyicinin ne kadar dışında yayın yeniden kurulduğu
+  springCool:   0.30,   // ikincil koruma: iki fırlatma arasındaki en az saniye
+  /* Öngöremediğimiz geometri için bir yedek önlem. Oyuncunun hiç söz sahibi
+     olmadığı, AYNI yay tarafından yapılan fırlatmalar sayılır ve bir fazlası,
+     kontrol geri gelene kadar o yayı devre dışı bırakır — belirli bir saniye
+     sayısı için değil, çünkü bu asla doğru olamaz: ruhun havada ne kadar
+     kalacağına fırlatmanın kendisi karar verir. Sayaç, oyuncu tekrar hareket
+     edebildiği anda sıfırlanır; böylece bir yaydan bilerek sekip duran biri
+     bunu asla tetiklemez. */
+  springLoopMax: 2,     // devre dışı bırakmadan önce bir yayın kesintisiz fırlatma sayısı
 
-  /* --- camera ---------------------------------------------------------------
-     The view leads rather than follows. While aiming it slides toward where
-     the leap is pointed and eases out, so the destination is on screen before
-     the player commits — the single biggest fairness problem in the game was
-     asking for leaps toward places that could not be seen. */
-  camLead:      360,    // how far a full-power stretch leads the view
-  camLeadMin:   110,    // ...and how far the smallest one does
-  camFollow:    7.5,    // view offset per unit of travel speed
-  camEase:      0.10,   // travelling and settling
-  camEaseAim:   0.13,   // while a stretch is held
-  camEaseRest:  0.07,   // standing still: the slowest, so nothing twitches
-  camSettle:    0.55,   // seconds of eased return after arriving
-  camTravelSpeed: 2.0,  // above this the view treats the spirit as travelling
-  zoomAim:      0.80,   // furthest the view pulls back for a full stretch
-  zoomFast:     0.93,   // view scale at top travel speed
-  zoomEase:     0.06,   // ONE smoothing rate for the zoom, applied in one place
-  camHold:      0.66,   // the spirit never sits further out than this much of
-                        // the half-view: it stays in frame, toward the rear
+  /* --- kamera -------------------------------------------------------------------
+     Görünüm takip etmez, öne geçer. Nişan alınırken sıçramanın işaret
+     ettiği yöne doğru kayar ve yavaşlayarak durur; böylece oyuncu karar
+     vermeden önce hedef ekrandadır — oyundaki en büyük adalet sorunu,
+     görülemeyen yerlere sıçrama istemekti. */
+  camLead:      360,    // tam güçte bir gerilmenin görünümü ne kadar öne aldığı
+  camLeadMin:   110,    // ...ve en küçüğünün ne kadar aldığı
+  camFollow:    7.5,    // hareket hızı birimi başına görünüm kayması
+  camEase:      0.10,   // seyahat ederken ve yerleşirken
+  camEaseAim:   0.13,   // bir gerilme tutulurken
+  camEaseRest:  0.07,   // hareketsiz durulurken: en yavaşı, hiçbir şey seğirmesin diye
+  camSettle:    0.55,   // varıştan sonraki yumuşak dönüşün saniyesi
+  camTravelSpeed: 2.0,  // bunun üzerinde görünüm ruhu seyahat ediyor sayar
+  zoomAim:      0.80,   // tam bir gerilme için görünümün en fazla uzaklaştığı nokta
+  zoomFast:     0.93,   // en yüksek seyahat hızındaki görünüm ölçeği
+  zoomEase:     0.06,   // yakınlaştırma için TEK bir yumuşatma oranı, tek bir yerde uygulanır
+  camHold:      0.66,   // ruh yarı görünümün bu kadarından daha uzakta asla
+                        // durmaz: kareler içinde, arka tarafa yakın kalır
 
-  /* --- limits & failure ----------------------------------------------------- */
-  speedMax:     34,     // hard clamp, for stability only
-  hurtTime:     0.30,   // seconds of the dissolve before respawn
-  respawnTime:  0.22,   // seconds of the reform before control returns
+  /* --- sınırlar ve başarısızlık ----------------------------------------------- */
+  speedMax:     34,     // yalnızca kararlılık için sert sınır
+  hurtTime:     0.30,   // yeniden doğumdan önceki çözülme süresi (saniye)
+  respawnTime:  0.22,   // kontrolün geri gelmesinden önceki yeniden şekillenme süresi (saniye)
 };
 
-/* ---- the feel of the stretch --------------------------------------------
-   Two curves, doing two different jobs.
+/* ---- gerilmenin hissi -----------------------------------------------------
+   İki eğri, iki farklı iş yapıyor.
 
-   `powerCurve` turns how far the elastic is stretched into how much power the
-   player has asked for. It is a smoothstep, which is what gives the pull its
-   resistance: the first part of the stretch moves power slowly, so small
-   corrections are easy to place, the middle is where most of the range lives,
-   and the last part flattens off so the maximum feels like a limit you lean
-   into rather than an edge you fall over.
+   `powerCurve`, lastiğin ne kadar gerildiğini oyuncunun istediği güç
+   miktarına çevirir. Bu bir smoothstep'tir ve çekişe direncini veren de
+   budur: gerilmenin ilk kısmı gücü yavaş hareket ettirir, böylece küçük
+   düzeltmeler kolayca yapılabilir; orta kısım aralığın çoğunun yaşadığı
+   yerdir; son kısım ise düzleşir, böylece maksimum düşülen bir kenar değil,
+   yaslanılan bir sınır gibi hissettirir.
 
-   `burstSpeed` turns that power into a launch speed. Reach goes as the square
-   of speed, so taking the square root here is what makes the dial read as
-   linear in distance — power 0.5 genuinely lands about halfway between the
-   shortest and longest leap, instead of nearly at the far end. */
+   `burstSpeed`, o gücü bir fırlatma hızına çevirir. Menzil hızın karesiyle
+   arttığı için burada karekök almak, kadranın mesafede doğrusal okunmasını
+   sağlar — güç 0.5 gerçekten de en kısa ve en uzun sıçrama arasında kabaca
+   yarı yola iner, uzak uca yakın bir yere değil. */
 const smoothstep = (t) => t * t * (3 - 2 * t);
 const powerCurve = smoothstep;
 const burstSpeed = (p) =>
   MOVE.burstMax * Math.sqrt(MOVE.reachMin + (1 - MOVE.reachMin) * clamp(p, 0, 1));
 
-/* The one place a power becomes a speed, for the ground, a wall or a node. */
+/* Bir gücün hıza dönüştüğü tek yer; zemin, duvar ya da düğüm için geçerlidir. */
 const launchSpeed = (p, fromNode) => fromNode
   ? MOVE.nodeBurst * Math.sqrt(MOVE.nodeReachMin + (1 - MOVE.nodeReachMin) * clamp(p, 0, 1))
   : burstSpeed(p);
@@ -282,16 +285,16 @@ const easeIn = (t) => t * t * t;
 const easeInOut = (t) => (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
-/* ---- palette ------------------------------------------------------------
-   The neon identity is kept, but colour is now pure atmosphere: it tells you
-   what a thing IS, never what it will accept. */
+/* ---- renk paleti ----------------------------------------------------------
+   Neon kimlik korunuyor, ama artık renk yalnızca atmosfer: sana bir şeyin
+   NE OLDUĞUNU söyler, asla neyi kabul edeceğini değil. */
 const HUE = {
-  spirit: { rgb: [150, 226, 255], hi: [240, 252, 255] },   // the player
-  node:   { rgb: [255, 196, 108], hi: [255, 240, 208] },   // energy node
-  spring: { rgb: [126, 255, 186], hi: [226, 255, 240] },   // spirit spring
-  mote:   { rgb: [198, 160, 255], hi: [240, 228, 255] },   // checkpoint
-  gate:   { rgb: [140, 230, 255], hi: [236, 252, 255] },   // level exit
-  stone:  { rgb: [122, 150, 208], hi: [196, 220, 255] },   // ordinary surface
+  spirit: { rgb: [150, 226, 255], hi: [240, 252, 255] },   // oyuncu
+  node:   { rgb: [255, 196, 108], hi: [255, 240, 208] },   // enerji düğümü
+  spring: { rgb: [126, 255, 186], hi: [226, 255, 240] },   // ruh yayı
+  mote:   { rgb: [198, 160, 255], hi: [240, 228, 255] },   // kontrol noktası
+  gate:   { rgb: [140, 230, 255], hi: [236, 252, 255] },   // bölüm çıkışı
+  stone:  { rgb: [122, 150, 208], hi: [196, 220, 255] },   // sıradan yüzey
 };
 const DANGER = [255, 66, 116];
 const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
@@ -307,12 +310,13 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath();
 }
 
-/* ---- adaptive quality ---------------------------------------------------
-   Only decoration scales. Physics, collision and input never change, so the
-   game plays identically on a slow phone and a fast desktop. */
+/* ---- uyarlanabilir kalite --------------------------------------------------
+   Yalnızca süsleme ölçeklenir. Fizik, çarpışma ve girdi hiç değişmez; bu
+   yüzden oyun yavaş bir telefonda ve hızlı bir masaüstünde aynı şekilde
+   oynanır. */
 const Q = { level: 1, avg: 16.7, work: 0, bad: 0, good: 0, particleScale: 1 };
 
-// backing-store budget in device pixels (see fit())
+// aygıt pikseli cinsinden arka bellek bütçesi (bkz. fit())
 const PIXEL_BUDGET = 1100000;
 const PIXEL_BUDGET_LOW = 700000;
 
@@ -323,16 +327,17 @@ function grad(store, key, make) {
 }
 
 /* ============================================================
-   2. AUDIO — small synth kit, unlocked on first interaction
+   2. SES — ilk etkileşimde kilidi açılan küçük bir sentez kiti
    ============================================================ */
 
 const Sfx = (() => {
   /* --------------------------------------------------------------------
-     Soft, futuristic palette. Everything is sine / triangle / filtered
-     noise through a shared low-pass and a short ambient send, so nothing
-     can turn into an arcade beep. Nodes are created per voice (they are
-     cheap and self-disposing) but the noise buffer, filters, compressor
-     and delay network are built once.
+     Yumuşak, fütüristik bir palet. Her şey ortak bir alçak geçiren filtre
+     ve kısa bir ambiyans gönderimi üzerinden sinüs / üçgen / filtrelenmiş
+     gürültüdür; böylece hiçbir şey bir arcade bipine dönüşemez. Düğümler
+     ses başına oluşturulur (ucuzdurlar ve kendilerini kendileri temizler)
+     ama gürültü arabelleği, filtreler, kompresör ve gecikme ağı yalnızca
+     bir kez kurulur.
      -------------------------------------------------------------------- */
   const MIX = {
     master: 0.42,
@@ -476,7 +481,7 @@ const Sfx = (() => {
     src.start(t); src.stop(t + dur + 0.05);
   }
 
-  /* --- continuous wind-up tension: one voice, held, gently filtered --- */
+  /* --- sürekli gerilme gerilimi: tek ses, tutulan, hafifçe filtrelenmiş --- */
   function tensionStart() {
     if (!ready || !on || tension) return;
     const osc = ctx.createOscillator(); osc.type = 'sine';
@@ -514,7 +519,7 @@ const Sfx = (() => {
     crack() { air_noise({dur:.22,peak:.065,f0:1800,f1:650,q:2,cap:2800}); tone({f0:740*rand(.98,1.02),f1:370,dur:.16,peak:.022}); },
     setMuted(v) { on = !v; if (master) master.gain.value = v ? 0 : MIX.master; },
 
-    /* the spirit throwing itself: a low pulse and a rising breath */
+    /* ruhun kendini fırlatması: alçak bir nabız ve yükselen bir nefes */
     burst(p) {
       const v = MIX.burst;
       tone({ type: 'sine', f0: 92 + p * 36, f1: 188 + p * 96, dur: 0.3, glide: 0.13,
@@ -524,7 +529,7 @@ const Sfx = (() => {
       air_noise({ dur: 0.2, peak: 0.05 * v, f0: 620, f1: 2100 + p * 900, q: 0.7, cap: 4200, send: 0.2 });
     },
 
-    /* meeting a surface: a soft, woody settle — never a click */
+    /* bir yüzeyle buluşmak: yumuşak, ahşabımsı bir yerleşme — asla bir tık değil */
     land(hard) {
       const s = clamp(hard, 0, 1);
       const now = ready ? ctx.currentTime : 0;
@@ -536,14 +541,14 @@ const Sfx = (() => {
       air_noise({ dur: 0.07, peak: 0.24 * m, f0: 520 + s * 500, f1: 260, q: 1.3, cap: 2600 });
     },
 
-    /* taking hold of a wall: a short breath, almost a gasp */
+    /* bir duvara tutunmak: kısa bir nefes, neredeyse bir soluk kesilmesi */
     cling() {
       const v = MIX.cling * rand(.94,1.06);
       air_noise({ dur: 0.14, peak: 0.22 * v, f0: 1700, f1: 700, q: 1.1, cap: 4200, send: 0.2 });
       tone({ type: 'sine', f0: 320 * rand(.97,1.03), f1: 250, dur: 0.14, glide: 0.1, peak: 0.2 * v, attack: 0.008, lp: 1800 });
     },
 
-    /* an energy node taking hold: a warm bell that sits under the aim */
+    /* bir enerji düğümünün tutması: nişanın altında oturan sıcak bir çan */
     nodeCatch() {
       const v = MIX.node;
       [523.3, 784].forEach((f, i) => {
@@ -553,7 +558,7 @@ const Sfx = (() => {
       air_noise({ dur: 0.3, peak: 0.06 * v, f0: 1600, f1: 4200, q: 0.8, cap: 5600, attack: 0.04, send: 0.4 });
     },
 
-    /* a node releasing its charge */
+    /* bir düğümün yükünü bırakması */
     nodeFire(p) {
       const v = MIX.node;
       tone({ type: 'triangle', f0: 392, f1: 880 + p * 300, dur: 0.3, glide: 0.14,
@@ -562,7 +567,7 @@ const Sfx = (() => {
       air_noise({ dur: 0.22, peak: 0.07 * v, f0: 900, f1: 3400, q: 0.7, cap: 5000, send: 0.3 });
     },
 
-    /* a spring throwing the spirit: bassy, generous, with an upward tail */
+    /* bir yayın ruhu fırlatması: bas ağırlıklı, cömert, yukarı doğru bir kuyrukla */
     spring() {
       const v = MIX.spring;
       tone({ type: 'sine', f0: 72, f1: 146, dur: 0.3, glide: 0.11,
@@ -572,7 +577,7 @@ const Sfx = (() => {
       air_noise({ dur: 0.1, peak: 0.07 * v, f0: 1500, f1: 800, q: 1.1, cap: 4200 });
     },
 
-    /* claiming a checkpoint mote: a small, clear chime */
+    /* bir kontrol noktasını almak: küçük, berrak bir çıngırak */
     mote() {
       const v = MIX.mote;
       [659.3, 987.8].forEach((f, i) => {
@@ -582,7 +587,7 @@ const Sfx = (() => {
       air_noise({ dur: 0.3, peak: 0.1 * v, f0: 2600, f1: 1000, q: 1.1, cap: 6000, send: 0.4 });
     },
 
-    /* the gate: a soft chord that opens upward, airy tail, no fanfare */
+    /* geçit: yukarı doğru açılan yumuşak bir akor, havadar bir kuyruk, gösterişsiz */
     gate() {
       const v = MIX.gate;
       [261.6, 392, 523.3, 659.3].forEach((f, i) => {
@@ -596,7 +601,7 @@ const Sfx = (() => {
                   attack: 0.12, send: 0.5 });
     },
 
-    /* coming apart — soft and short, because the retry is instant */
+    /* parçalanma — yumuşak ve kısa, çünkü yeniden deneme anında olur */
     fail() {
       const v = MIX.fail;
       tone({ type: 'sine', f0: 210, f1: 62, dur: 0.4, glide: 0.3,
@@ -606,7 +611,7 @@ const Sfx = (() => {
       air_noise({ dur: 0.32, peak: 0.07 * v, f0: 1700, f1: 240, q: 0.7, cap: 3400, send: 0.3 });
     },
 
-    /* reforming at the last mote */
+    /* son kontrol noktasında yeniden şekillenme */
     respawn() {
       const v = MIX.mote;
       tone({ type: 'sine', f0: 196, f1: 392, dur: 0.34, glide: 0.2,
@@ -614,7 +619,7 @@ const Sfx = (() => {
       air_noise({ dur: 0.26, peak: 0.06 * v, f0: 500, f1: 2600, q: 0.7, cap: 4600, attack: 0.05, send: 0.3 });
     },
 
-    /* a refusal: a dull, polite thud */
+    /* bir ret: donuk, kibar bir gümbürtü */
     deny() {
       tone({ type: 'sine', f0: 190, f1: 140, dur: 0.16, glide: 0.1,
              peak: 0.1, attack: 0.006, lp: 700 });
@@ -645,7 +650,7 @@ const Sfx = (() => {
 })();
 
 /* ============================================================
-   3. PARTICLES & SHOCKWAVES  (fixed pools, zero allocation)
+   3. PARÇACIKLAR VE ŞOK DALGALARI  (sabit havuzlar, sıfır bellek ayırma)
    ============================================================ */
 
 const PMAX = 72;
@@ -696,7 +701,7 @@ const FX = {
       p.max = p.life = (opt.life || 0.5) * rand(0.6, 1.2);
       p.size = (opt.size || 2.4) * rand(0.6, 1.3);
       p.col = col; p.drag = opt.drag || 0.93;
-      p.shape = opt.shape || 0;     // 0 dot, 1 streak, 2 ring-dot
+      p.shape = opt.shape || 0;     // 0 nokta, 1 çizgi, 2 halka-nokta
       p.ang = a; p.spin = rand(-0.2, 0.2); p.len = opt.len || 10;
       p.grow = opt.grow || 0;
       p.grav = opt.grav || 0;
@@ -744,7 +749,7 @@ function clearFX() {
   for (let i = 0; i < RMAX; i++) rings[i].on = false;
 }
 
-/* ---- ambient motes: drawn in camera space, so they never need culling ---- */
+/* ---- ortam parçacıkları: kamera uzayında çizilir, bu yüzden hiç ayıklama gerekmez ---- */
 const DUST = [];
 for (let i = 0; i < 30; i++) {
   DUST.push({ x: rand(0, VW), y: rand(0, VH), z: rand(0.25, 1),
@@ -752,7 +757,7 @@ for (let i = 0; i < 30; i++) {
 }
 let dustPhase = 0;
 function updateDust() {
-  if ((dustPhase ^= 1)) return;          // decorative: 30 Hz is plenty
+  if ((dustPhase ^= 1)) return;          // süslemedir: 30 Hz fazlasıyla yeterli
   for (const d of DUST) {
     d.x += d.vx * d.z; d.y += d.vy * d.z; d.t += 0.04 * d.z;
     if (d.y < -8) { d.y = VH + 8; d.x = rand(0, VW); }
@@ -761,103 +766,106 @@ function updateDust() {
 }
 
 /* ============================================================
-   4. LEVEL DATA
+   4. BÖLÜM VERİSİ
    ============================================================
-   Everything is data. A level is a world box plus lists of entities; adding a
-   kind means one entry in ENTITY_KINDS and one draw function, never a branch
-   in the simulation.
+   Her şey veridir. Bir bölüm, bir dünya kutusu artı varlık listeleridir; yeni
+   bir tür eklemek, ENTITY_KINDS içinde tek bir girdi ve tek bir çizim
+   fonksiyonu demektir, simülasyonda asla bir dallanma değil.
 
-   Entity kinds
-     solid   safe surface. Catches the spirit: it lands, slides or clings.
-     spring  spirit spring. Throws the spirit along its face. The only thing
-             in the world that hands out free energy.
-     node    energy node. Catches an airborne spirit so it can be re-aimed,
-             then goes dark while it recharges.
-     mote    checkpoint. Claimed on touch, becomes the respawn point.
-     spike   static lethal growth.
-     beam    lethal energy beam; `pulse` makes it blink on a cycle.
-     gap     void. Falling into it, or off the world, dissolves the spirit.
+   Varlık türleri
+     solid   güvenli yüzey. Ruhu tutar: üzerine iner, kayar ya da tutunur.
+     spring  ruh yayı. Ruhu kendi yüzeyi boyunca fırlatır. Dünyada bedavaya
+             enerji dağıtan tek şey.
+     node    enerji düğümü. Havadaki bir ruhu yakalar, böylece yeniden
+             yönlendirilebilir; sonra şarj olurken kararır.
+     mote    kontrol noktası. Dokunulduğunda alınır, yeniden doğma noktası
+             olur.
+     spike   sabit, öldürücü çıkıntı.
+     beam    öldürücü enerji ışını; `pulse` onu bir döngüde yanıp söndürür.
+     gap     boşluk. İçine düşmek ya da dünyanın dışına çıkmak ruhu eritir.
 
-   `name` and `tip` are the only player-facing strings here, and they are
-   level content rather than shell text, so they live with the level. A tip is
-   shown once, on arrival, and only names the ONE thing the level is about —
-   the level itself is what teaches it.
+   `name` ve `tip`, buradaki tek oyuncuya görünen metinlerdir ve kabuk metni
+   değil, bölüm içeriği oldukları için bölümle birlikte yaşarlar. Bir ipucu
+   varışta bir kez gösterilir ve yalnızca bölümün konusu olan TEK şeyi
+   adlandırır — bunu öğreten, bölümün kendisidir.
 
-   Any entity may carry `motion` to oscillate or sweep.
+   Herhangi bir varlık, salınmak ya da süpürmek için `motion` taşıyabilir.
    ============================================================ */
 
-/* ---- authoring helpers ---------------------------------------------------
-   A designer thinks about a surface as "these edges, this top". The
-   simulation wants a centre and a size. These two lines are the whole
-   translation, and they exist so that every number written below is a number
-   that can be reasoned about directly against the measurements above.
+/* ---- yazım yardımcıları ----------------------------------------------------
+   Bir tasarımcı bir yüzeyi "şu kenarlar, şu üst" olarak düşünür. Simülasyon
+   ise bir merkez ve bir boyut ister. Bu iki satır tüm çeviridir ve
+   aşağıda yazılan her sayının, yukarıdaki ölçümlere göre doğrudan akıl
+   yürütülebilecek bir sayı olması için vardır.
 
-   `at` returns the route waypoint for standing on a surface: the resting
-   centre of the spirit, which is one radius above the top. */
+   `at`, bir yüzeyde durmak için rota konum noktasını döndürür: ruhun
+   dinlenme merkezi, üstün bir yarıçap yukarısıdır. */
 const ledge = (l, r, top, h, extra) =>
   Object.assign({ x: (l + r) / 2, y: top + h / 2, w: r - l, h }, extra || {});
 const tower = (l, r, top, bottom, extra) =>
   Object.assign({ x: (l + r) / 2, y: (top + bottom) / 2, w: r - l, h: bottom - top }, extra || {});
 const topOf = (s) => s.y - s.h / 2;
 const at = (s, x) => [x === undefined ? s.x : x, topOf(s) - MOVE.radius, 'ground'];
-/* A hold on one face of a tower: `side` is -1 for its left face, +1 for its
-   right, and the spirit sits one radius clear of it. */
+/* Bir kulenin bir yüzüne tutunma: `side`, sol yüzü için -1, sağ yüzü için
+   +1'dir; ruh ondan bir yarıçap uzakta oturur. */
 const grip = (s, side, y) => [s.x + side * (s.w / 2 + MOVE.radius), y, 'cling'];
 const via = (n) => [n.x, n.y, 'node'];
 const onto = (sp) => [sp.x, sp.y, 'spring'];
-/* The gate floats a little above the surface it crowns, close enough that
-   arriving on that surface is arriving. The goal is a place, not a last
-   fiddly input. */
+/* Geçit, taçlandırdığı yüzeyin biraz üstünde süzülür; bu yüzeye varmak,
+   yeterince yakın olduğu için geçide varmak demektir. Hedef bir yerdir,
+   son bir uğraştırıcı girdi değil. */
 const gateOn = (s, x) => ({ x: x === undefined ? s.x : x, y: topOf(s) - 55 });
-/* A checkpoint sits just above its platform, so the respawn drops the spirit
-   the last few units onto solid ground rather than into anything. */
+/* Bir kontrol noktası, platformunun hemen üstünde oturur; böylece yeniden
+   doğma, ruhu herhangi bir şeyin içine değil, son birkaç birim içinde sağlam
+   zemine bırakır. */
 const checkOn = (s, x) => ({ x: x === undefined ? s.x : x, y: topOf(s) - 42 });
 
 /* ---------------------------------------------------------------------------
-   THE CAMPAIGN
+   KAMPANYA
 
-   Fifteen levels, one new idea at a time, built against measured numbers
-   rather than guessed ones. `node tests/measure-reach.cjs` and
-   `node tests/measure-camera.cjs` print the two tables the geometry below is
-   sized from; `node tests/validate-levels.cjs` checks every level against
-   them. The short version:
+   On beş bölüm, her seferinde bir yeni fikir; tahmin edilen değil, ölçülmüş
+   sayılara göre inşa edildi. `node tests/measure-reach.cjs` ve
+   `node tests/measure-camera.cjs`, aşağıdaki geometrinin boyutlandırıldığı
+   iki tabloyu yazdırır; `node tests/validate-levels.cjs` ise her bölümü
+   bunlara göre denetler. Kısa özeti:
 
-     a full-power leap carries 917 units flat, or rises 405 straight up
-     at +160 of rise there are 733 units of horizontal left
-     an energy node throws slightly harder: 961 flat, 427 up
-     a wall hold launches exactly as hard as the ground does
-     a spring at 12 degrees rises 526 and carries 365 across on the way down;
-       at 20 degrees, 486 and 573; at 28 degrees, 438 and 732
+     tam güçte bir sıçrama düz 917 birim taşır ya da dikine 405 yükselir
+     +160 yükseklikte, yatayda 733 birim kalır
+     bir enerji düğümü biraz daha sert fırlatır: düz 961, yukarı 427
+     bir duvar tutunuşu, zeminle tamamen aynı sertlikte fırlatır
+     12 derecede bir yay 526 yükselir ve inişte 365 birim yatay taşır;
+       20 derecede 486 ve 573; 28 derecede 438 ve 732
 
-   ...and the number that actually decides the geometry:
+   ...ve geometriyi asıl belirleyen sayı:
 
-     WHILE AIMING, THE PLAYER CAN SEE ABOUT 560 UNITS AHEAD AND 990 ABOVE.
+     NİŞAN ALIRKEN OYUNCU YAKLAŞIK 560 BİRİM İLERİYİ VE 990 BİRİM YUKARIYI GÖREBİLİR.
 
-   The view is 540 x 960 and portrait. So a horizontal leap can be physically
-   possible and still be a blind jump, and the honest limit on a mandatory
-   sideways hop is around 500 units, not 917. That single fact is why this
-   campaign climbs, folds and zig-zags instead of running to the right: height
-   is cheap to frame and distance is not. Long leaps are left for optional
-   shortcuts, where not seeing the far side is the player's choice.
+   Görünüm 540 x 960 ve dikeydir. Bu yüzden yatay bir sıçrama fiziksel olarak
+   mümkün olsa bile kör bir atlayış olabilir; zorunlu bir yana sıçramadaki
+   dürüst sınır 917 değil, yaklaşık 500 birimdir. Bu tek gerçek, kampanyanın
+   sağa doğru koşmak yerine tırmanması, katlanması ve zikzak yapmasının
+   nedenidir: yüksekliği kadraja almak ucuzdur, mesafeyi değil. Uzun
+   sıçramalar, karşı tarafın görülmemesinin oyuncunun kendi seçimi olduğu
+   isteğe bağlı kısayollara bırakılmıştır.
 
-   Difficulty is raised by what a hop asks for — timing, sequencing, choosing
-   a route, reading a pattern — and only rarely by making one longer.
+   Zorluk, bir sıçramanın istediği şeyle artar — zamanlama, sıralama, bir
+   rota seçmek, bir düzeni okumak — ve yalnızca nadiren onu uzatarak.
 --------------------------------------------------------------------------- */
 
 const LEVELS = [];
 
-/* === 1. First contact ======================================================
-   Teach one thing: pull back further, go further. Three broad ledges climbing
-   to the right, a floor across the whole world so nothing can go wrong, and
-   no mechanic at all. The middle hop is the long one, so the level says
-   "short, longer, short" rather than "easy, easy, easy".
-   Target: 1/10. */
+/* === 1. İlk temas =========================================================
+   Tek bir şeyi öğret: daha çok geriye çek, daha ileri git. Sağa doğru
+   tırmanan üç geniş çıkıntı, hiçbir şeyin ters gitmemesi için tüm dünyayı
+   kaplayan bir zemin ve hiçbir mekanik yok. Ortadaki sıçrama uzun olandır;
+   bu yüzden bölüm "kolay, kolay, kolay" yerine "kısa, daha uzun, kısa" der.
+   Hedef: 1/10. */
 LEVELS.push((() => {
   const floor = ledge(0, 1660, 950, 150);
   const p1 = ledge(-20, 380, 815, 120);
-  const p2 = ledge(500, 780, 690, 90);      // gap 120, rise 125
-  const p3 = ledge(950, 1240, 570, 90);     // gap 170, rise 120
-  const p4 = ledge(1390, 1670, 455, 90);    // gap 150, rise 115
+  const p2 = ledge(500, 780, 690, 90);      // boşluk 120, yükseliş 125
+  const p3 = ledge(950, 1240, 570, 90);     // boşluk 170, yükseliş 120
+  const p4 = ledge(1390, 1670, 455, 90);    // boşluk 150, yükseliş 115
   return {
     name: 'İlk Işık',
     tip: 'Basılı tut, geriye çek ve bırak.',
@@ -870,18 +878,18 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 2. Height =============================================================
-   Wall cling. It appears twice: once on a stub in the middle of the world
-   where falling off costs nothing, and then on the tower that is the level.
-   The tower's crown is the goal, and it is in frame from the ledge below it
-   before the player commits to the climb.
-   Target: 1.5/10. */
+/* === 2. Yükseklik ==========================================================
+   Duvara tutunma. İki kez ortaya çıkar: önce, düşmenin hiçbir bedeli olmadığı
+   dünyanın ortasındaki küçük bir çıkıntıda; sonra bölümün kendisi olan
+   kulede. Kulenin tepesi hedeftir ve oyuncu tırmanışa girişmeden önce
+   altındaki çıkıntıdan görünür haldedir.
+   Hedef: 1.5/10. */
 LEVELS.push((() => {
   const floor = ledge(0, 1500, 1330, 150);
   const p1 = ledge(-20, 320, 1180, 130);
-  const stub = tower(440, 610, 930, 1330);   // practice face, crown at 930
-  const p2 = ledge(760, 1080, 900, 90);      // a flat rest between the two holds
-  const keep = tower(1170, 1410, 480, 1330); // the tower: crown at 480
+  const stub = tower(440, 610, 930, 1330);   // pratik yüz, tepe 930'da
+  const p2 = ledge(760, 1080, 900, 90);      // iki tutunma arasında düz bir dinlenme
+  const keep = tower(1170, 1410, 480, 1330); // kule: tepe 480'de
   return {
     name: 'Tutun',
     tip: 'Duvara değ ve tutun. Sonra yukarı bırak.',
@@ -902,19 +910,20 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 3. Echo ===============================================================
-   Energy nodes. A node only catches you if you press for it, so the first one
-   can simply sit on a leap that already works: nothing happens unless the
-   player reaches for it, and reaching for it is the lesson. The second is the
-   level — the last ledge is 417 units up, past anything a standing leap can
-   do, and the node is the only way onto it.
-   Target: 2/10. */
+/* === 3. Yankı ==============================================================
+   Enerji düğümleri. Bir düğüm seni yalnızca onun için basarsan yakalar; bu
+   yüzden ilki, zaten çalışan bir sıçramanın üzerine basitçe oturabilir:
+   oyuncu ona uzanmadıkça hiçbir şey olmaz, ders de tam olarak ona uzanmaktır.
+   İkincisi bölümün kendisidir — son çıkıntı 417 birim yukarıdadır, durarak
+   yapılan bir sıçramanın erişebileceğinin ötesindedir ve düğüm ona ulaşmanın
+   tek yoludur.
+   Hedef: 2/10. */
 LEVELS.push((() => {
   const floor = ledge(0, 1660, 1010, 140);
   const p1 = ledge(-20, 350, 870, 120);
-  const p2 = ledge(620, 1010, 760, 90);      // 410 to its near edge, rise 110
-  const p3 = ledge(1320, 1700, 400, 90);     // out of reach from the ledge below
-  const spare = { x: 480, y: 690 };          // free to ignore; free to discover
+  const p2 = ledge(620, 1010, 760, 90);      // yakın kenarına 410, yükseliş 110
+  const p3 = ledge(1320, 1700, 400, 90);     // aşağıdaki çıkıntıdan erişilemez
+  const spare = { x: 480, y: 690 };          // görmezden gelmek serbest; keşfetmek serbest
   const lift = { x: 1060, y: 640 };
   return {
     name: 'Yankı',
@@ -929,22 +938,22 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 4. Leap ===============================================================
-   Springs. The first one is arrived at along a 90-unit hop with nothing near
-   it, and it throws the player onto a 450-wide shelf — it is not possible to
-   misread. The second is aimed the other way, folding the level back over
-   itself: the shelf it leaves is 467 units below its landing, so the throw is
-   the only way up, and the world stays compact instead of running off to the
-   right.
-   Target: 2.5/10. */
+/* === 4. Sıçrama ============================================================
+   Yaylar. İlkine, yakınında hiçbir şey olmayan 90 birimlik bir sıçramayla
+   varılır ve oyuncuyu 450 genişliğinde bir rafa fırlatır — yanlış
+   okunması mümkün değildir. İkincisi ters yöne nişanlıdır ve bölümü kendi
+   üzerine katlar: bıraktığı raf, iniş noktasının 467 birim altındadır; bu
+   yüzden fırlatma yukarı çıkmanın tek yoludur ve dünya sağa doğru
+   uzaklaşmak yerine kompakt kalır.
+   Hedef: 2.5/10. */
 LEVELS.push((() => {
   const floor = ledge(0, 1500, 1440, 150);
   const p1 = ledge(-20, 330, 1300, 120);
-  const pad = ledge(420, 830, 1200, 110);            // arrive here, calmly
+  const pad = ledge(420, 830, 1200, 110);            // buraya sakince var
   const s1 = { x: 690, y: 1176, w: 172, h: 44, a: 16 };
-  const shelf = ledge(1050, 1500, 880, 120);         // 450 units of safety
+  const shelf = ledge(1050, 1500, 880, 120);         // 450 birimlik güvenlik
   const s2 = { x: 1400, y: 856, w: 170, h: 44, a: -14 };
-  const p4 = ledge(800, 1180, 400, 110);     // clear of the throw's rising arc
+  const p4 = ledge(800, 1180, 400, 110);     // fırlatmanın yükselen yayından uzak
   const p5 = ledge(300, 700, 290, 100);
   return {
     name: 'Sıçrama',
@@ -962,19 +971,19 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 5. The crimson road ===================================================
-   Danger, and the first choice. The spike bed is 135 units below a hop the
-   player has already made a dozen times, so it is seen long before it
-   matters. Then the level forks: a stepping stone over the pit for two short
-   safe hops, or one 520-unit crossing straight over it. The long way is not a
-   punishment and the short way is not a trap — it is simply the first time
-   the player decides anything.
-   Target: 3/10. */
+/* === 5. Kızıl yol ==========================================================
+   Tehlike ve ilk seçim. Diken yatağı, oyuncunun zaten düzinelerce kez
+   yaptığı bir sıçramanın 135 birim altındadır; bu yüzden önemli olmadan çok
+   önce görülür. Sonra bölüm ikiye ayrılır: çukurun üzerinden iki kısa
+   güvenli sıçrama için bir basamak taşı, ya da doğrudan üzerinden 520
+   birimlik tek bir geçiş. Uzun yol bir ceza değildir, kısa yol da bir tuzak
+   değildir — bu yalnızca oyuncunun ilk kez bir şeye karar verdiği andır.
+   Hedef: 3/10. */
 LEVELS.push((() => {
-  const floor = ledge(-20, 960, 1070, 130);          // only the near half
+  const floor = ledge(-20, 960, 1070, 130);          // sadece yakın yarısı
   const p1 = ledge(-20, 400, 830, 130);
   const p2 = ledge(560, 950, 790, 100);
-  const stone = ledge(1030, 1220, 800, 70);          // the cautious way across
+  const stone = ledge(1030, 1220, 800, 70);          // temkinli geçiş yolu
   const p4 = ledge(1300, 1760, 700, 110);
   return {
     name: 'Kızıl Yol',
@@ -990,20 +999,21 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 6. Pulse ==============================================================
-   Beams, and the first level shaped as a shaft rather than a walk. Every
-   crossing is made from a wide ledge the player can stand on for as long as
-   they like — the world is frozen while a stretch is held, so counting the
-   beam costs nothing. Lit for 1.3 seconds, dark for 3.5.
+/* === 6. Nabız ==============================================================
+   Işınlar ve bir yürüyüş yerine bir baca gibi şekillendirilmiş ilk bölüm.
+   Her geçiş, oyuncunun istediği kadar üzerinde durabileceği geniş bir
+   çıkıntıdan yapılır — bir gerilme tutulduğu sürece dünya donar, bu yüzden
+   ışını saymanın hiçbir bedeli yoktur. 1.3 saniye yanık, 3.5 saniye sönük.
 
-   The first hop passes UNDER the first beam and the last hop sails OVER the
-   second: the level opens by showing the danger without asking anything, and
-   closes by letting the player use what they have learned to ignore it.
-   Target: 3.5/10. */
+   İlk sıçrama ilk ışının ALTINDAN geçer, son sıçrama ise ikincisinin
+   ÜZERİNDEN uçar: bölüm hiçbir şey istemeden tehlikeyi göstererek açılır ve
+   oyuncunun öğrendiğini onu görmezden gelmek için kullanmasına izin vererek
+   kapanır.
+   Hedef: 3.5/10. */
 LEVELS.push((() => {
   const floor = ledge(-20, 1060, 2120, 120);
   const p1 = ledge(-20, 400, 2040, 120);
-  const watch = ledge(640, 1040, 1810, 110);   // stand here and count
+  const watch = ledge(640, 1040, 1810, 110);   // burada dur ve say
   const p3 = ledge(-20, 460, 1580, 100);
   const p4 = ledge(600, 1040, 1350, 100);
   const p5 = ledge(-20, 460, 1120, 110);
@@ -1025,21 +1035,21 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 7. Sway ===============================================================
-   Moving ground. The first one crosses a gap with a floor under it, takes ten
-   seconds to complete a lap, and is 260 units wide — it can be watched for as
-   long as the player likes from the ledge before it, and missing it costs a
-   short climb rather than a life. The second moves vertically, which is the
-   same idea read on the other axis.
-   Target: 4/10. */
+/* === 7. Salınım ============================================================
+   Hareketli zemin. İlki, altında bir zemin olan bir boşluğu geçer, bir
+   turu tamamlaması on saniye sürer ve 260 birim genişliğindedir — oyuncu
+   ondan önceki çıkıntıdan istediği kadar izleyebilir ve onu kaçırmak bir
+   can değil, kısa bir tırmanışa mal olur. İkincisi dikey hareket eder; bu
+   aynı fikrin diğer eksende okunmuş halidir.
+   Hedef: 4/10. */
 LEVELS.push((() => {
   const floor = ledge(-20, 1820, 1140, 120);
   const p1 = ledge(-20, 420, 880, 130);
   const watch = ledge(520, 850, 820, 110);
   const m1 = ledge(1000, 1260, 755, 70, { motion: { type: 'osc', dx: 130, dy: 0, period: 10 } });
   const p3 = ledge(1420, 1800, 780, 110);
-  const m2 = ledge(1160, 1400, 455, 70, { motion: { type: 'osc', dx: 0, dy: 90, period: 9 } });  // clear over the ledge below
-  const p4 = ledge(820, 1140, 180, 110);     // 600 above the ledge before it: ride or nothing
+  const m2 = ledge(1160, 1400, 455, 70, { motion: { type: 'osc', dx: 0, dy: 90, period: 9 } });  // aşağıdaki çıkıntının üzerinden açık
+  const p4 = ledge(820, 1140, 180, 110);     // ondan önceki çıkıntının 600 üstünde: ya bin ya da hiç
   return {
     name: 'Salınım',
     tip: 'Zemin geliyor. Acele etme, izle.',
@@ -1054,26 +1064,27 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 8. Fragile ============================================================
-   Crumbling ground. The first one is a landing with a floor beneath it and
-   2.2 seconds of cracking, so the lesson costs nothing: stand on it, watch it
-   fail, understand what the cracks mean.
+/* === 8. Kırılgan ===========================================================
+   Çöken zemin. İlki, altında bir zemin ve 2.2 saniyelik bir çatlama süresi
+   olan bir inişdir; bu yüzden ders bedelsizdir: üzerinde dur, başarısız
+   olmasını izle, çatlakların ne anlama geldiğini anla.
 
-   The pair above is the level. Between the middle ledge and the top there are
-   440 units of climb and nothing else to stand on, so the two crumbling steps
-   are the way up rather than a detour — and neither can be skipped, because
-   from the first the top is still 387 up and a standing leap tops out at 405
-   with almost no reach left over. The floor still runs underneath everything,
-   so getting it wrong costs the climb, never the level.
-   Target: 4.5/10. */
+   Yukarıdaki çift bölümün kendisidir. Ortadaki çıkıntı ile tepe arasında
+   440 birimlik bir tırmanış ve üzerinde durulacak başka hiçbir şey yoktur;
+   bu yüzden iki çöken basamak bir sapma değil, çıkış yoludur — ve ikisi de
+   atlanamaz, çünkü ilkinden tepeye hâlâ 387 birim vardır ve durarak yapılan
+   bir sıçrama neredeyse hiç menzil bırakmadan 405'te tepe yapar. Zemin yine
+   de her şeyin altında uzanır; bu yüzden yanlış yapmak yalnızca tırmanışa
+   mal olur, asla bölüme değil.
+   Hedef: 4.5/10. */
 LEVELS.push((() => {
   const floor = ledge(-20, 1440, 1080, 120);
   const p1 = ledge(-20, 400, 900, 130);
-  const c1 = ledge(520, 820, 840, 80, { crumble: 2.2 });    // safe: a floor below it
+  const c1 = ledge(520, 820, 840, 80, { crumble: 2.2 });    // güvenli: altında bir zemin var
   const p2 = ledge(960, 1300, 800, 110);
   const c2 = ledge(700, 920, 620, 70, { crumble: 1.8 });
   const c3 = ledge(500, 720, 470, 70, { crumble: 1.8 });
-  const p3 = ledge(40, 380, 300, 110);     // a diagonal hop, not a climb up its face
+  const p3 = ledge(40, 380, 300, 110);     // çapraz bir sıçrama, yüzü boyunca bir tırmanış değil
   return {
     name: 'Kırılgan',
     tip: 'Çatlarsa kalma. Ama telaş da etme.',
@@ -1088,20 +1099,20 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 9. Flow ===============================================================
-   The first real combination, and deliberately not a precision test: hold a
-   wall, go over its crown, step across, and be thrown. Nothing here is
-   dangerous. The point is that the four things the player knows now join up
-   into one continuous movement, and it should be the level where they first
-   feel good at this.
-   Target: 5/10. */
+/* === 9. Akış ===============================================================
+   İlk gerçek kombinasyon ve bilerek bir hassasiyet testi değil: bir duvara
+   tutun, tepesinden geç, karşıya adım at ve fırlatıl. Burada hiçbir şey
+   tehlikeli değildir. Buradaki nokta, oyuncunun artık bildiği dört şeyin
+   tek bir sürekli harekette birleşmesidir ve bu, kendini bunda ilk kez iyi
+   hissedeceği bölüm olmalıdır.
+   Hedef: 5/10. */
 LEVELS.push((() => {
   const floor = ledge(-20, 1300, 1830, 130);
   const p1 = ledge(-20, 420, 1760, 130);
   const keep = tower(560, 740, 1320, 1830);
-  const p2 = ledge(820, 1260, 1280, 100);    // room to land BESIDE the spring
+  const p2 = ledge(820, 1260, 1280, 100);    // yayın YANINA inecek yer
   const s1 = { x: 1150, y: 1256, w: 170, h: 44, a: -14 };
-  const p3 = ledge(500, 940, 820, 110);      // right edge kept clear of the rising arc
+  const p3 = ledge(500, 940, 820, 110);      // sağ kenarı yükselen yaydan uzak tutulmuş
   const p4 = ledge(80, 400, 640, 100);
   return {
     name: 'Akış',
@@ -1119,22 +1130,23 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 10. The lasso =========================================================
-   A node over moving ground. Held at the node the world is frozen, so the
-   player can watch the platform's whole path and pick the moment to let go —
-   which is the point: this should feel clever rather than quick. Past the
-   first section the floor stops, so the checkpoint on the far ledge is what
-   makes the second half cost seconds instead of the whole level.
-   Target: 5.5/10. */
+/* === 10. Kement ============================================================
+   Hareketli zemin üzerinde bir düğüm. Düğümde tutulduğunda dünya donar; bu
+   yüzden oyuncu platformun tüm yolunu izleyip bırakma anını seçebilir —
+   asıl nokta da budur: bu hızlı değil, akıllıca hissettirmelidir. İlk
+   bölümden sonra zemin kesilir; bu yüzden uzak çıkıntıdaki kontrol noktası,
+   ikinci yarının tüm bölüme değil, yalnızca birkaç saniyeye mal olmasını
+   sağlayan şeydir.
+   Hedef: 5.5/10. */
 LEVELS.push((() => {
-  const floor = ledge(-20, 960, 1290, 120);          // near half only
+  const floor = ledge(-20, 960, 1290, 120);          // sadece yakın yarısı
   const p1 = ledge(-20, 400, 1080, 130);
   const watch = ledge(520, 900, 1000, 110);
   const hold = { x: 1060, y: 820 };
   const m1 = ledge(1080, 1320, 865, 70, { motion: { type: 'osc', dx: 0, dy: 150, period: 8 } });
   const p3 = ledge(1420, 1800, 780, 110);
   const m2 = ledge(1000, 1220, 565, 70, { motion: { type: 'osc', dx: 140, dy: 0, period: 7 } });
-  const p4 = ledge(420, 800, 290, 110);      // out of the node's reach: the lift is the way
+  const p4 = ledge(420, 800, 290, 110);      // düğümün erişiminin dışında: yol asansörden geçer
   return {
     name: 'Kement',
     tip: 'Küredeyken dünya durur. Zamanını seç.',
@@ -1152,27 +1164,29 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 11. Current ===========================================================
-   Wind, three times, in the order the player needs it.
+/* === 11. Akıntı ============================================================
+   Rüzgâr, üç kez, oyuncunun ihtiyaç duyduğu sırayla.
 
-     FEEL IT   a weak sideways current over a 440-wide ledge, so the arc can
-               be watched bending with nothing riding on it.
-     FIGHT IT  the same kind of current, pushing the wrong way, on a hop that
-               has to be aimed about 120 units into it.
-     RIDE IT   a rising current that roughly doubles the arc. The shelf it
-               leads to is 460 up, which no standing leap can reach, so the
-               current is not a shortcut — it is the way.
+     HİSSET    440 genişliğindeki bir çıkıntının üzerinde zayıf bir yanal
+               akıntı; böylece yayın hiçbir şey ona bağlı olmadan
+               eğrildiği izlenebilir.
+     KARŞI ÇIK aynı türden bir akıntı, ama yanlış yöne iter; nişanın onun
+               içine yaklaşık 120 birim alınması gereken bir sıçramada.
+     BİN     yayı kabaca ikiye katlayan yükselen bir akıntı. Götürdüğü raf
+               460 birim yukarıdadır; hiçbir durarak yapılan sıçrama oraya
+               erişemez, bu yüzden akıntı bir kısayol değil — tek yoldur.
 
-   A current is weaker than gravity, always: it bends a leap, it never takes
-   the leap away. And the floor runs the whole width here, because this level
-   is about learning to read the air, not about being punished for it.
-   Target: 6/10. */
+   Bir akıntı yer çekiminden her zaman daha zayıftır: bir sıçramayı büker,
+   asla onu tamamen alıp götürmez. Ve zemin burada tüm genişlik boyunca
+   uzanır, çünkü bu bölüm cezalandırılmakla değil, havayı okumayı
+   öğrenmekle ilgilidir.
+   Hedef: 6/10. */
 LEVELS.push((() => {
   const floor = ledge(-20, 1500, 1450, 120);
   const p1 = ledge(-20, 400, 1280, 130);
-  const p2 = ledge(620, 1060, 1180, 110);            // 440 wide: the drift cannot miss
+  const p2 = ledge(620, 1060, 1180, 110);            // 440 genişlik: sürüklenme ıskalayamaz
   const p3 = ledge(120, 560, 980, 110);
-  const p4 = ledge(860, 1400, 520, 130);             // the shelf above the current
+  const p4 = ledge(860, 1400, 520, 130);             // akıntının üzerindeki raf
   return {
     name: 'Akıntı',
     tip: 'Akıntı seni taşır. Ona göre nişan al.',
@@ -1182,40 +1196,40 @@ LEVELS.push((() => {
     gate: gateOn(p4, 1200),
     solids: [floor, p1, p2, p3, p4],
     winds: [
-      { x: 700, y: 1180, w: 420, h: 300, dx: 1, dy: 0, strength: 0.05 },   // feel it
-      { x: 640, y: 960, w: 420, h: 280, dx: 1, dy: 0, strength: 0.07 },    // fight it
-      { x: 700, y: 700, w: 520, h: 520, dx: 0, dy: -1, strength: 0.26 },   // ride it
+      { x: 700, y: 1180, w: 420, h: 300, dx: 1, dy: 0, strength: 0.05 },   // hisset
+      { x: 640, y: 960, w: 420, h: 280, dx: 1, dy: 0, strength: 0.07 },    // karşı çık
+      { x: 700, y: 700, w: 520, h: 520, dx: 0, dy: -1, strength: 0.26 },   // bin
     ],
     route: [
       at(p1, 230), at(p2, 860), at(p3, 300), at(p3, 480),
-      // the ride: carried, so its reach is checked by flying it, not by an
-      // envelope measured in still air
+      // biniş: taşınır, bu yüzden menzili durgun havada ölçülen bir zarfla
+      // değil, gerçekten uçurularak denetlenir
       [at(p4, 1100)[0], at(p4, 1100)[1], 'ground', 'wind'],
       [0, 0, 'gate'],
     ],
   };
 })());
 
-/* === 12. The cycle =========================================================
-   Spring and beam, alternating, so the level reads as a bar of music:
+/* === 12. Döngü =============================================================
+   Yay ve ışın, sırayla; bölüm bir müzik ölçüsü gibi okunur:
 
-     rest -> be thrown -> land -> stand still and count -> cross -> rest
+     dinlen -> fırlatıl -> in -> hareketsiz durup say -> geç -> dinlen
 
-   ...twice. Every beam is met from a ledge with nothing happening on it, and
-   every spring throw has clear air the whole way, so the two mechanics never
-   ask for anything at the same moment. That is what makes this a rhythm and
-   not a reaction test.
+   ...iki kez. Her ışınla, üzerinde hiçbir şey olmayan bir çıkıntıdan
+   karşılaşılır ve her yay fırlatmasının tüm yolu boyunca açık hava vardır;
+   bu yüzden iki mekanik asla aynı anda bir şey istemez. Bunu bir tepki
+   testi değil bir ritim yapan da budur.
 
-   The checkpoint sits on the ledge in the middle, so the half already solved
-   stays solved.
-   Target: 6.5/10. */
+   Kontrol noktası ortadaki çıkıntıda oturur; böylece çözülmüş yarı, çözülü
+   kalır.
+   Hedef: 6.5/10. */
 LEVELS.push((() => {
-  const floor = ledge(-20, 1000, 1830, 130);         // the near side only
+  const floor = ledge(-20, 1000, 1830, 130);         // sadece yakın taraf
   const p1 = ledge(-20, 400, 1740, 130);
   const p2 = ledge(560, 960, 1660, 110);
   const s1 = { x: 820, y: 1636, w: 170, h: 44, a: 12 };
   const p3 = ledge(1060, 1500, 1330, 100);
-  const p4 = ledge(280, 780, 1090, 110);             // land left of the beam, rest
+  const p4 = ledge(280, 780, 1090, 110);             // ışının soluna in, dinlen
   const s2 = { x: 380, y: 1066, w: 170, h: 44, a: 16 };
   const p5 = ledge(700, 1140, 760, 100);
   const p6 = ledge(1260, 1700, 560, 110);
@@ -1240,29 +1254,29 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 13. The parting =======================================================
-   One chasm, one hub, two honest ways over it.
+/* === 13. Ayrım =============================================================
+   Bir uçurum, bir merkez, üzerinden geçmenin iki dürüst yolu.
 
-   The patient way goes DOWN first: drop onto a crumbling step, leave before
-   it goes, ride the lift back up, step off. Three hops, nothing the player
-   has not already done, and the only pressure is the 1.6 seconds of cracking.
+   Sabırlı yol önce AŞAĞI iner: çöken bir basamağa düş, o gitmeden önce
+   ayrıl, asansörle geri yukarı çık, in. Üç sıçrama, oyuncunun daha önce
+   yapmadığı hiçbir şey yok ve tek baskı 1.6 saniyelik çatlama süresi.
 
-   The bold way is two: a 400-unit leap out over the void into a node, then
-   one throw from it onto the far shelf. It asks for a real commitment over
-   open air — and it is the only place in the level where being wrong costs
-   the whole crossing.
+   Cesur yol ikidir: boşluğun üzerinden 400 birimlik bir sıçrayışla bir
+   düğüme, sonra oradan uzak rafa tek bir fırlatma. Açık havada gerçek bir
+   kararlılık ister — ve bölümde yanlış yapmanın tüm geçişe mal olduğu tek
+   yer burasıdır.
 
-   Both are reasonable. Mastery is paid in hops saved, which is the only
-   currency this game has.
-   Target: 7/10. */
+   İkisi de makuldür. Ustalık, kazanılan sıçramalarla ödenir; bu oyunun
+   sahip olduğu tek para birimi budur.
+   Hedef: 7/10. */
 LEVELS.push((() => {
-  const floor = ledge(-20, 1000, 1390, 120);         // the near side only
+  const floor = ledge(-20, 1000, 1390, 120);         // sadece yakın taraf
   const p1 = ledge(-20, 400, 1200, 130);
-  const hub = ledge(540, 980, 1120, 120);            // the fork, and the checkpoint
+  const hub = ledge(540, 980, 1120, 120);            // çatal ve kontrol noktası
   const step = ledge(1060, 1260, 1240, 70, { crumble: 1.6 });
   const lift = ledge(1320, 1560, 1140, 70, { motion: { type: 'osc', dx: 0, dy: 120, period: 8 } });
-  const bold = { x: 1300, y: 900 };                  // the whole of the short way
-  const far = ledge(1640, 2040, 820, 110);           // clear of the lift's travel
+  const bold = { x: 1300, y: 900 };                  // kısa yolun tamamı
+  const far = ledge(1640, 2040, 820, 110);           // asansörün hareketinden uzak
   const p6 = ledge(1240, 1620, 560, 110);
   return {
     name: 'Ayrım',
@@ -1284,20 +1298,21 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 14. The ascent ========================================================
-   The first long level, and a wave rather than a ramp:
+/* === 14. Tırmanış ==========================================================
+   İlk uzun bölüm ve bir rampa değil, bir dalga:
 
-     wall    -> REST -> moving ground -> CHECKPOINT
-     current and node (the hard section) -> REST
-     spring over a hazard -> CHECKPOINT -> a short wall, and out
+     duvar    -> DİNLEN -> hareketli zemin -> KONTROL NOKTASI
+     akıntı ve düğüm (zor bölüm) -> DİNLEN
+     bir tehlikenin üzerinde yay -> KONTROL NOKTASI -> kısa bir duvar, ve çıkış
 
-   Every named REST is a wide ledge with nothing on it, and the two
-   checkpoints are placed so the worst a mistake costs is one section.
+   Adlandırılmış her DİNLEN, üzerinde hiçbir şey olmayan geniş bir
+   çıkıntıdır ve iki kontrol noktası, bir hatanın en kötü bedeli tek bir
+   bölüm olacak şekilde yerleştirilmiştir.
 
-   The spike bed is the floor of the upper chamber: it is under everything
-   that happens there and in the way of nothing, so it reads as a reason to
-   be careful rather than as a trap.
-   Target: 7.5/10. */
+   Diken yatağı üst odanın zeminidir: orada olan her şeyin altındadır ve
+   hiçbir şeyin yolunda değildir; bu yüzden bir tuzak değil, dikkatli olmak
+   için bir sebep olarak okunur.
+   Hedef: 7.5/10. */
 LEVELS.push((() => {
   const floor = ledge(-20, 1250, 2930, 130);
   const p1 = ledge(-20, 380, 2800, 120);
@@ -1306,7 +1321,7 @@ LEVELS.push((() => {
   const m1 = ledge(585, 815, 2065, 70, { motion: { type: 'osc', dx: 150, dy: 0, period: 8 } });
   const camp1 = ledge(120, 620, 1900, 100);
   const hold = { x: 820, y: 1650 };
-  const rest2 = ledge(180, 640, 1500, 110);          // 460 wide, and only 160 up
+  const rest2 = ledge(180, 640, 1500, 110);          // 460 genişlik ve yalnızca 160 yükseklik
   const s1 = { x: 520, y: 1476, w: 170, h: 44, a: 12 };
   const camp2 = ledge(760, 1200, 1080, 110);
   const last = tower(360, 560, 640, 1060);
@@ -1322,8 +1337,8 @@ LEVELS.push((() => {
     springs: [s1],
     nodes: [hold],
     winds: [{ x: 640, y: 1700, w: 360, h: 320, dx: 1, dy: 0, strength: 0.055 }],
-    spikes: [{ x: 1060, y: 1500, w: 280, h: 60 }],   // the chamber floor, never an arc
-    motes: [checkOn(camp1, 300), checkOn(camp2, 1060)],   // clear of the current
+    spikes: [{ x: 1060, y: 1500, w: 280, h: 60 }],   // oda zemini, asla bir yay değil
+    motes: [checkOn(camp1, 300), checkOn(camp2, 1060)],   // akıntıdan uzak
     route: [
       at(p1, 110), grip(keep, -1, 2600), at(keep), at(rest1, 1000),
       at(m1), at(camp1, 360), via(hold), at(rest2, 320),
@@ -1332,37 +1347,37 @@ LEVELS.push((() => {
   };
 })());
 
-/* === 15. The last light ===================================================
-   Everything, once, in an order that never asks for two unfamiliar things at
-   the same time. It is the only level allowed to be genuinely hard, and the
-   hardness is in the length of the chain rather than the precision of any one
-   link: nothing here needs an exact angle, and nothing kills without showing
-   itself first. Three checkpoints keep a mistake inside its own section.
+/* === 15. Son ışık ==========================================================
+   Her şey, bir kez, aynı anda iki tanıdık olmayan şeyi hiç istemeyen bir
+   sırayla. Gerçekten zor olmasına izin verilen tek bölümdür ve bu zorluk,
+   tek bir halkanın hassasiyetinde değil, zincirin uzunluğundadır: burada
+   hiçbir şey tam bir açı gerektirmez ve hiçbir şey önce kendini göstermeden
+   öldürmez. Üç kontrol noktası, bir hatayı kendi bölümünün içinde tutar.
 
-   The node halfway up sits in a low corridor with a roof over it. That roof
-   is doing real work: an energy node throws nearly a thousand units, far
-   enough to skip most of a level, and the ceiling is what turns that throw
-   back into the one move the chamber is asking for — out along the corridor,
-   onto the crumbling step, and up.
+   Yarı yoldaki düğüm, üzerinde bir çatı olan alçak bir koridorda oturur. O
+   çatı gerçek bir iş görüyor: bir enerji düğümü neredeyse bin birim
+   fırlatır, bir bölümün çoğunu atlayacak kadar uzağa; tavan ise o fırlatmayı
+   odanın istediği tek harekete geri çevirir — koridor boyunca dışarı,
+   çöken basamağın üzerine ve yukarı.
 
-   The closing chain — wall, node, spring, landing — is the one place the game
-   asks for four things without a proper rest between them.
-   Target: 9/10. */
+   Kapanış zinciri — duvar, düğüm, yay, iniş — oyunun aralarında uygun bir
+   dinlenme olmadan dört şey istediği tek yerdir.
+   Hedef: 9/10. */
 LEVELS.push((() => {
-  const floor = ledge(-20, 700, 3260, 120);          // the start, and nothing else
+  const floor = ledge(-20, 700, 3260, 120);          // başlangıç, başka hiçbir şey değil
   const p1 = ledge(-20, 400, 3140, 120);
   const p2 = ledge(660, 940, 3020, 90);
-  const w1 = tower(1020, 1400, 2740, 3100);          // crown wide enough to stand beside the spring
+  const w1 = tower(1020, 1400, 2740, 3100);          // tepesi yayın yanında durabilecek kadar geniş
   const s1 = { x: 1290, y: 2716, w: 170, h: 44, a: -16 };
   const camp1 = ledge(560, 980, 2440, 100);
   const m1 = ledge(310, 530, 2285, 70, { motion: { type: 'osc', dx: 0, dy: 130, period: 7 } });
-  const turn = { x: 300, y: 1880 };                  // only the lift reaches it
-  const roof = ledge(120, 740, 1700, 80);            // the ceiling that shapes the throw
+  const turn = { x: 300, y: 1880 };                  // yalnızca asansör oraya ulaşır
+  const roof = ledge(120, 740, 1700, 80);            // fırlatmayı şekillendiren tavan
   const c1 = ledge(760, 1000, 1870, 70, { crumble: 1.5 });
   const camp2 = ledge(1340, 1640, 1760, 100);
   const p5 = ledge(900, 1260, 1560, 100);
   const p6 = ledge(300, 680, 1400, 100);
-  const w3 = tower(555, 725, 960, 1160);    // faces out of reach of the ledge below
+  const w3 = tower(555, 725, 960, 1160);    // yüzleri aşağıdaki çıkıntının erişiminin dışında
   const m2 = ledge(960, 1160, 1035, 70, { motion: { type: 'osc', dx: 160, dy: 0, period: 6.5 } });
   const camp3 = ledge(1180, 1520, 860, 100);
   const w4 = tower(740, 900, 560, 860);
@@ -1394,15 +1409,15 @@ LEVELS.push((() => {
 })());
 
 /* ============================================================
-   5. WORLD BUILDING
+   5. DÜNYA OLUŞTURMA
    ============================================================ */
 
 const world = {
-  solids: [],   // safe surfaces — everything the spirit can land on or cling to
+  solids: [],   // güvenli yüzeyler — ruhun üzerine inebileceği ya da tutunabileceği her şey
   springs: [],
   nodes: [],
   motes: [],
-  lethal: [],   // spikes and beams
+  lethal: [],   // dikenler ve ışınlar
   beams: [],
   movers: [],
   winds: [],
@@ -1485,8 +1500,9 @@ function updateMotion(t) {
   }
 }
 
-/* How lit a pulsing beam is right now: 0 dark, 1 lethal. The ramp telegraphs
-   the strike so a death is always the player's to avoid. */
+/* Nabız atan bir ışının şu anda ne kadar aydınlık olduğu: 0 sönük, 1
+   öldürücü. Yükseliş, vuruşu önceden haber verir; böylece bir ölüm her
+   zaman oyuncunun kaçınabileceği bir şeydir. */
 function beamLevel(h, t) {
   if (!h.pulse) return 1;
   const p = h.pulse;
@@ -1503,12 +1519,12 @@ function beamLevel(h, t) {
 }
 
 /* ============================================================
-   6. COLLISION & MOTION
+   6. ÇARPIŞMA VE HAREKET
    ============================================================ */
 
 function circleVsBox(px, py, r, e) {
   const dx = px - e.x, dy = py - e.y;
-  // broad phase: one squared-distance test against the box's bounding circle
+  // geniş faz: kutunun sınırlayıcı çemberine karşı tek bir kare-mesafe testi
   const reach = e.br + r;
   if (dx * dx + dy * dy > reach * reach) return null;
   const ca = e.ca, sa = -e.sa;
@@ -1538,10 +1554,11 @@ const HIT = { nx: 0, ny: 0, pen: 0 };
 
 function overlapsBox(px, py, r, e) { return circleVsBox(px, py, r, e) !== null; }
 
-/* Is a body inside this box's ACTIVATION region — the box itself, grown by
-   `pad` on every side? `overlapsBox` answers "is it touching"; this answers the
-   different question "is it still around", which is what re-arming a spring
-   depends on. Same maths as circleVsBox, without the normal nobody wants. */
+/* Bir beden bu kutunun ETKİNLEŞTİRME bölgesinde mi — yani her tarafı `pad`
+   kadar büyütülmüş kutunun kendisinde mi? `overlapsBox` "dokunuyor mu"
+   sorusuna cevap verir; bu ise farklı bir soruya, "hâlâ etrafta mı"
+   sorusuna cevap verir; bir yayın yeniden kurulması buna bağlıdır. Kimsenin
+   istemediği normal olmadan, circleVsBox ile aynı matematik. */
 function nearBox(px, py, r, e, pad) {
   const dx = px - e.x, dy = py - e.y;
   const reach = e.br + r + pad;
@@ -1555,14 +1572,14 @@ function nearBox(px, py, r, e, pad) {
   return ddx * ddx + ddy * ddy <= r * r;
 }
 
-/* --- contact accumulator -------------------------------------------------
-   Every surface touched during one substep lands here. Position is corrected
-   as each contact is found, so the body is never left overlapping, but the
-   velocity response is deferred and applied once against the combined normal.
+/* --- temas biriktiricisi ----------------------------------------------------
+   Bir alt adım sırasında dokunulan her yüzey buraya düşer. Her temas
+   bulundukça konum düzeltilir, böylece beden asla çakışık kalmaz; ama hız
+   tepkisi ertelenir ve birleşik normale karşı yalnızca bir kez uygulanır.
 
-   That is what makes corners behave: resolving surfaces one at a time reflects
-   the body twice in the same instant, so the outcome depends on the order of
-   the list and a one-pixel difference can send the spirit anywhere. */
+   Köşelerin düzgün davranmasını sağlayan da budur: yüzeyleri birer birer
+   çözmek bedeni aynı anda iki kez yansıtır; böylece sonuç listenin sırasına
+   bağlı hale gelir ve bir pikselik fark ruhu her yere gönderebilir. */
 const CT = {
   n: 0, closing: 0,
   nx: 0, ny: 0, wsum: 0,
@@ -1588,13 +1605,13 @@ const CT = {
   },
 };
 
-/* What one step of motion ran into.
+/* Bir hareket adımının neyle karşılaştığı.
 
-   `wall` is "a wall was touched" — physics and feedback care about that.
-   `wallHold` is "a wall you may take hold of", which is the different question
-   the player-state logic asks: the wall you just launched from is briefly not
-   one, so leaping up and over a ledge cannot be undone by the same face
-   catching you again a frame later. */
+   `wall`, "bir duvara dokunuldu" demektir — fizik ve geri bildirim bunu
+   önemser. `wallHold` ise "tutunabileceğin bir duvar" demektir; bu, oyuncu
+   durum mantığının sorduğu farklı bir sorudur: az önce fırladığın duvar
+   kısa bir süre öyle sayılmaz, böylece bir çıkıntının üzerine sıçramak,
+   aynı yüzeyin bir kare sonra seni tekrar yakalamasıyla bozulamaz. */
 const RES = {
   floor: false, wall: false, wallHold: false, ceil: false,
   wallNx: 0, wallE: null,
@@ -1626,9 +1643,10 @@ function collectSolid(s, e) {
   const vn = (s.vx - sv.x) * nx + (s.vy - sv.y) * ny;
   CT.add(nx, ny, hit.pen, sv.x, sv.y, vn < 0);
 
-  // classify the surface from its normal, so the player logic never has to
-  // reason about geometry: a normal pointing up is something to stand on,
-  // a normal pointing down is something you bonk, anything else is a wall
+  // yüzeyi kendi normaline göre sınıflandır, böylece oyuncu mantığının
+  // geometri hakkında akıl yürütmesi hiç gerekmez: yukarı bakan bir normal
+  // üzerinde durulacak bir şeydir, aşağı bakan bir normal kafa çarpılacak
+  // bir şeydir, başka her şey bir duvardır
   if (ny < -MOVE.floorDot) { RES.floor = true; RES.floorE = e; }
   else if (ny > MOVE.floorDot) RES.ceil = true;
   else if (!RES.wall || -vn > RES.impact) { RES.wall = true; RES.wallNx = nx; RES.wallE = e; }
@@ -1639,31 +1657,31 @@ function collectSolid(s, e) {
   }
 }
 
-/* One velocity response per substep.
+/* Alt adım başına bir hız tepkisi.
 
-   There is no restitution here at all. An ordinary surface takes the whole
-   normal component and hands back a fraction of the slide — the spirit arrives
-   and stays arrived. Everything that throws the spirit back out into the world
-   is a named object with its own rule. */
+   Burada hiç geri sekme yoktur. Sıradan bir yüzey normal bileşenin
+   tamamını alır ve kaymanın bir kısmını geri verir — ruh varır ve varmış
+   olarak kalır. Ruhu dünyaya geri fırlatan her şey, kendi kuralı olan
+   adlandırılmış bir nesnedir. */
 function resolveContactVel(s) {
   if (CT.closing && CT.wsum > 0) {
     const len = Math.hypot(CT.nx, CT.ny);
-    // a near-zero combined normal means the contacts oppose each other: the
-    // body is wedged, and the slide pass below is the whole answer
+    // sıfıra yakın bir birleşik normal, temasların birbirine karşı olduğu
+    // anlamına gelir: beden sıkışmıştır ve aşağıdaki kayma geçişi tüm cevaptır
     if (len > CT.wsum * 0.2) {
       const nx = CT.nx / len, ny = CT.ny / len;
       const ovx = CT.ovx / CT.wsum, ovy = CT.ovy / CT.wsum;
       const rvx = s.vx - ovx, rvy = s.vy - ovy;
       const vn = rvx * nx + rvy * ny;
       if (vn < 0) {
-        // how much slide survives depends on what was touched
+        // ne kadar kaymanın hayatta kaldığı neye dokunulduğuna bağlıdır
         const keep = RES.floor ? MOVE.slideKeep : RES.ceil ? MOVE.ceilingKeep : MOVE.wallSlide;
         s.vx = (rvx - nx * vn) * keep + ovx;
         s.vy = (rvy - ny * vn) * keep + ovy;
       }
     }
   }
-  // never end a substep still travelling into something being touched
+  // bir alt adım, dokunulan bir şeyin içine doğru hareket ederken asla bitmesin
   for (let i = 0; i < CT.n; i++) {
     const nx = CT.cnx[i], ny = CT.cny[i];
     const vn = (s.vx - CT.cvx[i]) * nx + (s.vy - CT.cvy[i]) * ny;
@@ -1671,38 +1689,41 @@ function resolveContactVel(s) {
   }
 }
 
-/* A spring throws along its own face, whatever the approach. Predictable by
-   construction: the arrow drawn on it is exactly where you will go.
+/* Bir yay, yaklaşım ne olursa olsun kendi yüzeyi boyunca fırlatır. Yapısı
+   gereği tahmin edilebilirdir: üzerine çizilen ok, tam olarak gideceğin
+   yeri gösterir.
 
-   ONE CONTACT, ONE LAUNCH. The failure this guards against is the spirit
-   landing back onto the spring that just threw it and being thrown again, with
-   no input in between — a loop the player cannot get out of, because being
-   airborne is the one state that hands them no control.
+   TEK TEMAS, TEK FIRLATMA. Bunun korunduğu başarısızlık, ruhun az önce onu
+   fırlatan yaya geri düşmesi ve aralarında hiçbir girdi olmadan tekrar
+   fırlatılmasıdır — oyuncunun çıkamayacağı bir döngü, çünkü havada olmak
+   ona hiçbir kontrol vermeyen tek durumdur.
 
-   So a spring that fires is locked to the body it threw. It will not fire
-   again, at all, until that body has left its activation region (`springExit`
-   past the collider on every side); `releaseSprings` is the only thing that
-   unlocks it. A timer alone could not do this — the player may sit on top of a
-   spring indefinitely — so the timer here is only the backstop for a body that
-   is flung clear and back inside a couple of frames.
+   Bu yüzden ateşlenen bir yay, fırlattığı bedene kilitlenir. O beden
+   etkinleştirme bölgesinden (çarpışma kutusunun her tarafından `springExit`
+   kadar) çıkana kadar bir daha hiç ateşlenmez; onu açan tek şey
+   `releaseSprings`'tir. Tek başına bir zamanlayıcı bunu yapamaz — oyuncu bir
+   yayın üzerinde süresiz oturabilir — bu yüzden buradaki zamanlayıcı, birkaç
+   kare içinde dışarı fırlatılıp geri gelen bir beden için yalnızca ikincil
+   bir güvencedir.
 
-   `live` separates the player from the aim preview: the preview runs this same
-   function so the dotted guide knows about springs, and it must read the lock
-   but never write one — a spring the guide can see is dark is a spring the
-   guide draws you falling past, which is exactly what will happen. */
+   `live`, oyuncuyu nişan önizlemesinden ayırır: önizleme de aynı fonksiyonu
+   çalıştırır, böylece noktalı kılavuz yayların farkında olur; ama kilidi
+   yalnızca okumalı, asla yazmamalıdır — kılavuzun sönük gördüğü bir yay,
+   kılavuzun seni onun içinden düşerken çizdiği bir yaydır ki gerçekte de
+   tam olarak bu olacaktır. */
 function fireSpring(s, sp, live) {
   if (sp.lock || sp.off || sp.cool > 0) return;
   if (!overlapsBox(s.x, s.y, s.r, sp)) return;
-  const nx = sp.sa, ny = -sp.ca;             // local -y, rotated into the world
+  const nx = sp.sa, ny = -sp.ca;             // yerel -y, dünyaya döndürülmüş
   const vn = s.vx * nx + s.vy * ny;
   const tvx = s.vx - nx * vn;
   const tvy = s.vy - ny * vn;
   s.vx = tvx * MOVE.springKeep + nx * MOVE.springSpeed;
   s.vy = tvy * MOVE.springKeep + ny * MOVE.springSpeed;
-  // Leave along the launch normal with real clearance, rather than the token
-  // nudge this used to do: the body ends up fully outside the face, so no
-  // later substep can find the same overlap, and there is no jitter between a
-  // collider and a body sitting exactly on its skin.
+  // Fırlatma normali boyunca gerçek bir boşlukla ayrıl: beden yüzeyin tamamen
+  // dışında kalır, böylece daha sonraki bir alt adım aynı çakışmayı bulamaz
+  // ve bir çarpışma kutusuyla tam onun yüzeyinde oturan bir beden arasında
+  // titreme olmaz.
   const d = (s.x - sp.x) * nx + (s.y - sp.y) * ny;
   const want = sp.h / 2 + s.r + MOVE.springClear;
   if (d < want) { s.x += nx * (want - d); s.y += ny * (want - d); }
@@ -1710,13 +1731,15 @@ function fireSpring(s, sp, live) {
   RES.spring = sp;
 }
 
-/* Re-arm every spring the spirit has got clear of. Run once per simulation
-   step, BEFORE the spirit moves, so a spring can never be unlocked and fired
-   inside the same step by the clearance its own launch just applied.
+/* Ruhun uzaklaştığı her yayı yeniden kur. Simülasyon adımı başına bir kez,
+   ruh hareket etmeden ÖNCE çalışır; böylece bir yay, kendi fırlatmasının az
+   önce uyguladığı boşluk yüzünden aynı adım içinde hem kilidi açılıp hem de
+   ateşlenemez.
 
-   This clears the CONTACT lock only. The failsafe cutout is a different thing
-   with a different release — see springLoop — and getting away from a spring
-   is not the same as having been given back control. */
+   Bu yalnızca TEMAS kilidini açar. Yedek devre dışı bırakma farklı bir
+   şeydir ve farklı bir serbest bırakması vardır — springLoop'a bakın — ve
+   bir yaydan uzaklaşmak, kontrolün geri verilmiş olmasıyla aynı şey
+   değildir. */
 function releaseSprings(px, py, r) {
   for (let i = 0; i < world.springs.length; i++) {
     const sp = world.springs[i];
@@ -1724,34 +1747,38 @@ function releaseSprings(px, py, r) {
   }
 }
 
-/* The failsafe behind the lock.
+/* Kilidin arkasındaki yedek önlem.
 
-   Leaving the region re-arms a spring, and that is correct — but a spring
-   aimed straight up throws the spirit far outside its region and drops it
-   right back in, so the region rule ALONE still allows a loop: out, back, out,
-   back, with the player holding a dead controller the whole time. The lock is
-   working perfectly in that case and the player is still trapped.
+   Bölgeden ayrılmak bir yayı yeniden kurar ve bu doğrudur — ama tam dikine
+   nişanlanmış bir yay ruhu bölgesinin çok dışına fırlatır ve onu tam geri
+   içine düşürür; bu yüzden bölge kuralı TEK BAŞINA hâlâ bir döngüye izin
+   verir: dışarı, geri, dışarı, geri, oyuncu boyunca ölü bir kumanda tutarken.
+   Kilit bu durumda kusursuz çalışır ve oyuncu yine de tuzağa düşmüştür.
 
-   So the thing actually being counted here is not contacts or seconds, it is
-   throws the player never got to answer. One too many and the spring is cut
-   out entirely — `off` — and the spirit falls THROUGH it (a spring is a
-   trigger, not a surface) onto whatever it is mounted on, and lands.
+   Bu yüzden burada gerçekte sayılan şey temaslar ya da saniyeler değil,
+   oyuncunun hiç cevap veremediği fırlatmalardır. Bir fazlası ve yay
+   tamamen devre dışı bırakılır — `off` — ve ruh onun İÇİNDEN düşer (bir
+   yay bir tetikleyicidir, bir yüzey değil) üzerine monte edildiği her ne
+   ise onun üzerine iner.
 
-   The cutout is cleared by CONTROL RETURNING, never by a timer. A timer cannot
-   be right here: how long the spirit is in the air is decided by the throw, so
-   any fixed lockout is either too short to break a strong spring's loop or
-   long enough to be felt on a weak one. And because control returning is what
-   clears it, a player deliberately bouncing off the same spring over and over
-   never trips it — they are answering every throw. */
+   Devre dışı bırakma yalnızca KONTROLÜN GERİ GELMESİYLE temizlenir, asla
+   bir zamanlayıcıyla değil. Bir zamanlayıcı burada asla doğru olamaz: ruhun
+   havada ne kadar kalacağına fırlatma karar verir; bu yüzden herhangi bir
+   sabit kilitlenme süresi ya güçlü bir yayın döngüsünü kırmaya yetmeyecek
+   kadar kısadır ya da zayıf birinde hissedilecek kadar uzundur. Ve
+   kontrolün geri gelmesi onu temizlediği için, aynı yaydan bilerek tekrar
+   tekrar sekip duran bir oyuncu bunu asla tetiklemez — her fırlatmaya
+   cevap veriyordur çünkü. */
 const springLoop = {
   sp: null, n: 0,
-  /* The player got a say. Nothing before this counts, and every cutout is
-     lifted: whatever the spirit was stuck in, it is not stuck in it now. */
+  /* Oyuncunun söz hakkı oldu. Bundan öncesi sayılmaz ve her devre dışı
+     bırakma kaldırılır: ruh her ne içinde sıkışmışsa artık onun içinde
+     değildir. */
   clear() {
     this.sp = null; this.n = 0;
     for (let i = 0; i < world.springs.length; i++) world.springs[i].off = false;
   },
-  /* true when this throw is the one that has to be cut off */
+  /* bu fırlatma devre dışı bırakılması gereken fırlatmaysa true döner */
   count(sp) {
     if (this.sp === sp) this.n++;
     else { this.sp = sp; this.n = 1; }
@@ -1763,9 +1790,9 @@ const springLoop = {
 
 const SUBSTEP_MAX = 10;
 
-/* Advance a body by its velocity, resolving everything it meets on the way.
-   Shared verbatim by the player and by the aim preview, so the dotted guide can
-   never promise something the simulation will not do. */
+/* Bir bedeni hızı kadar ilerlet, yol boyunca karşılaştığı her şeyi çöz.
+   Oyuncu ile nişan önizlemesi tarafından birebir aynı şekilde paylaşılır;
+   böylece noktalı kılavuz, simülasyonun yapmayacağı bir şeyi asla vadetmez. */
 function stepBody(s, live) {
   RES.reset();
   const sp = Math.hypot(s.vx, s.vy);
@@ -1782,8 +1809,9 @@ function stepBody(s, live) {
       if (e.k !== undefined && e.k <= 0.35) continue;
       if (overlapsBox(s.x, s.y, s.r * 0.72, e)) { RES.lethal = e; return RES; }
     }
-    // the world is an island in a void: leaving it in any direction dissolves
-    // the spirit. The margin is generous so a near miss is never a cheap death
+    // dünya bir boşluk içindeki bir adadır: onu herhangi bir yönde terk etmek
+    // ruhu eritir. Sınır payı cömerttir, böylece ucundan kurtulmak asla ucuz
+    // bir ölüm olmaz
     if (s.y > world.h + 240 || s.x < -160 || s.x > world.w + 160) {
       RES.lethal = VOID; return RES;
     }
@@ -1793,77 +1821,77 @@ function stepBody(s, live) {
       if (RES.spring) { i = n; break; }
     }
   }
-  // A wall this body has just launched from cannot be taken hold of again yet,
-  // so that leaping up and over a ledge is not undone by the same face
-  // catching you a frame later. It still collides — it is a wall — it just
-  // cannot be grabbed. Any other wall can.
+  // Bu bedenin az önce fırladığı bir duvara henüz yeniden tutunulamaz;
+  // böylece bir çıkıntının üzerine sıçramak, aynı yüzeyin bir kare sonra
+  // seni tekrar yakalamasıyla bozulmaz. Yine de çarpışır — bir duvardır —
+  // sadece tutunulamaz. Başka herhangi bir duvara tutunulabilir.
   RES.wallHold = RES.wall && !(s.noWallT > 0 && RES.wallE === s.noWall);
   return RES;
 }
 const VOID = { kind: 'void' };
 
-/* ---- landing assist -----------------------------------------------------
-   Coming down a hand's width short of a ledge is the least satisfying way to
-   fail: the player read the situation correctly and the game said no anyway.
-   While falling near the height of a surface top, the spirit is accelerated
-   gently toward the nearest edge it is about to miss.
+/* ---- iniş yardımı ------------------------------------------------------
+   Bir çıkıntının hemen kısasında düşmek, başarısızlığın en tatminsiz
+   biçimidir: oyuncu durumu doğru okumuştur ve oyun yine de hayır demiştir.
+   Bir yüzey tepesinin yüksekliğine yakın düşerken, ruh kaçırmak üzere
+   olduğu en yakın kenara doğru nazikçe hızlandırılır.
 
-   It is an acceleration, not a correction: it is small next to the speed the
-   player already has, it only ever acts sideways, and it stops the moment the
-   spirit is over the surface. So it removes near-misses without ever looking
-   like the character was moved for you. */
+   Bu bir düzeltme değil, bir ivmedir: oyuncunun zaten sahip olduğu hıza
+   göre küçüktür, yalnızca yanal olarak etki eder ve ruh yüzeyin üzerine
+   geldiği anda durur. Böylece, karakter senin için hareket ettirilmiş gibi
+   görünmeden ucundan kurtulmaları ortadan kaldırır. */
 function landingAssist(s) {
-  if (s.vy < 1.2) return;                       // only on the way down
+  if (s.vy < 1.2) return;                       // yalnızca inerken
   const foot = s.y + s.r;
   let bestDir = 0, bestGap = MOVE.assistReach;
   for (let i = 0; i < world.solids.length; i++) {
     const e = world.solids[i];
-    if (e.broken || e.a || e.w < 60) continue;              // flat, standable tops only
+    if (e.broken || e.a || e.w < 60) continue;              // yalnızca düz, üzerinde durulabilir tepeler
     const top = e.y - e.h / 2;
     if (foot > top + 12 || foot < top - MOVE.assistBand) continue;
-    const gapL = (e.x - e.w / 2) - s.x;         // >0: surface is to our right
-    const gapR = s.x - (e.x + e.w / 2);         // >0: surface is to our left
+    const gapL = (e.x - e.w / 2) - s.x;         // >0: yüzey sağımızda
+    const gapR = s.x - (e.x + e.w / 2);         // >0: yüzey solumuzda
     if (gapL > 0 && gapL < bestGap) { bestGap = gapL; bestDir = 1; }
     else if (gapR > 0 && gapR < bestGap) { bestGap = gapR; bestDir = -1; }
   }
   if (!bestDir) return;
-  // The pull fades in as the gap closes, so it is strongest when the miss is
-  // smallest, and it is capped: the spirit may drift toward the ledge, never
-  // be flung at it. Past the cap the player is already moving that way on
-  // their own and the assist has nothing to add.
+  // Boşluk kapandıkça çekiş güçlenir; bu yüzden ıska en küçük olduğunda en
+  // güçlüdür ve bir üst sınırı vardır: ruh çıkıntıya doğru sürüklenebilir,
+  // asla ona fırlatılamaz. Bu sınırın ötesinde oyuncu zaten kendi başına o
+  // yöne hareket ediyordur ve yardımın ekleyecek bir şeyi yoktur.
   if (s.vx * bestDir >= MOVE.assistMax) return;
   const k = 1 - bestGap / MOVE.assistReach;
   s.vx += bestDir * MOVE.assistPull * k;
 }
 
-/* ---- ledge assist -------------------------------------------------------
-   The companion to the landing assist, for going UP over a corner rather than
-   down onto a ledge.
+/* ---- çıkıntı yardımı ----------------------------------------------------
+   İniş yardımının eşi; bir çıkıntının üzerine düşmek yerine bir köşenin
+   üzerine ÇIKMAK için.
 
-   The situation it exists for: the spirit is holding the side of a block and
-   the player pulls to send it up and over the top. That aim has an inward
-   component — and the wall eats it, because every frame the contact removes
-   whatever velocity points into the surface. The spirit rises hugging the face
-   with no sideways speed at all and comes straight back down beside the block.
-   Every aim collapses to the same result, so "over the ledge" is not something
-   the player can express.
+   Var olduğu durum: ruh bir bloğun kenarına tutunuyor ve oyuncu onu
+   yukarı, tepesinin üzerine göndermek için çekiyor. O nişanın içe doğru
+   bir bileşeni vardır — ve duvar bunu yer, çünkü her karede temas, yüzeyin
+   içine doğru işaret eden her hızı kaldırır. Ruh, hiç yanal hız olmadan
+   yüzeye sarılarak yükselir ve bloğun yanına dosdoğru geri düşer. Her
+   nişan aynı sonuca çöker; bu yüzden "çıkıntının üzerine" oyuncunun ifade
+   edebileceği bir şey değildir.
 
-   So the inward half of that launch is REMEMBERED, and handed back once the
-   spirit's feet clear the top edge and it can actually move that way. It is
-   the player's own input, paid out a moment later — not a correction invented
-   for them. It only arms on a launch that was aimed up and inward from a hold,
-   it only pays out while rising near a top that is genuinely within reach, and
-   it expires. */
+   Bu yüzden o fırlatmanın içe doğru yarısı HATIRLANIR ve ruhun ayakları
+   üst kenarı geçip gerçekten o yöne hareket edebildiği anda geri verilir.
+   Bu, oyuncunun kendi girdisidir, yalnızca bir an sonra ödenir — onlar
+   için icat edilmiş bir düzeltme değildir. Yalnızca bir tutunuştan yukarı
+   ve içe nişanlanmış bir fırlatmada devreye girer, yalnızca gerçekten
+   erişilebilir bir tepenin yakınında yükselirken öder ve süresi dolar. */
 function ledgeAssist(s) {
   if (!s.ledgeDir || s.ledgeT <= 0) return;
-  if (s.vy > -0.5) return;                      // only on the way up
+  if (s.vy > -0.5) return;                      // yalnızca yükselirken
   const foot = s.y + s.r;
   for (let i = 0; i < world.solids.length; i++) {
     const e = world.solids[i];
     if (e.broken || e.a || e.w < 40) continue;
     const top = e.y - e.h / 2;
-    // The feet have to be clear of the top before drifting inward means
-    // anything: any earlier and it is just pressing into the face again.
+    // İçe doğru sürüklenmenin bir anlamı olması için ayakların önce tepeyi
+    // geçmesi gerekir: daha erken olursa bu sadece yüzeye tekrar bastırmaktır.
     if (foot > top + 2 || foot < top - MOVE.ledgeBand) continue;
     const gap = s.ledgeDir > 0 ? (e.x - e.w / 2) - s.x : s.x - (e.x + e.w / 2);
     if (gap <= 0 || gap > MOVE.ledgeReach) continue;
@@ -1873,11 +1901,12 @@ function ledgeAssist(s) {
   }
 }
 
-/* Gravity, air drag and the speed ceiling. The burst window suspends gravity
-   for a few frames so a release reads as a deliberate throw rather than
-   something that begins falling the instant it leaves. */
+/* Yer çekimi, hava sürtünmesi ve hız tavanı. Sıçrama penceresi birkaç kare
+   boyunca yer çekimini askıya alır; böylece bir bırakış, ayrıldığı an
+   düşmeye başlayan bir şey yerine bilinçli bir fırlatma gibi okunur. */
 function integrate(s) {
-  // Shared by live flight and trajectory: currents never alter a resting body.
+  // Canlı uçuş ve yörünge tarafından paylaşılır: akıntılar dinlenen bir
+  // bedeni asla etkilemez.
   if (s !== body || PS.state === 'air') for (const w of world.winds) {
     if (Math.abs(s.x-w.x)<w.w/2 && Math.abs(s.y-w.y)<w.h/2) {
       const len = Math.hypot(w.dx,w.dy) || 1;
@@ -1898,19 +1927,20 @@ function integrate(s) {
   if (sp > MOVE.speedMax) { const f = MOVE.speedMax / sp; s.vx *= f; s.vy *= f; }
 }
 
-/* --- trajectory preview (the same integrator, nothing simulated twice) --- */
+/* --- yörünge önizlemesi (aynı entegratör, hiçbir şey iki kez simüle edilmez) --- */
 const probe = { x: 0, y: 0, vx: 0, vy: 0, r: MOVE.radius, burst: 0,
   noWall: null, noWallT: 0, ledgeDir: 0, ledgeT: 0 };
 const preview = {
   pts: [], n: 0, land: -1, lx: 0, ly: 0,
-  landFloor: false,          // did it end on something you can stand on?
+  landFloor: false,          // üzerinde durulabilecek bir şeyde mi bitti?
   danger: false, spring: false,
 };
 
 const MOTION_KEYS = ['x','y','px','py','vx','vy','a','ca','sa','av'];
 function predict(x, y, vx, vy, maxDist) {
-  // Forecast moving surfaces and beam phases, then restore the live world.
-  // Reused records keep aiming free of per-frame snapshot allocations.
+  // Hareketli yüzeyleri ve ışın fazlarını önceden hesapla, sonra canlı
+  // dünyayı geri yükle. Yeniden kullanılan kayıtlar, nişan almayı kare
+  // başına anlık görüntü bellek ayırmalarından uzak tutar.
   for (const e of world.movers) {
     if (!e.forecast) e.forecast = {};
     for (const k of MOTION_KEYS) e.forecast[k] = e[k];
@@ -1929,14 +1959,14 @@ function predict(x, y, vx, vy, maxDist) {
     for (const e of world.solids) if (e.crumble && e.crumbleT >= 0 && e.crumbleT + (i + 1) * STEP >= e.crumble) e.broken = true;
     const ox = probe.x, oy = probe.y;
     integrate(probe);
-    landingAssist(probe);          // the guide must include the help the player gets
+    landingAssist(probe);          // kılavuz, oyuncunun aldığı yardımı da içermelidir
     ledgeAssist(probe);
     const r = stepBody(probe);
     if (r.lethal) { preview.danger = true; pushDot(probe.x, probe.y); break; }
     if (r.spring) { preview.spring = true; pushDot(probe.x, probe.y); break; }
     if (r.floor || r.wallHold || r.ceil) {
       preview.land = preview.n;
-      preview.landFloor = r.floor || r.wallHold;   // both are places control returns
+      preview.landFloor = r.floor || r.wallHold;   // ikisi de kontrolün geri döndüğü yerlerdir
       preview.lx = probe.x; preview.ly = probe.y;
       pushDot(probe.x, probe.y);
       break;
@@ -1958,45 +1988,46 @@ function pushDot(x, y) {
 }
 
 /* ============================================================
-   7. THE PLAYER
+   7. OYUNCU
    ============================================================
-   Four parts that only talk through small named interfaces, so the collision
-   loop never writes a visual field and the renderer never writes a physics
-   one.
+   Yalnızca küçük, adlandırılmış arayüzler üzerinden konuşan dört parça;
+   böylece çarpışma döngüsü asla bir görsel alana yazmaz ve çizici asla bir
+   fizik alanına yazmaz.
 
-     body  — position, velocity, radius. What the integrator moves.
-     PS    — the state machine. Which of the six states the spirit is in, how
-             long it has been there, and whether the player may aim right now.
-     Vis   — everything cosmetic, driven by events (onBurst, onLand, ...).
-     Aim   — the wind-up: where it is anchored, how far it is pulled, and the
-             one place a release turns into a burst.
+     body  — konum, hız, yarıçap. Entegratörün hareket ettirdiği şey.
+     PS    — durum makinesi. Ruhun altı durumdan hangisinde olduğu, orada ne
+             kadar süredir olduğu ve oyuncunun şu anda nişan alıp alamayacağı.
+     Vis   — kozmetik olan her şey; olaylarla yönetilir (onBurst, onLand, ...).
+     Aim   — gerilme: nereye sabitlendiği, ne kadar çekildiği ve bir bırakışın
+             bir sıçramaya dönüştüğü tek yer.
    ============================================================ */
 
 const body = { x: 0, y: 0, vx: 0, vy: 0, r: MOVE.radius, burst: 0,
-  noWall: null, noWallT: 0,     // the wall we just left, and for how long
-  ledgeDir: 0, ledgeT: 0 };     // inward intent saved from a launch off a hold
+  noWall: null, noWallT: 0,     // az önce ayrıldığımız duvar ve ne kadar süreyle
+  ledgeDir: 0, ledgeT: 0 };     // bir tutunuştan yapılan fırlatmadan saklanan içe doğru niyet
 
-/* grounded · airborne · clinging · held by a node · dissolving · reforming */
+/* zeminde · havada · tutunmuş · bir düğüm tarafından tutulmuş · çözülüyor · yeniden şekilleniyor */
 const PS = {
   state: 'spawn',
   t: 0,
   prev: 'spawn',
   speed: 0,
   facing: -Math.PI / 2,
-  coyote: 0,          // grace after stepping off a surface
-  clingT: 0,          // how long the current hold has lasted
-  clingWall: null,    // which surface is being held
-  clingSide: 0,       // +1 the wall is to the left of us, -1 to the right
-  node: null,         // the node currently holding us
-  fallT: 0,           // how long we have been falling (for the landing weight)
+  coyote: 0,          // bir yüzeyden ayrıldıktan sonraki hoşgörü
+  clingT: 0,          // mevcut tutunuşun ne kadar sürdüğü
+  clingWall: null,    // hangi yüzeyin tutulduğu
+  clingSide: 0,       // +1 duvar solumuzda, -1 sağımızda
+  node: null,         // şu anda bizi tutan düğüm
+  fallT: 0,           // ne kadar süredir düştüğümüz (iniş ağırlığı için)
   set(name) {
     if (this.state === name) return;
     this.prev = this.state; this.state = name; this.t = 0;
   },
 };
 
-/* The three states that hand control back. Everything else is committed
-   motion, and the only ways out of it are a node, a wall, or the ground. */
+/* Kontrolü geri veren üç durum. Bunun dışındaki her şey taahhüt edilmiş
+   harekettir ve ondan çıkmanın tek yolları bir düğüm, bir duvar ya da
+   zemindir. */
 function canAim() {
   if (G.menu || G.phase !== 'play') return false;
   const s = PS.state;
@@ -2004,8 +2035,8 @@ function canAim() {
          (s === 'air' && PS.coyote > 0);
 }
 
-/* The nearest node that could catch us right now. Generous on purpose: this is
-   the main mobile target in the game and it is moving. */
+/* Şu anda bizi yakalayabilecek en yakın düğüm. Bilerek cömert: bu, oyundaki
+   ana mobil hedef ve hareket halinde. */
 function nodeInReach() {
   if (PS.state !== 'air' || G.phase !== 'play') return null;
   let best = null, d2best = MOVE.nodeReach * MOVE.nodeReach;
@@ -2023,7 +2054,7 @@ const Vis = {
   stretch: 0, stretchAng: 0,
   pulse: 0, flash: 0, scale: 1,
   landPop: 0, readyPop: 0, blink: 0, blinkT: 2,
-  look: 0, lookT: -Math.PI / 2,      // where the creature is looking
+  look: 0, lookT: -Math.PI / 2,      // yaratığın baktığı yön
   trail: [], trailN: 0,
 
   reset(x, y) {
@@ -2039,15 +2070,15 @@ const Vis = {
     if (this.squash > 0) this.squash = Math.max(0, this.squash - STEP * 3.8);
     if (this.landPop > 0) this.landPop = Math.max(0, this.landPop - STEP * 4.2);
     if (this.readyPop > 0) this.readyPop = Math.max(0, this.readyPop - STEP * 2.8);
-    // stretch follows speed rather than decaying, so fast travel leans forward
+    // gerilme sönmek yerine hızı takip eder, bu yüzden hızlı hareket öne yaslanır
     const want = clamp(sp / 20, 0, 1) * 0.3;
     this.stretch += (want - this.stretch) * 0.2;
     if (sp > 0.6) this.stretchAng = PS.facing;
-    // the creature looks where it is going, or where it is about to go
+    // yaratık gittiği yöne ya da gitmek üzere olduğu yöne bakar
     const want2 = Aim.on ? Aim.angle : (sp > 1 ? PS.facing : this.lookT);
     let d = ((want2 - this.lookT + Math.PI) % TAU + TAU) % TAU - Math.PI;
     this.lookT += d * 0.22;
-    // idle blink
+    // boşta göz kırpma
     this.blinkT -= STEP;
     if (this.blinkT <= 0) { this.blink = 0.16; this.blinkT = rand(2.4, 5.5); }
     if (this.blink > 0) this.blink = Math.max(0, this.blink - STEP);
@@ -2079,47 +2110,49 @@ const Vis = {
 const TRAIL_N = 20;
 for (let i = 0; i < TRAIL_N; i++) Vis.trail.push({ x: 0, y: 0, v: 0 });
 
-/* ---- the stretch ---------------------------------------------------------
-   The slingshot's state. Input writes only to this; the guide, the camera, the
-   character visuals and the launch all read it and nothing writes back.
+/* ---- gerilme ---------------------------------------------------------------
+   Sapanın durumu. Girdi yalnızca buraya yazar; kılavuz, kamera, karakter
+   görselleri ve fırlatma bunu okur ve hiçbiri geri yazmaz.
 
-   `sx/sy` and `px/py` are VIRTUAL SCREEN units, not world units — that is the
-   whole reason the camera can move freely under a held stretch without the aim
-   shifting by a hair. See `toScreen` in section 10. */
+   `sx/sy` ve `px/py`, dünya birimi değil, SANAL EKRAN birimidir — kameranın
+   tutulan bir gerilme altında nişanı bir tüy kadar bile kaydırmadan serbestçe
+   hareket edebilmesinin tüm nedeni budur. 10. bölümdeki `toScreen`'e bakın. */
 const Aim = {
   on: false,
-  from: '',            // which state the stretch started in
-  sx: 0, sy: 0,        // where the finger went down (screen)
-  px: 0, py: 0,        // where the finger is now (screen)
-  pullLen: 0,          // raw stretch length in screen units
-  pull: 0,             // 0..1 of the usable stretch
-  power: 0,            // pull, shaped by powerCurve; what the game acts on
-  angle: 0,            // launch direction: the mirror of the pull
+  from: '',            // gerilmenin hangi durumda başladığı
+  sx: 0, sy: 0,        // parmağın nereye bastığı (ekran)
+  px: 0, py: 0,        // parmağın şu anda nerede olduğu (ekran)
+  pullLen: 0,          // ekran biriminde ham gerilme uzunluğu
+  pull: 0,             // kullanılabilir gerilmenin 0..1 arası
+  power: 0,            // powerCurve ile şekillendirilmiş çekiş; oyunun tepki verdiği şey
+  angle: 0,            // fırlatma yönü: çekişin aynadaki yansıması
   held: 0,
   clear() {
     this.on = false; this.power = 0; this.pull = 0; this.pullLen = 0; this.held = 0;
   },
 };
 
-/* Leaving a wall.
+/* Bir duvardan ayrılmak.
 
-   The safety kick exists for exactly one reason: a leap aimed flat along a
-   face would otherwise scrape straight back into it. It is NOT there to decide
-   where the player goes, and it used to: aiming up and over the top of the
-   block you were holding produced a velocity with the sideways component
-   flipped — pull up-left, travel up-right — which made the most natural move
-   in the game, hopping from a wall onto the ledge above it, impossible.
+   Güvenlik itişi tam olarak tek bir nedenle var: bir yüzey boyunca düz
+   nişanlanmış bir sıçrama, aksi halde doğrudan onun içine sürtünerek geri
+   dönerdi. Oyuncunun nereye gideceğine karar vermek için orada DEĞİLDİR,
+   ama eskiden öyleydi: tuttuğun bloğun tepesinin üzerine yukarı doğru
+   nişan almak, yanal bileşeni ters çevrilmiş bir hız üretiyordu — sol-yukarı
+   çek, sağ-yukarı git — bu da oyundaki en doğal hareketi, bir duvardan
+   üzerindeki çıkıntıya sıçramayı, imkânsız kılıyordu.
 
-   So the kick now fades out with how upward the aim is. A flat aim still gets
-   pushed clear; an aim steeper than `clingFree` is taken completely literally,
-   inward or not, because an upward aim is the player going over the top and
-   they can see exactly where that leads. The fade is smooth, so there is no
-   angle at which the control suddenly changes behaviour. */
+   Bu yüzden itiş artık nişanın ne kadar yukarı baktığına göre söner. Düz
+   bir nişan yine de temizlenir; `clingFree`'den daha dik bir nişan, içe
+   doğru olsun ya da olmasın, tamamen olduğu gibi alınır, çünkü yukarı
+   doğru bir nişan oyuncunun tepenin üzerinden gitmesidir ve bunun nereye
+   vardığını tam olarak görebilirler. Sönme yumuşaktır, bu yüzden kontrolün
+   aniden davranış değiştirdiği bir açı yoktur. */
 function applyClingKick(ang, sp, out) {
-  const nx = PS.clingSide;                 // +1 = wall on our left, push right
+  const nx = PS.clingSide;                 // +1 = duvar solumuzda, sağa it
   const raw = Math.cos(ang) * sp;
   const vy = Math.sin(ang) * sp;
-  const up = -Math.sin(ang);               // -1 straight down .. +1 straight up
+  const up = -Math.sin(ang);               // -1 dümdüz aşağı .. +1 dümdüz yukarı
   const bite = 1 - smoothstep(clamp(up / MOVE.clingFree, 0, 1));
   let vx = raw;
   if (bite > 0) {
@@ -2132,20 +2165,20 @@ function applyClingKick(ang, sp, out) {
 }
 const KICK = { x: 0, y: 0 };
 
-/* Arm the ledge assist, if this launch off a hold was aimed up and over the
-   top of the thing being held. Shared by the real launch and by the preview,
-   so the dotted guide shows the same arc the player will fly. */
+/* Bu fırlatma, tutulan şeyin tepesinin üzerine yukarı doğru nişanlanmışsa,
+   çıkıntı yardımını devreye sok. Gerçek fırlatma ile önizleme tarafından
+   paylaşılır; böylece noktalı kılavuz oyuncunun uçacağı aynı yayı gösterir. */
 function armLedgeAssist(s, ang, sp) {
   s.ledgeDir = 0; s.ledgeT = 0;
   const up = -Math.sin(ang);
-  if (up < MOVE.clingFree) return;                 // not an upward aim
-  const inward = -PS.clingSide;                    // away from the face we hold
-  if (Math.cos(ang) * inward <= 0) return;         // not aimed over the top
+  if (up < MOVE.clingFree) return;                 // yukarı doğru bir nişan değil
+  const inward = -PS.clingSide;                    // tuttuğumuz yüzeyden uzağa
+  if (Math.cos(ang) * inward <= 0) return;         // tepenin üzerine nişanlanmamış
   s.ledgeDir = inward;
   s.ledgeT = MOVE.ledgeTime;
 }
 
-/* The one place a wind-up becomes motion. */
+/* Bir gerilmenin harekete dönüştüğü tek yer. */
 function doBurst(ang, power) {
   const fromNode = PS.state === 'node' && PS.node;
   const p = clamp(power, 0, 1);
@@ -2155,7 +2188,7 @@ function doBurst(ang, power) {
   if (PS.state === 'cling') {
     const k = applyClingKick(ang, sp, KICK);
     vx = k.x; vy = k.y;
-    // the face we are leaving cannot catch us again for a moment
+    // ayrıldığımız yüzey bizi bir süreliğine tekrar yakalayamaz
     body.noWall = PS.clingWall; body.noWallT = MOVE.wallRegrab;
     armLedgeAssist(body, ang, sp);
   }
@@ -2186,24 +2219,23 @@ function doBurst(ang, power) {
   cam.shake = Math.max(cam.shake, 1.4 + p * 3);
   cam.kx -= Math.cos(ang) * (1 + p * 2);
   cam.ky -= Math.sin(ang) * (1 + p * 2);
-  // Kept for tests and statistics, shown nowhere. `totalBursts` used to be
-  // declared and reset but never incremented, so the figure the end screen
-  // printed was always zero — it counts for real now that nothing displays it.
+  // Testler ve istatistikler için tutulur, hiçbir yerde gösterilmez.
   G.bursts++;
   G.totalBursts++;
   setHint('');
 }
 
 /* ============================================================
-   8. GAME STATE
+   8. OYUN DURUMU
    ============================================================ */
 
-/* ---- storage -------------------------------------------------------------
-   localStorage is not guaranteed to exist and not guaranteed to work: it is
-   absent on some embedded webviews, it throws on access under a strict privacy
-   setting, and setItem throws when the quota is full. None of that is the
-   player's problem, so every call goes through here and a failure is simply a
-   session that does not persist. Once a write has failed we stop trying. */
+/* ---- depolama ---------------------------------------------------------------
+   localStorage'ın var olacağı ya da çalışacağı garanti değildir: bazı
+   gömülü webview'lerde bulunmaz, sıkı bir gizlilik ayarı altında erişimde
+   hata fırlatır ve kota dolduğunda setItem hata fırlatır. Bunların hiçbiri
+   oyuncunun sorunu değildir; bu yüzden her çağrı buradan geçer ve bir
+   başarısızlık yalnızca kalıcı olmayan bir oturum demektir. Bir yazma
+   başarısız olduktan sonra denemeyi bırakırız. */
 const Store = {
   ok: true,
   get(key) {
@@ -2221,17 +2253,19 @@ const Store = {
   },
 };
 
-/* ---- progress ------------------------------------------------------------
-   The only thing worth keeping between sessions is how far the player got.
+/* ---- ilerleme ----------------------------------------------------------------
+   Oturumlar arasında saklamaya değer tek şey, oyuncunun ne kadar ilerlediğidir.
 
-   Deliberately NOT saved: position, velocity, state, which mote was claimed —
-   anything that could restore the game into a situation the player cannot get
-   out of. Restarting a level always rebuilds it from the level data, so a save
-   can never be the reason a level is unwinnable.
+   Bilerek KAYDEDİLMEYENLER: konum, hız, durum, hangi kontrol noktasının
+   alındığı — oyunu, oyuncunun çıkamayacağı bir duruma geri getirebilecek
+   her şey. Bir bölümü yeniden başlatmak onu her zaman bölüm verisinden
+   yeniden kurar; bu yüzden bir kayıt, bir bölümün kazanılamaz olmasının
+   nedeni asla olamaz.
 
-   `unlocked` is the furthest level that may be started, `done` is which ones
-   have been finished. Both are clamped to the levels that actually exist, so a
-   save written when the game had more levels than it does now still loads. */
+   `unlocked`, başlatılabilecek en uzak bölümdür, `done` ise hangilerinin
+   tamamlandığıdır. İkisi de gerçekten var olan bölümlere göre sınırlanır;
+   bu yüzden oyunun şu andakinden daha fazla bölümü olduğu zaman yazılmış
+   bir kayıt hâlâ yüklenir. */
 const SAVE_V = 1;
 
 const Save = {
@@ -2243,26 +2277,27 @@ const Save = {
     if (!raw) return this.data;
     try {
       const o = JSON.parse(raw);
-      // anything we do not recognise is discarded rather than trusted: a bad
-      // save must cost the player their progress at worst, never the game
+      // tanımadığımız her şey güvenilmek yerine atılır: kötü bir kayıt en
+      // kötü ihtimalle oyuncuya ilerlemesine mal olmalıdır, asla oyuna değil
       if (o && o.v === SAVE_V) {
         this.data.unlocked = clamp(o.unlocked | 0, 0, LEVELS.length - 1);
         if (Array.isArray(o.done)) {
           this.data.done = o.done.filter(
             (i) => Number.isInteger(i) && i >= 0 && i < LEVELS.length);
-          // A save that finished the old six-level game now opens chapter seven.
+          // Eski altı bölümlük oyunu bitirmiş bir kayıt, şimdi yedinci bölümü açar.
           for (const i of this.data.done) this.data.unlocked = Math.max(this.data.unlocked, Math.min(i + 1, LEVELS.length - 1));
         }
       }
-    } catch (err) { /* corrupt or foreign: start clean, and keep playing */ }
+    } catch (err) { /* bozuk ya da yabancı: temiz başla ve oynamaya devam et */ }
     return this.data;
   },
   write() { return Store.set('progress', JSON.stringify(this.data)); },
-  /* the furthest level the player may start on — always a real index */
+  /* oyuncunun başlayabileceği en uzak bölüm — her zaman gerçek bir indeks */
   unlocked() { return clamp(this.data.unlocked, 0, LEVELS.length - 1); },
   completed(i) { return this.data.done.indexOf(i) >= 0; },
-  /* Finishing a level unlocks the next one. The mark never moves backwards,
-     so replaying an early level cannot cost the player what they have done. */
+  /* Bir bölümü bitirmek bir sonrakini açar. İşaret asla geriye gitmez; bu
+     yüzden erken bir bölümü yeniden oynamak, oyuncunun yaptıklarına mal
+     olamaz. */
   complete(i) {
     if (i < 0 || i >= LEVELS.length) return;
     if (!this.completed(i)) this.data.done.push(i);
@@ -2280,9 +2315,9 @@ const G = {
   levelIndex: 0,
   level: null,
   bursts: 0,
-  totalBursts: 0,       // run total, across levels and retries — internal only
+  totalBursts: 0,       // koşu toplamı, bölümler ve tekrar denemeler boyunca — yalnızca dahili
   runTime: 0,
-  spawnX: 0, spawnY: 0,   // the last claimed mote, or the level start
+  spawnX: 0, spawnY: 0,   // son alınan kontrol noktası ya da bölüm başlangıcı
   deaths: 0,
   transDir: 0, transT: 0, transDur: 0.42, transNext: null,
   fadeIn: 0,
@@ -2293,7 +2328,7 @@ const cam = {
   x: 0, y: 0, tx: 0, ty: 0,
   mode: 'rest', settleT: 0,
   shake: 0, sx: 0, sy: 0,
-  kx: 0, ky: 0,           // directional impulse from a launch or a slam
+  kx: 0, ky: 0,           // bir fırlatma ya da çarpmadan gelen yönlü itki
   zoom: 1, tzoom: 1, punch: 0,
   flash: 0, flashCol: [255, 255, 255],
 };
@@ -2322,16 +2357,16 @@ const ctx = dom.canvas.getContext('2d');
 
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
-/* The whole HUD, in one place.
+/* Tüm HUD, tek bir yerde.
 
-   There is no leap counter. It used to sit here as an icon and a number, and
-   it was pure clutter: nothing in the game is rationed by leaps, so the figure
-   never told the player anything they could act on, and on a narrow phone it
-   squeezed the level name into an ellipsis. The count is still kept on `G` for
-   tests and statistics — it is simply not shown anywhere.
+   Bir sıçrama sayacı yoktur: oyunda hiçbir şey sıçramalarla kısıtlanmaz; bu
+   yüzden bu rakam oyuncuya harekete geçebileceği hiçbir şey söylemezdi.
+   Sayı yine de testler ve istatistikler için `G` üzerinde tutulur — sadece
+   gösterilmez.
 
-   The total comes from LEVELS.length every time it is written, so adding a
-   level is adding a level, with nothing else to remember. */
+   Toplam, her yazıldığında LEVELS.length'ten gelir; bu yüzden bir bölüm
+   eklemek, başka hiçbir şeyi hatırlamaya gerek kalmadan bir bölüm eklemek
+   demektir. */
 function updateHud() {
   const i = G.levelIndex;
   dom.levelNum.textContent = pad2(i + 1);
@@ -2340,9 +2375,9 @@ function updateHud() {
   dom.progress.style.width = ((i + 1) / LEVELS.length * 100) + '%';
 }
 
-/* One pass at boot writes the name and every fixed label onto the page. The
-   markup ships with none of them, so there is nowhere for a stale title or an
-   untranslated label to hide. */
+/* Açılışta tek bir geçiş, adı ve her sabit etiketi sayfaya yazar. İşaretleme
+   bunların hiçbiriyle birlikte gelmez; bu yüzden eski bir başlığın ya da
+   çevrilmemiş bir etiketin saklanabileceği hiçbir yer yoktur. */
 function applyBranding() {
   const el = (id) => document.getElementById(id);
   const setText = (id, v) => { const n = el(id); if (n) n.textContent = v; };
@@ -2392,7 +2427,7 @@ function setHint(text) {
   else dom.hint.classList.add('hidden');
 }
 
-/* Put the spirit down at a point, fully reset, and let it reform. */
+/* Ruhu bir noktaya bırak, tamamen sıfırla ve yeniden şekillenmesine izin ver. */
 function placeSpirit(x, y) {
   PS.support = null;
   body.x = x; body.y = y; body.vx = 0; body.vy = 0; body.burst = 0;
@@ -2461,7 +2496,7 @@ function restartLevel(silent) {
   G.fadeIn = 0.3;
 }
 
-/* ---- failure: fast, cheap, and always back at the last mote ---- */
+/* ---- başarısızlık: hızlı, ucuz ve her zaman son kontrol noktasına geri döner ---- */
 function killSpirit(kind) {
   if (PS.state === 'hurt' || PS.state === 'spawn' || G.phase !== 'play') return;
   PS.set('hurt');
@@ -2494,8 +2529,8 @@ function respawn() {
 function reachGate() {
   G.phase = 'win'; G.phaseT = 0;
   G.goalBurst = false;
-  // banked here rather than on the transition, so a level counts the moment it
-  // is actually finished and a refresh mid-transition cannot lose it
+  // geçişte değil burada kaydedilir; böylece bir bölüm gerçekten bittiği
+  // anda sayılır ve geçiş sırasında bir yenileme onu kaybedemez
   Save.complete(G.levelIndex);
   const g = world.gate;
   FX.implode(g.x, g.y, 92, 11, HUE.gate.hi, 0.5);
@@ -2506,7 +2541,7 @@ function reachGate() {
   setHint('');
 }
 
-/* ---- swept triggers: motes and the gate, checked along the whole step ---- */
+/* ---- süpürülen tetikleyiciler: kontrol noktaları ve geçit, tüm adım boyunca kontrol edilir ---- */
 function checkTriggers(px, py) {
   const dx = body.x - px, dy = body.y - py;
   const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 8));
@@ -2525,18 +2560,19 @@ function checkTriggers(px, py) {
       }
     }
     const g = world.gate;
-    // the trigger matches the ring you can see, plus a little of the body:
-    // a gate you are visibly touching must always count
+    // tetikleyici, gördüğün halkaya artı bedenin biraz fazlasına uyar:
+    // görünür şekilde dokunduğun bir geçit her zaman sayılmalıdır
     if (Math.hypot(sx - g.x, sy - g.y) < g.r + body.r * 0.5) { body.x = sx; body.y = sy; reachGate(); return; }
   }
 }
 
-/* ---- one fixed simulation step ---- */
+/* ---- sabit bir simülasyon adımı ---- */
 function simStep() {
   if (G.menu) return;
-  // A wind-up freezes the world. On a phone that is the difference between a
-  // mechanic you can use and one you fumble, and it costs nothing: the spirit
-  // is already held by the ground, a wall or a node whenever it is allowed.
+  // Bir gerilme dünyayı dondurur. Bir telefonda bu, kullanabileceğin bir
+  // mekanikle beceriksizce elinden kaçırdığın bir mekanik arasındaki farktır
+  // ve hiçbir maliyeti yoktur: ruh, buna izin verildiğinde zaten zemin, bir
+  // duvar ya da bir düğüm tarafından tutulmaktadır.
   if (Aim.on) {
     Aim.held += STEP;
     refreshAimPreview();
@@ -2545,9 +2581,10 @@ function simStep() {
       body.y = lerp(body.y, PS.node.y, MOVE.nodePull);
     }
     Vis.step(PS.speed);
-    // if this ever fires it is a lost pointer, so say so rather than going
-    // quiet: a control that stops responding without a sign is unfixable by
-    // the player, who has no idea anything happened
+    // bu bir gün tetiklenirse kayıp bir işaretçi demektir; bu yüzden sessiz
+    // kalmak yerine bunu belirt: hiçbir işaret vermeden yanıt vermeyi
+    // bırakan bir kontrol, ne olduğu hakkında hiçbir fikri olmayan oyuncu
+    // tarafından düzeltilemez
     if (Aim.held >= MOVE.aimHold) { cancelAim(); G.deny = 1; }
     updateCamera(false);
     return;
@@ -2560,7 +2597,7 @@ function simStep() {
   updateMotion(G.t);
   if (PS.state === 'ground' && PS.support && !PS.support.broken) {
     body.x += PS.support.vx; body.y += PS.support.vy;
-    // Translation is applied exactly once. Contact velocity stays relative.
+    // Öteleme tam olarak bir kez uygulanır. Temas hızı göreceli kalır.
     body.vy = 0;
   }
   for (const e of world.solids) if (e.crumble && e.crumbleT >= 0 && !e.broken) {
@@ -2636,7 +2673,7 @@ function simStep() {
   }
 }
 
-/* The whole of the player's physical life, in the order it happens. */
+/* Oyuncunun fiziksel yaşamının tamamı, gerçekleştiği sırayla. */
 function updateSpirit() {
   if (PS.state === 'hurt') {
     Vis.scale = Math.max(0, Vis.scale - STEP * 4);
@@ -2650,16 +2687,17 @@ function updateSpirit() {
     if (PS.t >= MOVE.respawnTime) { PS.set('air'); PS.coyote = MOVE.coyote; }
     return;
   }
-  if (PS.state === 'node') return;         // held; only a release moves us
+  if (PS.state === 'node') return;         // tutulmuş; yalnızca bir bırakış bizi hareket ettirir
 
   const wasAimable = canAim();
   const px = body.x, py = body.y;
   const fallSpeed = body.vy;
 
-  // A hold is not a suspended fall: while the spirit has the wall, it owns its
-  // own velocity outright and gravity is simply not applied. Letting gravity
-  // accumulate under a hold made the grip creep downward a little every frame,
-  // which reads as the character slipping when it should look planted.
+  // Bir tutunuş askıya alınmış bir düşüş değildir: ruh duvarı tuttuğu
+  // sürece kendi hızına tamamen sahiptir ve yer çekimi basitçe uygulanmaz.
+  // Yer çekiminin bir tutunuş altında birikmesine izin vermek, kavramanın
+  // her karede biraz aşağı sürünmesine yol açıyordu; bu da karakterin sağlam
+  // durması gerekirken kayıyormuş gibi okunuyordu.
   if (PS.state === 'cling') {
     PS.clingT += STEP;
     if (PS.clingT >= MOVE.clingTime) {
@@ -2667,7 +2705,7 @@ function updateSpirit() {
       integrate(body);
     } else {
       body.vy = PS.clingT < MOVE.clingGrip ? 0 : MOVE.clingSlide;
-      body.vx = -PS.clingSide * 0.7;       // stay pressed against the surface
+      body.vx = -PS.clingSide * 0.7;       // yüzeye bastırılmış olarak kal
       if (PS.clingT > MOVE.clingGrip && ((PS.clingT * 60) | 0) % 7 === 0) {
         FX.spark(body.x - PS.clingSide * body.r, body.y, Math.PI / 2, 0.5, 0.9, 1,
                  HUE.spirit.rgb, { life: 0.3, size: 1.5, drag: 0.9 });
@@ -2685,9 +2723,9 @@ function updateSpirit() {
 
   if (r.spring) {
     const s = r.spring;
-    // Exactly one launch event per contact: the spring locked itself as it
-    // fired, so everything below — the sound, the shockwave, the shake —
-    // happens once and cannot be retriggered while the spirit is still on it.
+    // Temas başına tam olarak bir fırlatma olayı: yay ateşlenirken kendini
+    // kilitledi; bu yüzden aşağıdaki her şey — ses, şok dalgası, sarsıntı —
+    // bir kez olur ve ruh hâlâ üzerindeyken yeniden tetiklenemez.
     if (springLoop.count(s)) s.off = true;
     s.fire = 1;
     PS.set('air');
@@ -2705,7 +2743,7 @@ function updateSpirit() {
     if (PS.support && PS.support.crumble && PS.support.crumbleT < 0) {
       PS.support.crumbleT = 0; Sfx.crack();
     }
-    // arriving on something you can stand on
+    // üzerinde durulabilecek bir şeye varmak
     if (PS.state !== 'ground') {
       const hard = clamp(fallSpeed / MOVE.landHard, 0, 1);
       Vis.onLand(hard);
@@ -2725,7 +2763,7 @@ function updateSpirit() {
     body.vx *= MOVE.groundDrag;
     if (Math.abs(body.vx) < MOVE.groundStop) body.vx = 0;
   } else if (r.wallHold) {
-    // taking hold of a wall for the first time; the hold itself is run above
+    // bir duvara ilk kez tutunmak; tutunuşun kendisi yukarıda yürütülür
     if (PS.state !== 'cling') {
       PS.set('cling');
       PS.clingT = 0;
@@ -2756,26 +2794,27 @@ function updateSpirit() {
   updateAimBuffer();
 }
 
-/* ---- camera -------------------------------------------------------------
-   One system owns the camera, and it has four modes:
+/* ---- kamera ----------------------------------------------------------------
+   Kamerayı tek bir sistem yönetir ve dört modu vardır:
 
-     REST    standing or holding, nothing happening. Normal framing.
-     AIM     a stretch is being held. Lead toward the LAUNCH direction — the
-             finger is behind the spirit, the information is in front of it —
-             and ease out so more of the world ahead is visible.
-     TRAVEL  airborne. Follow with mild anticipation.
-     SETTLE  just arrived. Ease back to normal framing.
+     DİNLENME  ayakta ya da tutunmuş, hiçbir şey olmuyor. Normal kadraj.
+     NİŞAN     bir gerilme tutuluyor. FIRLATMA yönüne doğru öne geç — parmak
+               ruhun arkasında, bilgi ise önünde — ve ilerideki dünyanın
+               daha fazlası görünsün diye yavaşlayarak uzaklaş.
+     SEYAHAT   havada. Hafif bir öngörüyle takip et.
+     YERLEŞME  az önce vardı. Normal kadraja yavaşça geri dön.
 
-   Everything the camera does is decided here and nowhere else. The target and
-   the rendered value are kept separate — gameplay writes `cam.tx/ty/tzoom`,
-   and exactly one smoothing step moves `cam.x/y/zoom` toward them — so no two
-   systems can pull the zoom in different directions on the same frame.
+   Kameranın yaptığı her şey burada ve yalnızca burada kararlaştırılır. Hedef
+   ile çizilen değer ayrı tutulur — oyun mantığı `cam.tx/ty/tzoom`'a yazar ve
+   tam olarak tek bir yumuşatma adımı `cam.x/y/zoom`'u onlara doğru
+   hareket ettirir — böylece iki sistem aynı karede yakınlaştırmayı farklı
+   yönlere çekemez.
 
-   Crucially, nothing in here feeds back into the aim. The aim is measured in
-   screen space (see section 10) and cannot be affected by where the camera is
-   or how far it has zoomed, which is what makes the view able to move while a
-   held stretch stays perfectly still. */
-const CAM_PAD = 95;   // how far past the world edge the view may drift
+   En önemlisi, buradaki hiçbir şey nişana geri beslenmez. Nişan ekran
+   uzayında ölçülür (10. bölüme bakın) ve kameranın nerede olduğundan ya da
+   ne kadar yakınlaştığından etkilenemez; görünümün, tutulan bir gerilme
+   kusursuzca hareketsiz kalırken hareket edebilmesini sağlayan da budur. */
+const CAM_PAD = 95;   // görünümün dünya kenarının ne kadar ötesine sürüklenebileceği
 
 function cameraMode() {
   if (Aim.on && Aim.pullLen > MOVE.dragDead) return 'aim';
@@ -2786,8 +2825,8 @@ function cameraMode() {
 function updateCamera(snap) {
   const mode = cameraMode();
   if (mode !== cam.mode) {
-    // leaving a moving mode starts the settle, so the return to normal framing
-    // is a deliberate ease rather than a jump
+    // hareket eden bir moddan ayrılmak yerleşmeyi başlatır; böylece normal
+    // kadraja dönüş bir sıçrama değil, bilinçli bir yavaşlama olur
     if ((cam.mode === 'aim' || cam.mode === 'travel') && mode !== 'aim' && mode !== 'travel') {
       cam.settleT = MOVE.camSettle;
     }
@@ -2798,8 +2837,8 @@ function updateCamera(snap) {
   let tx = body.x, ty = body.y, zoom = 1, ease = MOVE.camEase;
 
   if (mode === 'aim') {
-    // lead along the launch vector: the direction the spirit will actually go,
-    // which is the opposite of where the finger is being pulled
+    // fırlatma vektörü boyunca öne geç: ruhun gerçekten gideceği yön,
+    // parmağın çekildiği yönün tam tersidir
     const lead = lerp(MOVE.camLeadMin, MOVE.camLead, Aim.power);
     tx += Math.cos(Aim.angle) * lead;
     ty += Math.sin(Aim.angle) * lead;
@@ -2813,20 +2852,20 @@ function updateCamera(snap) {
   } else {
     ease = mode === 'settle' ? MOVE.camEase : MOVE.camEaseRest;
   }
-  ty -= 30;                        // a little more sky than floor
+  ty -= 30;                        // zeminden biraz daha fazla gökyüzü
 
-  // However far the view wants to lead, the spirit has to stay comfortably on
-  // screen — it sits in the rear portion of the frame, never off the edge of
-  // it. Leading past this point stops showing the player their character,
-  // which is worse than not showing them the destination.
+  // Görünüm ne kadar öne geçmek isterse istesin, ruh ekranda rahatça
+  // kalmalıdır — kareın arka bölümünde oturur, asla kenarının dışında değil.
+  // Bu noktanın ötesine geçmek, oyuncuya karakterini göstermeyi bırakır ki
+  // bu, ona hedefi göstermemekten daha kötüdür.
   const halfW = VW / (2 * zoom), halfH = VH / (2 * zoom);
   tx = body.x + clamp(tx - body.x, -halfW * MOVE.camHold, halfW * MOVE.camHold);
   ty = body.y + clamp(ty - body.y, -halfH * MOVE.camHold, halfH * MOVE.camHold);
 
-  // Keep the view inside the world, allowing for the fact that zooming out
-  // shows more of it. The bounds are padded rather than hard: clamping exactly
-  // to the world put the spirit against the very edge of the screen whenever
-  // it took hold of a boundary wall, with its aim ring half cut off.
+  // Görünümü dünyanın içinde tut, uzaklaşmanın onun daha fazlasını
+  // gösterdiği gerçeğine izin vererek. Sınırlar sert değil, paylıdır:
+  // tam olarak dünyaya sınırlamak, ruh bir sınır duvarına her tutunduğunda
+  // onu ekranın tam kenarına yapıştırıyordu, nişan halkası yarı kesik halde.
   const hw = halfW - CAM_PAD, hh = halfH - CAM_PAD;
   tx = world.w <= hw * 2 ? world.w / 2 : clamp(tx, hw, world.w - hw);
   ty = world.h <= hh * 2 ? world.h / 2 : clamp(ty, hh, world.h - hh);
@@ -2835,30 +2874,30 @@ function updateCamera(snap) {
   if (snap) { cam.x = tx; cam.y = ty; cam.zoom = zoom; return; }
   cam.x += (tx - cam.x) * ease;
   cam.y += (ty - cam.y) * ease;
-  // The single smoothing step for zoom. It lives here rather than in the world
-  // step because a held stretch skips the rest of the step entirely, and the
-  // view still has to finish settling while the player decides.
+  // Yakınlaştırma için tek yumuşatma adımı. Dünya adımında değil burada
+  // yaşar, çünkü tutulan bir gerilme adımın geri kalanını tamamen atlar ve
+  // görünüm, oyuncu karar verirken yine de yerleşmesini bitirmek zorundadır.
   cam.zoom += (cam.tzoom + cam.punch - cam.zoom) * MOVE.zoomEase;
 }
 
 /* ============================================================
-   9. RENDERING
+   9. ÇİZİM (RENDERING)
    ============================================================ */
 
 let RS = 1;
-let fitPending = false;          // a resize deferred until the drag ends
+let fitPending = false;          // sürükleme bitene kadar ertelenmiş bir yeniden boyutlandırma
 let canvasRect = { left: 0, top: 0, width: VW, height: VH };
 
 function fit() {
   const rect = canvasRect = dom.canvas.getBoundingClientRect();
   if (rect.width < 2 || rect.height < 2) return;
-  // Reassigning the backing store mid-gesture throws away pointer capture and
-  // can interrupt a drag the player is in the middle of. Nothing here is
-  // urgent, so it waits until their hand is off the screen.
+  // Arka belleği bir hareket ortasında yeniden atamak, işaretçi yakalamayı
+  // kaybettirir ve oyuncunun ortasında olduğu bir sürüklemeyi kesebilir.
+  // Burada hiçbir şey acil değil, bu yüzden elleri ekrandan çekilene kadar bekler.
   if (Aim.on) { fitPending = true; return; }
   fitPending = false;
-  /* Pixel budget, not a DPR multiplier. Fill rate is what kills this game on a
-     phone: every frame writes a background plus a stack of additive glows. */
+  /* DPR çarpanı değil, piksel bütçesi. Bir telefonda bu oyunu öldüren şey
+     doldurma hızıdır: her kare bir arkaplan artı bir yığın toplamalı parıltı yazar. */
   const budget = Q.level < 1 ? PIXEL_BUDGET_LOW : PIXEL_BUDGET;
   const maxScale = Math.sqrt(budget / (rect.width * rect.height));
   const dpr = Math.min(window.devicePixelRatio || 1, 2, maxScale);
@@ -2870,7 +2909,7 @@ function fit() {
   }
 }
 
-/* ---- background: a gradient, a parallax lattice and far-off shapes ------ */
+/* ---- arkaplan: bir gradyan, bir paralaks kafes ve uzak şekiller ---------- */
 const bgGfx = {};
 function drawBackground(c) {
   const g = grad(bgGfx, 'sky' + world.bg[0], () => {
@@ -2883,7 +2922,7 @@ function drawBackground(c) {
   c.fillRect(0, 0, VW, VH);
 
   const acc = world.accent;
-  // two parallax lattices: cheap, and they make the world read as deep
+  // iki paralaks kafes: ucuzdur ve dünyanın derin okunmasını sağlar
   for (let layer = 0; layer < 2; layer++) {
     const p = layer === 0 ? 0.25 : 0.5;
     const step = layer === 0 ? 96 : 150;
@@ -2895,7 +2934,8 @@ function drawBackground(c) {
     for (let y = oy; y < VH + step; y += step) { c.moveTo(0, y); c.lineTo(VW, y); }
     c.stroke();
   }
-  // a soft glow that drifts with the camera, so motion is felt even in the sky
+  // kamerayla birlikte sürüklenen yumuşak bir parıltı; böylece hareket
+  // gökyüzünde bile hissedilir
   const r = 260;
   const gg = grad(bgGfx, 'glow' + acc[0], () => {
     const q = c.createRadialGradient(0, 0, 0, 0, 0, r);
@@ -2914,16 +2954,17 @@ function drawBackground(c) {
 function inView(e, pad) {
   pad = pad || 80;
   const reach = (e.br || e.r || 30) + pad;
-  // zooming out shows more world, so the cull has to widen with it
+  // uzaklaşmak daha fazla dünya gösterir, bu yüzden ayıklamanın da onunla
+  // birlikte genişlemesi gerekir
   return Math.abs(e.x - cam.x) < VW / (2 * cam.zoom) + reach &&
          Math.abs(e.y - cam.y) < VH / (2 * cam.zoom) + reach;
 }
 
-/* ---- ordinary surface: stone the spirit can rest on ---------------------
-   Boundary walls are thousands of units long and only ever a screen-height of
-   them is visible, so an unrotated surface is drawn clipped to the view. The
-   lit top edge — the line the player actually aims at — is kept whenever the
-   real edge is on screen. */
+/* ---- sıradan yüzey: ruhun üzerinde dinlenebileceği taş -------------------
+   Sınır duvarları binlerce birim uzunluğundadır ve her zaman yalnızca bir
+   ekran yüksekliği kadarı görünür; bu yüzden döndürülmemiş bir yüzey
+   görünüme kırpılarak çizilir. Aydınlık üst kenar — oyuncunun gerçekten
+   nişan aldığı çizgi — gerçek kenar ekrandayken korunur. */
 function drawSolid(c, e) {
   if (e.broken) return;
   let hw = e.w / 2, hh = e.h / 2;
@@ -2946,11 +2987,11 @@ function drawSolid(c, e) {
   c.fillStyle = 'rgba(10,14,32,0.92)';
   roundRect(c, -hw, -hh, w, h, Math.min(9, hh, hw));
   c.fill();
-  if (!topReal) { c.restore(); return; }     // off-screen slice: body only
+  if (!topReal) { c.restore(); return; }     // ekran dışı dilim: yalnızca gövde
 
-  // The lit face is drawn in its own space anchored at the top edge, so the
-  // cached gradient stays valid even when the body below it is being clipped
-  // to a different height each frame.
+  // Aydınlık yüz, üst kenara sabitlenmiş kendi uzayında çizilir; böylece
+  // önbelleğe alınmış gradyan, altındaki gövde her karede farklı bir
+  // yüksekliğe kırpılırken bile geçerli kalır.
   c.globalCompositeOperation = 'lighter';
   const faceH = Math.min(26, h);
   const g = grad(e.gfx, 'face', () => {
@@ -2967,7 +3008,7 @@ function drawSolid(c, e) {
   c.restore();
   c.globalCompositeOperation = 'source-over';
 
-  // a lit lip along the top edge: this is the line the player actually aims at
+  // üst kenar boyunca aydınlık bir dudak: oyuncunun gerçekten nişan aldığı çizgi budur
   c.strokeStyle = rgba(col.hi, 0.5);
   c.lineWidth = 2;
   c.beginPath();
@@ -2980,7 +3021,7 @@ function drawSolid(c, e) {
   c.restore();
 }
 
-/* ---- spirit spring: a bloom that throws you the way it points ----------- */
+/* ---- ruh yayı: işaret ettiği yöne seni fırlatan bir çiçeklenme ----------- */
 function drawSpring(c, s) {
   const col = HUE.spring;
   const hw = s.w / 2, hh = s.h / 2;
@@ -3006,7 +3047,7 @@ function drawSpring(c, s) {
   c.beginPath(); c.ellipse(0, 0, hw * 1.3, hh * 3.2, 0, 0, TAU); c.fill();
   c.globalAlpha = 1;
 
-  // petals, leaning outward, opening when it fires
+  // dışa doğru yaslanan yapraklar, ateşlendiğinde açılıyor
   const open = 0.2 + breathe * 0.12 + fire * 0.7;
   c.strokeStyle = rgba(col.hi, 0.75);
   c.lineWidth = 2.4;
@@ -3020,9 +3061,9 @@ function drawSpring(c, s) {
     c.quadraticCurveTo(x + lean * 0.5, -hh - 10 - open * 16, x + lean, -hh - 16 - open * 26);
     c.stroke();
   }
-  // A stream of motes drifting along the launch direction. The arrow says
-  // which way; this says it again, continuously, without the player having to
-  // read anything — the direction is legible from across the level.
+  // Fırlatma yönü boyunca sürüklenen bir parçacık akışı. Ok hangi yönü
+  // söyler; bu da onu tekrar söyler, sürekli olarak, oyuncunun hiçbir şey
+  // okumasına gerek kalmadan — yön bölümün her yerinden okunabilir.
   const flow = (Vis.pulse * 0.55 + s.seed) % 1;
   for (let i = 0; i < 4; i++) {
     const u = (flow + i / 4) % 1;
@@ -3034,7 +3075,7 @@ function drawSpring(c, s) {
     c.fill();
   }
 
-  // the arrow: this is the promise the object makes
+  // ok: nesnenin verdiği söz budur
   c.strokeStyle = rgba(col.hi, 0.55 + fire * 0.45);
   c.lineWidth = 3;
   const tip = -hh - 34 - open * 16;
@@ -3046,7 +3087,7 @@ function drawSpring(c, s) {
   c.restore();
 }
 
-/* ---- energy node: the thing that catches you mid-flight ----------------- */
+/* ---- enerji düğümü: seni uçuş ortasında yakalayan şey ----------------- */
 function drawNode(c, n) {
   const col = HUE.node;
   const charged = n.cool <= 0;
@@ -3060,7 +3101,7 @@ function drawNode(c, n) {
   c.translate(n.x, n.y);
   c.globalCompositeOperation = 'lighter';
 
-  // reach halo — only while it could actually take you, so it never lies
+  // erişim halkası — yalnızca gerçekten seni alabilecekken, bu yüzden asla yalan söylemez
   if (near || held) {
     c.strokeStyle = rgba(col.rgb, held ? 0.3 : 0.16 + breathe * 0.1);
     c.lineWidth = 2;
@@ -3082,7 +3123,7 @@ function drawNode(c, n) {
   c.beginPath(); c.arc(0, 0, n.r * 2.6, 0, TAU); c.fill();
   c.globalAlpha = 1;
 
-  // three drifting petals
+  // üç sürüklenen yaprak
   c.rotate(n.spin * 0.6);
   c.strokeStyle = rgba(charged ? col.hi : col.rgb, charged ? 0.8 : 0.28);
   c.lineWidth = 2.2;
@@ -3099,11 +3140,11 @@ function drawNode(c, n) {
   }
   c.rotate(-n.spin * 0.6);
 
-  // core
+  // çekirdek
   c.fillStyle = rgba(charged ? col.hi : col.rgb, charged ? 0.9 : 0.3);
   c.beginPath(); c.arc(0, 0, n.r * (0.3 + (charged ? breathe * 0.07 : 0)), 0, TAU); c.fill();
 
-  // recharge arc — dark nodes say exactly when they come back
+  // yeniden şarj yayı — kararmış düğümler tam olarak ne zaman geri geleceklerini söyler
   if (!charged) {
     c.strokeStyle = rgba(col.rgb, 0.5);
     c.lineWidth = 2.6;
@@ -3115,7 +3156,7 @@ function drawNode(c, n) {
   c.restore();
 }
 
-/* ---- checkpoint mote ---------------------------------------------------- */
+/* ---- kontrol noktası ----------------------------------------------------- */
 function drawMote(c, m) {
   const col = HUE.mote;
   const breathe = 0.5 + 0.5 * Math.sin(Vis.pulse * 1.8 + m.seed);
@@ -3149,7 +3190,7 @@ function drawMote(c, m) {
   c.restore();
 }
 
-/* ---- lethal growth and beams -------------------------------------------- */
+/* ---- öldürücü çıkıntılar ve ışınlar -------------------------------------------- */
 function drawLethal(c, e) {
   const k = e.k === undefined ? 1 : e.k;
   const hw = e.w / 2, hh = e.h / 2;
@@ -3183,7 +3224,7 @@ function drawLethal(c, e) {
     return;
   }
 
-  // beam: a dim rail always, a lit column while it is dangerous
+  // ışın: her zaman sönük bir ray, tehlikeliyken aydınlık bir sütun
   c.fillStyle = rgba([60, 20, 40], 0.5);
   roundRect(c, -hw * 0.3, -hh, e.w * 0.3, e.h, 3); c.fill();
   c.strokeStyle = rgba(DANGER, 0.22);
@@ -3210,7 +3251,7 @@ function drawLethal(c, e) {
   c.restore();
 }
 
-/* ---- the gate ----------------------------------------------------------- */
+/* ---- geçit ----------------------------------------------------------- */
 function drawGate(c, g) {
   const col = HUE.gate;
   const breathe = 0.5 + 0.5 * Math.sin(Vis.pulse * 1.6);
@@ -3244,7 +3285,7 @@ function drawGate(c, g) {
   c.restore();
 }
 
-/* ---- the spirit --------------------------------------------------------- */
+/* ---- ruh --------------------------------------------------------- */
 const spiritGfx = {};
 
 function drawTrail(c) {
@@ -3271,11 +3312,11 @@ function drawTrail(c) {
   c.globalCompositeOperation = 'source-over';
 }
 
-/* A small creature, drawn procedurally: a soft body, two long ears that trail
-   behind the motion, and eyes that look where it is going. It is a placeholder
-   for a modelled character, but it has to read as alive from the first frame,
-   so everything here is driven by the same squash/stretch/look values a rig
-   would eventually consume. */
+/* Prosedürel olarak çizilmiş küçük bir yaratık: yumuşak bir gövde, hareketin
+   arkasında sürüklenen iki uzun kulak ve gittiği yöne bakan gözler. Bu,
+   modellenmiş bir karakter için bir yer tutucudur, ama ilk kareden itibaren
+   canlı okunması gerekir; bu yüzden buradaki her şey, bir riggin eninde
+   sonunda tüketeceği aynı squash/stretch/look değerleriyle yönetilir. */
 function drawSpirit(c) {
   if (Vis.scale <= 0.02) return;
   const r = body.r * Vis.scale;
@@ -3286,9 +3327,9 @@ function drawSpirit(c) {
   let stretch = Vis.stretch, sang = Vis.stretchAng;
   let ox = 0, oy = 0;
   if (Aim.on && Aim.power > 0) {
-    // Loading the shot: the spirit leans back along the pull and squashes
-    // toward it, so the stretch is felt on the character and not only in the
-    // band. It leans, it does not move — the body position never drifts.
+    // Atışı doldurmak: ruh çekiş boyunca geriye yaslanır ve ona doğru
+    // sıkışır; böylece gerilme yalnızca bantta değil, karakterde de
+    // hissedilir. Yaslanır, hareket etmez — gövde konumu asla kaymaz.
     const a = Aim.angle + Math.PI;
     ox = Math.cos(a) * Aim.power * 11;
     oy = Math.sin(a) * Aim.power * 11;
@@ -3305,7 +3346,7 @@ function drawSpirit(c) {
   c.translate(x, y);
   if (pop !== 1) c.scale(pop, pop);
 
-  // bloom
+  // çiçeklenme
   c.globalCompositeOperation = 'lighter';
   const bloom = grad(spiritGfx, 'bloom', () => {
     const q = c.createRadialGradient(0, 0, body.r * 0.3, 0, 0, body.r * 3);
@@ -3324,7 +3365,7 @@ function drawSpirit(c) {
   c.restore();
   c.globalCompositeOperation = 'source-over';
 
-  // --- body, deformed along whichever of stretch / squash is dominant ---
+  // --- gövde, stretch / squash'tan hangisi baskınsa ona göre deforme edilir ---
   c.save();
   const ang = sq > stretch ? Vis.squashAng : sang;
   c.rotate(ang);
@@ -3336,10 +3377,10 @@ function drawSpirit(c) {
   const lx = Math.cos(look), ly = Math.sin(look);
   const R = body.r;
 
-  // Ears: two tapers off the top of the head. They sit on screen-up rather
-  // than on the look direction, which is what keeps the creature reading as
-  // upright however it is flying, and they trail behind the motion — that lean
-  // is most of what sells the thing as alive rather than as a decorated disc.
+  // Kulaklar: kafanın tepesinden inceleşen iki uzantı. Bakış yönü yerine
+  // ekran-yukarısı üzerinde otururlar; yaratığın nasıl uçarsa uçsun dik
+  // okunmasını sağlayan da budur ve hareketin arkasında sürüklenirler — bu
+  // yaslanma, şeyin süslü bir disk değil canlı okunmasını sağlayan şeyin çoğudur.
   const lean = clamp(-body.vx / 26, -0.75, 0.75) +
                (PS.state === 'cling' ? PS.clingSide * 0.3 : 0);
   const lift = clamp(-body.vy / 40, -0.3, 0.3);
@@ -3354,11 +3395,11 @@ function drawSpirit(c) {
     const bx = Math.cos(base) * R * 0.66, by = Math.sin(base) * R * 0.66;
     const mx = Math.cos(midA) * R * 1.35, my = Math.sin(midA) * R * 1.35 - lift * R * 0.3;
     const tx = Math.cos(tipA) * R * 2.05, ty2 = Math.sin(tipA) * R * 2.05 - lift * R * 0.5;
-    // outer ear
+    // dış kulak
     c.strokeStyle = rgba([110, 170, 225], 0.85);
     c.lineWidth = R * 0.34;
     c.beginPath(); c.moveTo(bx, by); c.quadraticCurveTo(mx, my, tx, ty2); c.stroke();
-    // inner ear, shorter and brighter, so each ear reads as a shape not a line
+    // iç kulak, daha kısa ve daha parlak; böylece her kulak bir çizgi değil bir şekil olarak okunur
     c.strokeStyle = rgba(col.hi, 0.9);
     c.lineWidth = R * 0.15;
     c.beginPath();
@@ -3368,7 +3409,7 @@ function drawSpirit(c) {
   }
   c.restore();
 
-  // body
+  // gövde
   const shell = grad(spiritGfx, 'shell', () => {
     const q = c.createRadialGradient(-R * 0.3, -R * 0.35, R * 0.1, 0, 0, R * 1.05);
     q.addColorStop(0, rgba(col.hi, 0.98));
@@ -3379,7 +3420,7 @@ function drawSpirit(c) {
   c.fillStyle = shell;
   c.beginPath(); c.ellipse(0, R * 0.05, R * 0.98, R * 1.04, 0, 0, TAU); c.fill();
 
-  // a little tail wisp, opposite the look direction
+  // bakış yönünün tersine küçük bir kuyruk tutamı
   c.globalCompositeOperation = 'lighter';
   c.strokeStyle = rgba(col.rgb, 0.5);
   c.lineWidth = R * 0.24;
@@ -3390,10 +3431,10 @@ function drawSpirit(c) {
   c.stroke();
   c.globalCompositeOperation = 'source-over';
 
-  // Face. The eyes stay a level pair in the upper half of the body and only
-  // shift a little toward where the spirit is looking — letting them orbit the
-  // whole body with the look direction made it read as a ball with a pattern
-  // on it rather than as a face.
+  // Yüz. Gözler, gövdenin üst yarısında seviyeli bir çift olarak kalır ve
+  // yalnızca ruhun baktığı yöne doğru biraz kayar — onların bakış yönüyle
+  // tüm gövdenin etrafında dönmesine izin vermek, bunu bir yüz yerine
+  // üzerinde desen olan bir top gibi okutuyordu.
   const gx = lx * R * 0.26, gy = ly * R * 0.16 - R * 0.16;
   const open = Vis.blink > 0 ? 0.1 : 1;
   for (let i = 0; i < 2; i++) {
@@ -3410,11 +3451,11 @@ function drawSpirit(c) {
       c.fill();
     }
   }
-  // a faint blush of light under the eyes, so the face has some volume
+  // gözlerin altında belli belirsiz bir ışık pembeliği, böylece yüzün bir hacmi olur
   c.globalCompositeOperation = 'lighter';
   c.fillStyle = rgba(col.hi, 0.18);
   c.beginPath(); c.ellipse(gx, gy + R * 0.42, R * 0.32, R * 0.13, 0, 0, TAU); c.fill();
-  // two small marks low on the body, breathing with the idle pulse
+  // gövdenin altında, boşta nabzıyla nefes alan iki küçük işaret
   c.fillStyle = rgba(col.hi, 0.42 + Math.sin(Vis.pulse * 3) * 0.14);
   for (let i = 0; i < 2; i++) {
     const side = i ? 1 : -1;
@@ -3425,13 +3466,13 @@ function drawSpirit(c) {
   c.restore();
 }
 
-/* ---- the wind-up guide --------------------------------------------------
-   The preview is refreshed by the simulation rather than by the renderer,
-   because the camera needs it too: what the view has to frame is not "some
-   distance along the aim" but the place this leap actually ends up. */
+/* ---- gerilme kılavuzu ----------------------------------------------------
+   Önizleme, çizici tarafından değil, simülasyon tarafından tazelenir; çünkü
+   kameranın da buna ihtiyacı vardır: görünümün kadraja alması gereken şey
+   "nişan boyunca bir mesafe" değil, bu sıçramanın gerçekten vardığı yerdir. */
 let lastPvx = NaN, lastPvy = NaN, lastPvf = -99;
 
-/* The velocity the current wind-up would produce, wall rules included. */
+/* Mevcut gerilmenin, duvar kuralları dahil, üreteceği hız. */
 function aimVelocity(out) {
   const fromNode = PS.state === 'node';
   const sp = launchSpeed(Aim.power, fromNode);
@@ -3445,7 +3486,7 @@ const AIMV = { x: 0, y: 0 };
 function refreshAimPreview() {
   if (!Aim.on || Aim.pullLen <= MOVE.dragDead) { preview.n = 0; return; }
   const v = aimVelocity(AIMV);
-  // a preview from a hold gets the same re-grab cooldown the real leap will
+  // bir tutunuştan gelen önizleme, gerçek sıçramanın alacağı aynı yeniden tutunma bekleme süresini alır
   probe.noWall = PS.state === 'cling' ? PS.clingWall : null;
   probe.noWallT = PS.state === 'cling' ? MOVE.wallRegrab : 0;
   probe.ledgeDir = 0; probe.ledgeT = 0;
@@ -3453,10 +3494,10 @@ function refreshAimPreview() {
   const moving = world.movers.length || world.beams.length;
   if (v.x !== lastPvx || v.y !== lastPvy || (moving && frameCount - lastPvf > 3)) {
     lastPvx = v.x; lastPvy = v.y; lastPvf = frameCount;
-    // Long enough to reach the end of most arcs. In a gravity game the arc IS
-    // the information — hiding where you come down turns aiming into guesswork
-    // — so the guide runs to the landing and fades out rather than being cut
-    // short. It still stops at the first thing it meets, never the whole route.
+    // Çoğu yayın sonuna ulaşacak kadar uzun. Yer çekimli bir oyunda yay,
+    // bilginin KENDİSİDİR — nereye ineceğini gizlemek nişan almayı tahmine
+    // çevirir — bu yüzden kılavuz kesilmek yerine inişe kadar gider ve
+    // sonra söner. Yine de karşılaştığı ilk şeyde durur, asla tüm rotayı göstermez.
     predict(body.x, body.y, v.x, v.y, lerp(520, 1000, Aim.power));
   }
 }
@@ -3478,11 +3519,12 @@ function drawAim(c) {
     c.beginPath(); c.arc(q.x, q.y, lerp(4.2, 1.5, u), 0, TAU); c.fill();
   }
 
-  /* Where it ends. This is the whole point of the guide: the player must be
-     able to answer "if I let go now, where do I come down?" without having to
-     try it. A safe arrival gets a landing ring with a small pad marked under
-     it; a lethal one gets a cross; a spring gets the spring's own colour so it
-     reads as "you will be thrown from here", not "you will stop here". */
+  /* Nerede bittiği. Kılavuzun bütün amacı budur: oyuncu, denemek zorunda
+     kalmadan "şimdi bırakırsam nereye inerim?" sorusunu cevaplayabilmelidir.
+     Güvenli bir varış, altında küçük bir zemin işaretli bir iniş halkası
+     alır; öldürücü bir tanesi bir çarpı alır; bir yay, yayın kendi rengini
+     alır, böylece "buradan fırlatılacaksın" diye okunur, "burada
+     duracaksın" diye değil. */
   if (pv.n > 0) {
     const q = pv.pts[pv.n - 1];
     const bl = 0.6 + 0.4 * Math.sin(Vis.pulse * 5);
@@ -3505,7 +3547,7 @@ function drawAim(c) {
       c.lineWidth = 2.4;
       c.beginPath(); c.arc(q.x, q.y, 11, 0, TAU); c.stroke();
       if (safe) {
-        // a flat pad under the ring: "this is a surface you can stand on"
+        // halkanın altında düz bir zemin: "bu, üzerinde durabileceğin bir yüzey"
         c.strokeStyle = rgba(lc, 0.5);
         c.lineWidth = 2.6;
         c.beginPath();
@@ -3515,15 +3557,15 @@ function drawAim(c) {
     }
   }
 
-  /* Two pieces of information, on two sides of the spirit, so the reversal is
-     never something the player has to do in their head.
+  /* Ruhun iki tarafında iki bilgi parçası; böylece tersine çevirme, oyuncunun
+     kafasında yapması gereken bir şey olmaz.
 
-     BEHIND: the elastic. A tensioning line trailing back along the pull, with
-     a handle on the end. It thickens and brightens as the stretch grows, and
-     it is drawn from the stretch vector rather than from the raw pointer, so
-     it stays rock steady while the camera moves.
+     ARKADA: lastik. Çekiş boyunca geriye uzanan, ucunda bir tutamacı olan
+     bir gerilim çizgisi. Gerilme büyüdükçe kalınlaşır ve parlaklaşır; ham
+     işaretçiden değil, gerilme vektöründen çizilir, bu yüzden kamera
+     hareket ederken bile kaya gibi sabit kalır.
 
-     AHEAD:  the launch. The arc, the landing ring above, and an arrow. */
+     ÖNDE: fırlatma. Yay, üstündeki iniş halkası ve bir ok. */
   const back = a + Math.PI;
   const R = body.r + 14 + p * 8;
   const pullLen = R + 16 + p * 62;
@@ -3533,13 +3575,13 @@ function drawAim(c) {
   eg.addColorStop(0, rgba(col.hi, 0.5 + p * 0.3));
   eg.addColorStop(1, rgba(col.rgb, 0.08));
   c.strokeStyle = eg;
-  c.lineWidth = lerp(2.4, 6, p);       // the band thickens as it is stretched
+  c.lineWidth = lerp(2.4, 6, p);       // gerildikçe bant kalınlaşır
   c.lineCap = 'round';
   c.beginPath(); c.moveTo(body.x, body.y); c.lineTo(bx, by); c.stroke();
   c.fillStyle = rgba(col.hi, 0.35 + p * 0.4);
   c.beginPath(); c.arc(bx, by, 3.5 + p * 3.5, 0, TAU); c.fill();
 
-  // the launch arrow, ahead of the spirit, growing with the stretch
+  // fırlatma oku, ruhun önünde, gerilmeyle birlikte büyüyor
   const fx = body.x + Math.cos(a) * (R + 10 + p * 34);
   const fy = body.y + Math.sin(a) * (R + 10 + p * 34);
   const fg = c.createLinearGradient(body.x, body.y, fx, fy);
@@ -3570,7 +3612,7 @@ function drawAim(c) {
   c.globalCompositeOperation = 'source-over';
 }
 
-/* A quiet ring when control comes back, and a slow breath if you just sit. */
+/* Kontrol geri geldiğinde sessiz bir halka, sadece oturuyorsan yavaş bir nefes. */
 function drawReady(c) {
   if (G.phase !== 'play' || Aim.on) return;
   const col = PS.state === 'cling' ? HUE.spirit : HUE.spirit;
@@ -3587,7 +3629,7 @@ function drawReady(c) {
     c.lineWidth = 2;
     c.beginPath(); c.arc(body.x, body.y, body.r + 7 + t * 30, 0, TAU); c.stroke();
   }
-  // a cling running out: the grip ring closes as the hold does
+  // biten bir tutunuş: kavrama halkası, tutunuşla birlikte kapanır
   if (PS.state === 'cling') {
     const left = 1 - PS.clingT / MOVE.clingTime;
     c.strokeStyle = rgba(HUE.spirit.hi, 0.3 + left * 0.4);
@@ -3708,7 +3750,7 @@ function render() {
   drawDust(c);
 
   c.save();
-  // camera: centre on the spirit, plus shake and the small launch impulse
+  // kamera: ruh üzerinde ortalı, artı sarsıntı ve küçük fırlatma itkisi
   const z = cam.zoom;
   c.translate(VW / 2 + cam.sx + cam.kx, VH / 2 + cam.sy + cam.ky);
   c.scale(z, z);
@@ -3744,22 +3786,24 @@ function render() {
 }
 
 /* ============================================================
-   9b. LEVEL-DESIGN DEBUG VIEW  (?dev=1 only)
+   9b. BÖLÜM TASARIMI HATA AYIKLAMA GÖRÜNÜMÜ  (yalnızca ?dev=1)
    ============================================================
-   Everything a level needs tuning against, drawn on top of the level itself:
-   collision boxes as the simulation sees them, the paths moving ground
-   actually travels, where a spring's trigger region starts and which way it
-   throws, how far a node can catch from, the bounds of every current, and the
-   route the level declares — the same waypoints the tests fly.
+   Bir bölümün ayarlanmaya ihtiyaç duyduğu her şey, bölümün kendisinin
+   üzerine çizilir: simülasyonun gördüğü çarpışma kutuları, hareketli
+   zeminin gerçekte izlediği yollar, bir yayın tetikleyici bölgesinin nerede
+   başladığı ve hangi yöne fırlattığı, bir düğümün ne kadar uzaktan
+   yakalayabildiği, her akıntının sınırları ve bölümün beyan ettiği rota —
+   testlerin uçtuğu aynı konum noktaları.
 
-   Nothing here is on for a player. `DEV` is set only by an explicit ?dev=1,
-   it persists in its own storage key, and ?dev=0 removes it.
+   Buradaki hiçbir şey bir oyuncu için açık değildir. `DEV`, yalnızca açık
+   bir ?dev=1 ile ayarlanır, kendi depolama anahtarında kalıcı olur ve
+   ?dev=0 onu kaldırır.
 
-     G   overlay on/off        H   declared route on/off
-     arrow keys   previous / next level        R   restart
-     ?level=10&dev=1           jump straight to a level
+     G   kaplamayı aç/kapat        H   beyan edilmiş rotayı aç/kapat
+     ok tuşları   önceki / sonraki bölüm        R   yeniden başlat
+     ?level=10&dev=1           doğrudan bir bölüme atla
 
-   Drawn in world space, inside the camera transform, except the readout. */
+   Okuma dışında, dünya uzayında, kamera dönüşümünün içinde çizilir. */
 let devOverlay = true, devRoute = true;
 
 function devBox(c, e, col, dash) {
@@ -3776,7 +3820,7 @@ function drawDebug(c) {
   c.save();
   c.setLineDash([]);
 
-  // solids: the boxes the simulation collides against, and their landing edge
+  // katılar: simülasyonun çarpıştığı kutular ve iniş kenarları
   for (const e of world.solids) {
     if (e.broken) continue;
     devBox(c, e, e.crumble ? 'rgba(255,170,120,.75)' : e.motion ? 'rgba(120,235,255,.75)' : 'rgba(120,255,180,.5)');
@@ -3784,7 +3828,7 @@ function drawDebug(c) {
       c.strokeStyle = 'rgba(255,255,255,.55)'; c.lineWidth = 2;
       c.beginPath(); c.moveTo(e.x - e.w / 2, e.y - e.h / 2); c.lineTo(e.x + e.w / 2, e.y - e.h / 2); c.stroke();
     }
-    // the full travel of moving ground, as a box plus its two end positions
+    // hareketli zeminin tam seyahati, bir kutu artı iki uç konumu olarak
     if (e.motion && e.motion.type === 'osc') {
       const dx = e.motion.dx || 0, dy = e.motion.dy || 0;
       c.strokeStyle = 'rgba(120,235,255,.35)'; c.lineWidth = 1; c.setLineDash([6, 6]);
@@ -3795,7 +3839,7 @@ function drawDebug(c) {
     }
   }
 
-  // hazards, at the radius they are actually tested against
+  // tehlikeler, gerçekten test edildikleri yarıçapta
   for (const e of world.lethal) {
     devBox(c, e, 'rgba(255,66,116,.85)');
     const k = e.k === undefined ? 1 : e.k;
@@ -3805,7 +3849,7 @@ function drawDebug(c) {
     }
   }
 
-  // springs: the trigger box, and the direction the throw actually goes
+  // yaylar: tetikleyici kutu ve fırlatmanın gerçekten gittiği yön
   for (const s of world.springs) {
     devBox(c, s, s.off ? 'rgba(140,140,140,.7)' : 'rgba(120,255,170,.9)');
     c.strokeStyle = 'rgba(120,255,170,.4)'; c.lineWidth = 1; c.setLineDash([4, 4]);
@@ -3817,14 +3861,14 @@ function drawDebug(c) {
     c.beginPath(); c.moveTo(s.x, s.y); c.lineTo(s.x + nx * 70, s.y + ny * 70); c.stroke();
   }
 
-  // nodes: the catch radius, which is the target the player is really aiming at
+  // düğümler: oyuncunun gerçekten nişan aldığı hedef olan yakalama yarıçapı
   for (const n of world.nodes) {
     c.strokeStyle = n.cool > 0 ? 'rgba(140,140,140,.6)' : 'rgba(255,190,90,.8)';
     c.lineWidth = 1.5;
     c.beginPath(); c.arc(n.x, n.y, MOVE.nodeReach, 0, TAU); c.stroke();
   }
 
-  // checkpoints: the mote, and where a respawn actually puts the spirit
+  // kontrol noktaları: parçacık ve bir yeniden doğuşun ruhu gerçekten koyduğu yer
   for (const m of world.motes) {
     c.strokeStyle = m.got ? 'rgba(200,160,255,.5)' : 'rgba(200,160,255,.9)';
     c.lineWidth = 1.5;
@@ -3832,7 +3876,7 @@ function drawDebug(c) {
     c.beginPath(); c.arc(m.x, m.y - 26, 5, 0, TAU); c.stroke();
   }
 
-  // currents: bounds and direction
+  // akıntılar: sınırlar ve yön
   for (const w of world.winds) {
     c.strokeStyle = 'rgba(110,240,235,.7)'; c.lineWidth = 1.5;
     c.strokeRect(w.x - w.w / 2, w.y - w.h / 2, w.w, w.h);
@@ -3841,7 +3885,7 @@ function drawDebug(c) {
     c.lineTo(w.x + (w.dx / len) * 60, w.y + (w.dy / len) * 60); c.stroke();
   }
 
-  // the declared route: what the reachability tests actually fly
+  // beyan edilmiş rota: erişilebilirlik testlerinin gerçekten uçtuğu şey
   const L = LEVELS[G.levelIndex];
   if (devRoute && L && L.route) {
     c.strokeStyle = 'rgba(255,255,255,.45)'; c.lineWidth = 2; c.setLineDash([9, 7]);
@@ -3860,13 +3904,13 @@ function drawDebug(c) {
     }
   }
 
-  // the spirit's own body and the reach it is aiming with
+  // ruhun kendi gövdesi ve nişan aldığı erişim
   c.strokeStyle = 'rgba(255,255,255,.8)'; c.lineWidth = 1.5;
   c.beginPath(); c.arc(body.x, body.y, body.r, 0, TAU); c.stroke();
   c.restore();
 }
 
-/* The readout, in screen space: where we are, and what the world is doing. */
+/* Okuma, ekran uzayında: neredeyiz ve dünya ne yapıyor. */
 function drawDebugHud(c) {
   const L = LEVELS[G.levelIndex];
   const lines = [
@@ -3886,11 +3930,12 @@ function drawDebugHud(c) {
   c.restore();
 }
 
-/* ---- rig seam ----------------------------------------------------------
-   A modelled character (a Three.js GLTF on a transparent layer, most likely)
-   needs no access to the simulation: it needs a pose and a state name, once a
-   frame. Assigning `Player.rig = { sync(pose, ctx) {...} }` takes over the
-   character drawing and nothing else in the game changes. */
+/* ---- rig arayüzü ----------------------------------------------------------
+   Modellenmiş bir karakterin (büyük ihtimalle şeffaf bir katman üzerinde
+   bir Three.js GLTF) simülasyona erişime ihtiyacı yoktur: kare başına bir
+   poza ve bir durum adına ihtiyacı vardır. `Player.rig = { sync(pose, ctx)
+   {...} }` atamak karakter çizimini devralır ve oyunda başka hiçbir şey
+   değişmez. */
 const Player = {
   body, rig: null,
   pose: {
@@ -3915,28 +3960,30 @@ const Player = {
 };
 
 /* ============================================================
-   10. INPUT
+   10. GİRDİ
    ============================================================
-   Touch first. Every interaction in the game is the same gesture — press,
-   drag, release — and the press is allowed to land anywhere on the screen, so
-   there is never a small target to hit. What the press MEANS is decided here
-   and nowhere else.
+   Önce dokunma. Oyundaki her etkileşim aynı harekettir — bas, sürükle,
+   bırak — ve basış ekranın herhangi bir yerine inebilir; bu yüzden
+   vurulacak küçük bir hedef asla yoktur. Basışın NE ANLAMA GELDİĞİNE
+   burada ve yalnızca burada karar verilir.
    ============================================================ */
 
-/* ---- pointer -> virtual screen ------------------------------------------
-   Aiming is measured in VIRTUAL SCREEN UNITS — the fixed 540 x 960 box the
-   game is composed in — and never in world units.
+/* ---- işaretçi -> sanal ekran ---------------------------------------------
+   Nişan alma, dünya biriminde değil, SANAL EKRAN BİRİMİNDE — oyunun
+   içinde bestelendiği sabit 540 x 960 kutuda — ölçülür.
 
-   This matters more than it looks. Converting the pointer through the camera
-   made the aim depend on the zoom, while the zoom depended on the aim: pull
-   harder, the view zooms out, the same finger position now maps to a different
-   world point, so the power changes, so the zoom changes again. That is the
-   breathing/pumping the camera was doing, and no amount of smoothing fixes a
-   loop — the loop has to be cut. Screen-space aim cuts it: the camera reads
-   the aim and the aim never reads the camera.
+   Bu, göründüğünden daha önemlidir. İşaretçiyi kamera üzerinden dönüştürmek,
+   nişanı yakınlaştırmaya bağımlı kılıyordu; yakınlaştırma da nişana
+   bağımlıydı: daha sert çek, görünüm uzaklaşır, aynı parmak konumu artık
+   farklı bir dünya noktasına eşlenir, bu yüzden güç değişir, bu yüzden
+   yakınlaştırma tekrar değişir. Kameranın yaptığı nefes alıp verme/pompalama
+   buydu ve hiçbir miktarda yumuşatma böyle bir döngüyü düzeltemez — döngü
+   kesilmelidir. Ekran-uzayı nişanı onu keser: kamera nişanı okur ve nişan
+   kamerayı asla okumaz.
 
-   Working in a fixed virtual box also makes the gesture resolution independent:
-   the same swipe across a third of the screen is the same leap on any phone. */
+   Sabit bir sanal kutuda çalışmak, hareketin çözünürlükten bağımsız
+   olmasını da sağlar: ekranın üçte biri boyunca aynı kaydırma, herhangi bir
+   telefonda aynı sıçramadır. */
 const gp = { x: 0, y: 0 };
 function toScreen(e) {
   gp.x = (e.clientX - canvasRect.left) * (VW / canvasRect.width);
@@ -3948,23 +3995,23 @@ let pointerId = null;
 const buffered = { on: false, t: 0, id: null, sx: VW / 2, sy: VH / 2 };
 function clearBuffer() { buffered.on = false; buffered.id = null; }
 
-/* The slingshot. You pull BACKWARD, away from where you want to go, and the
-   spirit launches along the opposite vector — like stretching something
-   elastic anchored to it. The pull is entirely screen-space: `Aim.sx/sy` is
-   where the finger went down, and everything else is derived from the offset
-   from that anchor.
+/* Sapan. GERİYE çekersin, gitmek istediğin yerin tersine, ve ruh, tersine
+   uzanan bir elastiği germek gibi, karşıt vektör boyunca fırlar. Çekiş
+   tamamen ekran-uzayındadır: `Aim.sx/sy`, parmağın bastığı yerdir ve geri
+   kalan her şey o sabit noktadan olan farktan türetilir.
 
-   `Aim.pull` is the raw stretch, 0..1 of the usable drag distance; `Aim.power`
-   is what the game uses. They are different on purpose — see powerCurve. */
+   `Aim.pull`, ham gerilmedir, kullanılabilir sürükleme mesafesinin 0..1'i;
+   `Aim.power` ise oyunun kullandığı şeydir. Bilerek farklıdırlar —
+   powerCurve'e bakın. */
 function updateDrag(px, py) {
-  const dx = px - Aim.sx, dy = py - Aim.sy;        // the pull, screen units
+  const dx = px - Aim.sx, dy = py - Aim.sy;        // çekiş, ekran birimi
   const d = Math.hypot(dx, dy);
   Aim.px = px; Aim.py = py;
   Aim.pullLen = d;
   if (d <= MOVE.dragDead) { Aim.pull = 0; Aim.power = 0; Sfx.tensionUpdate(0); return; }
   Aim.pull = clamp((d - MOVE.dragDead) / (MOVE.dragFull - MOVE.dragDead), 0, 1);
   Aim.power = powerCurve(Aim.pull);
-  Aim.angle = Math.atan2(-dy, -dx);                // launch is the mirror of the pull
+  Aim.angle = Math.atan2(-dy, -dx);                // fırlatma, çekişin aynadaki yansımasıdır
   Sfx.tensionUpdate(Aim.power);
 }
 
@@ -3985,10 +4032,10 @@ function beginAim(sx, sy, id) {
   setHint('');
 }
 
-/* Take hold of a node. It draws the spirit in AT THE MOMENT OF THE CATCH, not
-   gradually while the player aims: a character that keeps drifting under a held
-   aim makes the whole gesture feel slippery, and the catch reads better as a
-   snap with a streak behind it anyway. */
+/* Bir düğüme tutunmak. Ruhu YAKALAMA ANINDA çeker, oyuncu nişan alırken
+   kademeli olarak değil: tutulan bir nişan altında sürüklenmeye devam eden
+   bir karakter, tüm hareketi kaygan hissettirir ve yakalama zaten
+   arkasında bir iz bırakan ani bir çekiliş olarak daha iyi okunur. */
 function grabNode(n, px, py, id) {
   PS.node = n;
   PS.set('node');
@@ -4020,9 +4067,9 @@ function onDown(e) {
   const p = toScreen(e);
 
   if (canAim()) {
-    // The stretch is measured from wherever the finger went down, so a press
-    // always starts at zero power whatever it landed on, and the gesture is
-    // identical whether the player touched the spirit or anywhere else.
+    // Gerilme, parmağın bastığı yerden ölçülür; bu yüzden bir basış nereye
+    // inerse insin her zaman sıfır güçle başlar ve oyuncu ister ruha ister
+    // başka bir yere dokunsun, hareket aynıdır.
     beginAim(p.x, p.y, e.pointerId);
     e.preventDefault();
     return;
@@ -4031,8 +4078,9 @@ function onDown(e) {
   const n = nodeInReach();
   if (n) { grabNode(n, p.x, p.y, e.pointerId); e.preventDefault(); return; }
 
-  // Nothing to act on yet. Hold the press briefly: if a wall, the ground or a
-  // node arrives within the buffer window, it is spent there instead of lost.
+  // Henüz üzerinde hareket edilecek bir şey yok. Basışı kısa süre tut: eğer
+  // bir duvar, zemin ya da düğüm bekleme penceresi içinde gelirse, kaybolmak
+  // yerine orada harcanır.
   if (PS.state === 'air') {
     buffered.on = true; buffered.t = 0; buffered.id = e.pointerId;
     buffered.sx = p.x; buffered.sy = p.y;
@@ -4042,7 +4090,7 @@ function onDown(e) {
   G.deny = 1;
 }
 
-/* Spend a held press the moment something can answer it. */
+/* Bir şey cevap verebildiği anda tutulan basışı harca. */
 function updateAimBuffer() {
   if (!buffered.on) return;
   buffered.t += STEP;
@@ -4050,7 +4098,7 @@ function updateAimBuffer() {
   if (canAim()) {
     const id = buffered.id, sx = buffered.sx, sy = buffered.sy;
     clearBuffer();
-    beginAim(sx, sy, id);          // the stretch restarts from where the finger is
+    beginAim(sx, sy, id);          // gerilme, parmağın olduğu yerden yeniden başlar
     return;
   }
   const n = nodeInReach();
@@ -4072,10 +4120,10 @@ function onMove(e) {
 function onUp(e) {
   if (buffered.on && e.pointerId === buffered.id) { clearBuffer(); e.preventDefault(); return; }
   if (!Aim.on || (pointerId !== null && e.pointerId !== pointerId)) return;
-  // The dead zone is the ONLY cancel rule. Judging the release on the power
-  // value instead meant a pull just past the dead zone produced a power near
-  // zero and was silently thrown away — the player had clearly asked for a
-  // small hop and got nothing at all.
+  // Ölü bölge TEK iptal kuralıdır. Bırakışı güç değeri üzerinden
+  // değerlendirmek, ölü bölgenin hemen ötesindeki bir çekişin sıfıra yakın
+  // bir güç üretip sessizce çöpe atılması anlamına gelirdi — oyuncu açıkça
+  // küçük bir sıçrama istemiş ve hiçbir şey alamamış olurdu.
   const launched = Aim.pullLen > MOVE.dragDead;
   const p = Aim.power, a = Aim.angle;
   const ok = canAim();
@@ -4107,13 +4155,14 @@ dom.canvas.addEventListener('pointerdown', onDown, { passive: false });
 window.addEventListener('pointermove', onMove, { passive: false });
 window.addEventListener('pointerup', onUp, { passive: false });
 window.addEventListener('pointercancel', cancelAim);
-/* Deliberately NOT cancelling on `lostpointercapture`. Capture is a
-   convenience, and losing it does not mean the player let go — the browser
-   drops it whenever the canvas backing store is reassigned, which this game
-   does on its own whenever the adaptive quality level changes or the window is
-   resized. That turned a slow frame into a silently dead gesture. `pointerup`
-   and `pointercancel` are the events that actually mean the gesture ended, and
-   they are both handled on `window`, so they arrive with or without capture. */
+/* Bilerek `lostpointercapture` üzerinde iptal edilmiyor. Yakalama bir
+   kolaylıktır ve onu kaybetmek oyuncunun bıraktığı anlamına gelmez —
+   tarayıcı, canvas arka belleği her yeniden atandığında bunu düşürür ve bu
+   oyun, uyarlanabilir kalite seviyesi her değiştiğinde ya da pencere yeniden
+   boyutlandırıldığında bunu kendiliğinden yapar. Bu, yavaş bir kareyi
+   sessizce ölü bir harekete çeviriyordu. `pointerup` ve `pointercancel`,
+   hareketin gerçekten bittiği anlamına gelen olaylardır ve ikisi de
+   `window` üzerinde işlenir; bu yüzden yakalama olsun ya da olmasın gelirler. */
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 window.addEventListener('touchmove', (e) => { if (!G.menu && e.cancelable) e.preventDefault(); }, { passive: false });
@@ -4199,7 +4248,7 @@ if (window.visualViewport) window.visualViewport.addEventListener('resize', fit)
 if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fit).observe(dom.canvas);
 
 /* ============================================================
-   11. MAIN LOOP
+   11. ANA DÖNGÜ
    ============================================================ */
 
 const DT_MAX = 1 / 15;
@@ -4262,17 +4311,18 @@ document.addEventListener('visibilitychange', () => {
 if (Store.get('muted') === '1') applyMute(true);
 if (DEV) { fpsOn = true; dom.fps.classList.remove('hidden'); }
 
-/* The page carries no name and no labels of its own; this is where it gets
-   both, before the first frame is drawn. */
+/* Sayfa kendi başına ne bir ad ne de etiket taşır; ilk kare çizilmeden
+   önce ikisini de burada alır. */
 applyBranding();
 
-/* Pick up where the player left off. Progress is only ever an INDEX — the
-   level itself is rebuilt from its data, exactly as a restart would build it,
-   so resuming and restarting land in the same place. */
+/* Oyuncunun bıraktığı yerden devam et. İlerleme her zaman yalnızca bir
+   İNDEKS'tir — bölümün kendisi, tıpkı bir yeniden başlatmanın kuracağı
+   gibi, verisinden yeniden kurulur; böylece devam etmek ve yeniden
+   başlatmak aynı yere varır. */
 Save.load();
-/* ?level=N jumps straight to a level, for tuning one without playing to it.
-   Developer mode only: without ?dev=1 it is ignored, so a shared link cannot
-   unlock anything. */
+/* ?level=N bir bölüme, onu oynamadan ayarlamak için, doğrudan atlar.
+   Yalnızca geliştirici modunda: ?dev=1 olmadan yok sayılır, bu yüzden
+   paylaşılan bir bağlantı hiçbir şeyin kilidini açamaz. */
 const devJump = DEV && /[?&]level=(\d+)/.exec(location.search);
 const resumeAt = devJump ? clamp(Number(devJump[1]) - 1, 0, LEVELS.length - 1) : Save.unlocked();
 startLevel(resumeAt);
@@ -4280,10 +4330,10 @@ showMenu(false);
 fit();
 frameId = requestAnimationFrame(frame);
 
-/* ---- debug / automation surface ---- */
-/* Internal only — never player-facing, so it deliberately does NOT follow
-   GAME.title: renaming the game must not break a bookmarked console call or
-   the test harness. */
+/* ---- hata ayıklama / otomasyon yüzeyi ---- */
+/* Yalnızca dahili — asla oyuncuya görünmez, bu yüzden bilerek GAME.title'ı
+   takip etmez: oyunu yeniden adlandırmak, yer imli bir konsol çağrısını ya
+   da test altyapısını asla bozmamalıdır. */
 window.FLUX = {
   G, body, PS, Vis, Aim, world, LEVELS, MOVE, Q, Player, cam, Save, Store, TEXT, GAME, selectLevel, showMenu,
   go: (i) => startLevel(clamp(i | 0, 0, LEVELS.length - 1)),
